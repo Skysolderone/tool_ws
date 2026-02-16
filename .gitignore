@@ -1,0 +1,25 @@
+# Binaries
+tool
+tmp/
+*.exe
+
+# Secrets & keys
+*.pem
+config.json
+
+# OS
+.DS_Store
+
+# IDE
+.claude/
+
+# Air (hot reload)
+.air.toml
+
+# Node
+trading-app/node_modules/
+trading-app/.expo/
+trading-app/dist/
+
+# Build artifacts
+cmd/proxy_server/proxy_server
