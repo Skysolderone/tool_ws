@@ -64,6 +64,7 @@ func main() {
 		apiGroup.GET("/positions", api.HandleGetPositions)
 		apiGroup.POST("/order", api.HandlePlaceOrder)
 		apiGroup.GET("/orders", api.HandleGetOrders)
+		apiGroup.GET("/orderbook", api.HandleGetOrderBook)
 		apiGroup.DELETE("/order", api.HandleCancelOrder)
 		apiGroup.POST("/leverage", api.HandleChangeLeverage)
 		apiGroup.POST("/reduce", api.HandleReducePosition)

@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 
 import SymbolPicker from './src/components/SymbolPicker';
 import OrderPanel from './src/components/OrderPanel';
+import OrderBookPanel from './src/components/OrderBookPanel';
 import PositionPanel from './src/components/PositionPanel';
 import AutoScalePanel from './src/components/AutoScalePanel';
 import GridPanel from './src/components/GridPanel';
@@ -17,12 +18,14 @@ const SYMBOL = 'ETHUSDT';
 
 const TABS = [
   { key: 'trade', label: '交易' },
+  { key: 'book', label: '订单簿' },
   { key: 'strategy', label: '策略' },
   { key: 'log', label: '日志' },
 ];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('trade');
+  const [strategySymbol, setStrategySymbol] = useState(SYMBOL);
 
   return (
     <View style={styles.container}>
@@ -54,19 +57,27 @@ export default function App() {
       >
         {activeTab === 'trade' && (
           <>
-            <SymbolPicker />
+            <SymbolPicker symbol={SYMBOL} />
             <OrderPanel symbol={SYMBOL} />
             <PositionPanel symbol={SYMBOL} />
           </>
         )}
 
+        {activeTab === 'book' && (
+          <>
+            <SymbolPicker symbol={SYMBOL} />
+            <OrderBookPanel symbol={SYMBOL} />
+          </>
+        )}
+
         {activeTab === 'strategy' && (
           <>
-            <SignalPanel symbol={SYMBOL} />
-            <DojiPanel symbol={SYMBOL} />
-            <AutoScalePanel symbol={SYMBOL} />
-            <GridPanel symbol={SYMBOL} />
-            <DCAPanel symbol={SYMBOL} />
+            <SymbolPicker symbol={strategySymbol} onChangeSymbol={setStrategySymbol} />
+            <SignalPanel symbol={strategySymbol} />
+            <DojiPanel symbol={strategySymbol} />
+            <AutoScalePanel symbol={strategySymbol} />
+            <GridPanel symbol={strategySymbol} />
+            <DCAPanel symbol={strategySymbol} />
           </>
         )}
 
