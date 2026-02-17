@@ -5,6 +5,7 @@ const AUTH_TOKEN = 'wws2026tool'; // 与 config.json 中 auth.token 保持一致
 
 // WebSocket 价格转发地址（后端代理，不直连币安）
 const WS_PRICE_BASE = 'wss://wws741.top/ws/price';
+const WS_BOOK_BASE = 'wss://wws741.top/ws/book';
 
 async function apiCall(method, path, body = null) {
   const options = {
@@ -40,6 +41,8 @@ export default {
 
   // 查询未成交订单
   getOrders: (symbol) => apiCall('GET', `/orders?symbol=${symbol || ''}`),
+  getOrderBook: (symbol, limit = 100) =>
+    apiCall('GET', `/orderbook?symbol=${symbol || ''}&limit=${limit}`),
 
   // 撤单
   cancelOrder: (symbol, orderId) =>
@@ -83,4 +86,4 @@ export default {
   dojiStatus: (symbol) => apiCall('GET', `/doji/status?symbol=${symbol}`),
 };
 
-export { API_BASE, WS_PRICE_BASE, AUTH_TOKEN };
+export { API_BASE, WS_PRICE_BASE, WS_BOOK_BASE, AUTH_TOKEN };
