@@ -6,6 +6,8 @@ const AUTH_TOKEN = 'wws2026tool'; // 与 config.json 中 auth.token 保持一致
 // WebSocket 价格转发地址（后端代理，不直连币安）
 const WS_PRICE_BASE = 'wss://wws741.top/ws/price';
 const WS_BOOK_BASE = 'wss://wws741.top/ws/book';
+const WS_NEWS_BASE = 'wss://wws741.top/ws/news';
+const WS_HYPER_MONITOR_BASE = 'wss://wws741.top/ws/hyper-monitor';
 
 async function apiCall(method, path, body = null) {
   const options = {
@@ -55,6 +57,14 @@ export default {
   // 交易记录
   getTrades: (symbol, limit = 50) =>
     apiCall('GET', `/trades?symbol=${symbol || ''}&limit=${limit}`),
+  getOperations: (symbol, status = 'FAILED', limit = 50) =>
+    apiCall('GET', `/operations?symbol=${symbol || ''}&status=${status || ''}&limit=${limit}`),
+
+  // Hyper 跟单（服务端执行）
+  startHyperFollow: (config) => apiCall('POST', '/hyper/follow/start', config),
+  stopHyperFollow: (address) => apiCall('POST', '/hyper/follow/stop', { address }),
+  hyperFollowStatus: (address = '') =>
+    apiCall('GET', `/hyper/follow/status?address=${encodeURIComponent(address || '')}`),
 
   // 浮盈加仓
   startAutoScale: (config) => apiCall('POST', '/autoscale/start', config),
@@ -86,4 +96,4 @@ export default {
   dojiStatus: (symbol) => apiCall('GET', `/doji/status?symbol=${symbol}`),
 };
 
-export { API_BASE, WS_PRICE_BASE, WS_BOOK_BASE, AUTH_TOKEN };
+export { API_BASE, WS_PRICE_BASE, WS_BOOK_BASE, WS_NEWS_BASE, WS_HYPER_MONITOR_BASE, AUTH_TOKEN };

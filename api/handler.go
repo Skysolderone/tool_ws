@@ -44,6 +44,9 @@ func HandlePlaceOrder(c context.Context, ctx *app.RequestContext) {
 		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
 		return
 	}
+	if req.Source == "" {
+		req.Source = "manual"
+	}
 	resp, err := PlaceOrderViaWs(c, req)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, utils.H{"error": err.Error()})
@@ -97,6 +100,65 @@ func HandleGetTrades(c context.Context, ctx *app.RequestContext) {
 		return
 	}
 	ctx.JSON(http.StatusOK, utils.H{"data": records})
+}
+
+// HandleGetOperations GET /api/operations?symbol=ETHUSDT&status=FAILED&limit=50
+func HandleGetOperations(c context.Context, ctx *app.RequestContext) {
+	symbol := ctx.DefaultQuery("symbol", "")
+	status := ctx.DefaultQuery("status", "")
+	limitStr := ctx.DefaultQuery("limit", "50")
+	limit, _ := strconv.Atoi(limitStr)
+	if limit <= 0 {
+		limit = 50
+	}
+	records, err := GetOperationRecords(symbol, status, limit)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"data": records})
+}
+
+// HandleStartHyperFollow POST /api/hyper/follow/start
+// Body: {"address":"0x...","symbol":"BTCUSDT","quoteQuantity":"10","leverage":10}
+func HandleStartHyperFollow(c context.Context, ctx *app.RequestContext) {
+	var req HyperFollowConfig
+	if err := ctx.BindAndValidate(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+
+	status, err := StartHyperFollow(req)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "hyper follow started", "data": status})
+}
+
+// HandleStopHyperFollow POST /api/hyper/follow/stop
+// Body: {"address":"0x..."}
+func HandleStopHyperFollow(c context.Context, ctx *app.RequestContext) {
+	var req struct {
+		Address string `json:"address"`
+	}
+	if err := ctx.BindAndValidate(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+
+	if err := StopHyperFollow(req.Address); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "hyper follow stopped", "address": req.Address})
+}
+
+// HandleHyperFollowStatus GET /api/hyper/follow/status?address=0x...
+func HandleHyperFollowStatus(c context.Context, ctx *app.RequestContext) {
+	address := ctx.DefaultQuery("address", "")
+	status := GetHyperFollowStatus(address)
+	ctx.JSON(http.StatusOK, utils.H{"data": status})
 }
 
 // HandleGetOrders GET /api/orders?symbol=BTCUSDT

@@ -72,6 +72,10 @@ func main() {
 
 		// 交易记录
 		apiGroup.GET("/trades", api.HandleGetTrades)
+		apiGroup.GET("/operations", api.HandleGetOperations)
+		apiGroup.POST("/hyper/follow/start", api.HandleStartHyperFollow)
+		apiGroup.POST("/hyper/follow/stop", api.HandleStopHyperFollow)
+		apiGroup.GET("/hyper/follow/status", api.HandleHyperFollowStatus)
 
 		// 浮盈加仓
 		apiGroup.POST("/autoscale/start", api.HandleStartAutoScale)

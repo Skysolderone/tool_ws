@@ -11,71 +11,25 @@ import {
   Linking,
 } from 'react-native';
 import { colors } from '../services/theme';
+import { AUTH_TOKEN, WS_NEWS_BASE } from '../services/api';
 
 const FEED_SOURCES = [
   {
     key: 'blockbeats',
     name: 'BlockBeats',
-    url: 'https://api.theblockbeats.news/v2/rss/newsflash',
-    headers: { language: 'cn' },
   },
   {
     key: '0xzx',
     name: '0xzx',
-    url: 'https://0xzx.com/feed/',
   },
 ];
-const AUTO_REFRESH_MS = 5000;
+const WS_RECONNECT_MS = 3000;
+const WS_PING_MS = 30000;
 
 const EMPTY_NEWS_BY_SOURCE = FEED_SOURCES.reduce((acc, feed) => {
   acc[feed.key] = [];
   return acc;
 }, {});
-
-function decodeEntities(text) {
-  return text
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
-}
-
-function cleanText(raw = '') {
-  return decodeEntities(
-    raw
-      .replace(/^<!\[CDATA\[/, '')
-      .replace(/\]\]>$/, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim(),
-  );
-}
-
-function pickTag(block, tagName) {
-  const match = block.match(new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`, 'i'));
-  return cleanText(match ? match[1] : '');
-}
-
-function parseRSS(xmlText, defaultSource = 'RSS') {
-  const items = xmlText.match(/<item[\s\S]*?<\/item>/gi) || [];
-  return items.map((block, idx) => {
-    const link = pickTag(block, 'link');
-    const guid = pickTag(block, 'guid');
-    const itemSource = pickTag(block, 'source');
-    const author = pickTag(block, 'author') || pickTag(block, 'dc:creator');
-    const description = pickTag(block, 'description') || pickTag(block, 'content:encoded');
-    return {
-      id: guid || link || String(idx),
-      title: pickTag(block, 'title'),
-      summary: description,
-      link: link || guid,
-      pubDate: pickTag(block, 'pubDate'),
-      source: itemSource || author || defaultSource,
-    };
-  });
-}
 
 function formatTime(pubDate) {
   if (!pubDate) return '-';
@@ -90,108 +44,153 @@ function formatTime(pubDate) {
   });
 }
 
-function getTimestamp(pubDate) {
-  if (!pubDate) return 0;
-  const ts = new Date(pubDate).getTime();
-  if (Number.isNaN(ts)) return 0;
-  return ts;
-}
-
-function normalizeNewsList(list) {
-  const deduped = [];
-  const seen = new Set();
-  list.forEach((item) => {
-    const key = item.link || item.title || item.id;
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    deduped.push(item);
-  });
-  deduped.sort((a, b) => getTimestamp(b.pubDate) - getTimestamp(a.pubDate));
-  return deduped.slice(0, 20);
-}
-
 export default function NewsPanel({ onHasNew }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [wsConnected, setWsConnected] = useState(false);
   const [newsBySource, setNewsBySource] = useState(EMPTY_NEWS_BY_SOURCE);
   const [activeSourceKey, setActiveSourceKey] = useState(FEED_SOURCES[0].key);
   const [selected, setSelected] = useState(null);
+
+  const wsRef = useRef(null);
+  const pingTimerRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const mountedRef = useRef(false);
+  const closedByUserRef = useRef(false);
   const initializedRef = useRef(false);
   const latestTopKeyRef = useRef({});
 
-  const fetchNews = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    setError('');
-    try {
-      const results = await Promise.allSettled(
-        FEED_SOURCES.map(async (feed) => {
-          const res = await fetch(feed.url, { headers: feed.headers || {} });
-          if (!res.ok) throw new Error(`${feed.name} HTTP ${res.status}`);
-          const xml = await res.text();
-          return parseRSS(xml, feed.name);
-        }),
-      );
-
-      const nextNewsBySource = { ...EMPTY_NEWS_BY_SOURCE };
-      const failures = [];
-      results.forEach((result, idx) => {
-        const feed = FEED_SOURCES[idx];
-        if (result.status === 'fulfilled') {
-          nextNewsBySource[feed.key] = normalizeNewsList(result.value);
-        } else {
-          failures.push(result.reason?.message || '未知错误');
-        }
-      });
-
-      const nextTopKeys = {};
-      FEED_SOURCES.forEach((feed) => {
-        const top = (nextNewsBySource[feed.key] || [])[0];
-        nextTopKeys[feed.key] = top ? `${top.link || top.id || top.title || '-'}::${top.pubDate || '-'}` : '';
-      });
-
-      if (!initializedRef.current) {
-        initializedRef.current = true;
-      } else {
-        const hasNew = FEED_SOURCES.some((feed) => {
-          const prevKey = latestTopKeyRef.current[feed.key] || '';
-          const nextKey = nextTopKeys[feed.key] || '';
-          return prevKey && nextKey && prevKey !== nextKey;
-        });
-        if (hasNew) onHasNew?.(true);
-      }
-      latestTopKeyRef.current = nextTopKeys;
-
-      setNewsBySource(nextNewsBySource);
-      const totalCount = Object.values(nextNewsBySource).reduce((sum, list) => sum + list.length, 0);
-
-      if (totalCount === 0) {
-        setError('暂无资讯');
-      } else if (failures.length > 0) {
-        setError(`部分源拉取失败：${failures.join(' | ')}`);
-      }
-    } catch (e) {
-      setError(`拉取失败：${e.message}`);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+  const clearWsTimers = useCallback(() => {
+    if (pingTimerRef.current) {
+      clearInterval(pingTimerRef.current);
+      pingTimerRef.current = null;
     }
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
+
+  const sendWs = useCallback((payload) => {
+    if (!wsRef.current || wsRef.current.readyState !== 1) return;
+    wsRef.current.send(JSON.stringify(payload));
+  }, []);
+
+  const applyNewsPayload = useCallback((payload = {}) => {
+    const nextNewsBySource = { ...EMPTY_NEWS_BY_SOURCE };
+    FEED_SOURCES.forEach((feed) => {
+      nextNewsBySource[feed.key] = Array.isArray(payload.data?.[feed.key]) ? payload.data[feed.key] : [];
+    });
+
+    const nextTopKeys = {};
+    FEED_SOURCES.forEach((feed) => {
+      const top = (nextNewsBySource[feed.key] || [])[0];
+      nextTopKeys[feed.key] = top ? `${top.link || top.id || top.title || '-'}::${top.pubDate || '-'}` : '';
+    });
+
+    if (!initializedRef.current) {
+      initializedRef.current = true;
+    } else {
+      const hasNew = FEED_SOURCES.some((feed) => {
+        const prevKey = latestTopKeyRef.current[feed.key] || '';
+        const nextKey = nextTopKeys[feed.key] || '';
+        return prevKey && nextKey && prevKey !== nextKey;
+      });
+      if (hasNew) onHasNew?.(true);
+    }
+    latestTopKeyRef.current = nextTopKeys;
+
+    setNewsBySource(nextNewsBySource);
+    const totalCount = Object.values(nextNewsBySource).reduce((sum, list) => sum + list.length, 0);
+    if (payload.error) {
+      setError(`拉取失败：${payload.error}`);
+    } else if (totalCount === 0) {
+      setError('暂无资讯');
+    } else if (Array.isArray(payload.failures) && payload.failures.length > 0) {
+      setError(`部分源拉取失败：${payload.failures.join(' | ')}`);
+    } else {
+      setError('');
+    }
+
+    setLoading(false);
+    setRefreshing(false);
   }, [onHasNew]);
 
-  useEffect(() => {
-    fetchNews();
-  }, [fetchNews]);
+  const requestRefresh = useCallback(() => {
+    setRefreshing(true);
+    sendWs({ action: 'refresh' });
+  }, [sendWs]);
+
+  const connectWs = useCallback(() => {
+    if (!mountedRef.current) return;
+    if (wsRef.current && (wsRef.current.readyState === 0 || wsRef.current.readyState === 1)) return;
+
+    const ws = new WebSocket(`${WS_NEWS_BASE}?token=${AUTH_TOKEN}`);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setWsConnected(true);
+      clearWsTimers();
+      sendWs({ action: 'refresh' });
+      pingTimerRef.current = setInterval(() => {
+        sendWs({ action: 'ping' });
+      }, WS_PING_MS);
+    };
+
+    ws.onmessage = (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch (_) {
+        return;
+      }
+
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.action === 'pong') return;
+
+      if (msg.channel === 'news') {
+        applyNewsPayload(msg);
+      }
+    };
+
+    ws.onerror = () => {
+      setWsConnected(false);
+    };
+
+    ws.onclose = () => {
+      setWsConnected(false);
+      clearWsTimers();
+      wsRef.current = null;
+      if (!mountedRef.current || closedByUserRef.current) return;
+      reconnectTimerRef.current = setTimeout(() => {
+        connectWs();
+      }, WS_RECONNECT_MS);
+    };
+  }, [applyNewsPayload, clearWsTimers, sendWs]);
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      fetchNews(true);
-    }, AUTO_REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [fetchNews]);
+    mountedRef.current = true;
+    closedByUserRef.current = false;
+    setLoading(true);
+    setError('');
+    connectWs();
+
+    return () => {
+      mountedRef.current = false;
+      closedByUserRef.current = true;
+      clearWsTimers();
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch (_) {}
+        wsRef.current = null;
+      }
+    };
+  }, [clearWsTimers, connectWs]);
 
   const onRefresh = () => {
-    setRefreshing(true);
-    fetchNews(true);
+    requestRefresh();
   };
 
   const activeFeed = FEED_SOURCES.find((item) => item.key === activeSourceKey) || FEED_SOURCES[0];
@@ -216,7 +215,7 @@ export default function NewsPanel({ onHasNew }) {
           <Text style={styles.refreshText}>{refreshing ? '刷新中...' : '刷新'}</Text>
         </TouchableOpacity>
       </View>
-      <Text style={styles.hintText}>点击来源标题切换，每5秒自动更新</Text>
+      <Text style={styles.hintText}>连接状态: {wsConnected ? '已连接' : '重连中'} | 点击刷新触发服务端拉取</Text>
 
       {loading ? (
         <View style={styles.loadingBox}>

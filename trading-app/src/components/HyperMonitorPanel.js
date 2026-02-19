@@ -10,25 +10,13 @@ import {
   Alert,
 } from 'react-native';
 import { colors } from '../services/theme';
-import api from '../services/api';
+import api, { AUTH_TOKEN, WS_HYPER_MONITOR_BASE } from '../services/api';
 
-const INFO_URL = 'https://api.hyperliquid.xyz/info';
-const WS_URL = 'wss://api.hyperliquid.xyz/ws';
 const DEFAULT_ADDRESS = '0x15a4f009bb324a3fb9e36137136b201e3fe0dfdb';
 const FOLLOW_SYMBOL = 'BTCUSDT';
-const REST_FALLBACK_MS = 30000;
+const SNAPSHOT_REFRESH_MS = 30000;
 const WS_RECONNECT_MS = 3000;
 const WS_PING_MS = 30000;
-
-async function infoCall(body) {
-  const res = await fetch(INFO_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
 
 function toNumber(value) {
   const n = Number(value);
@@ -87,42 +75,6 @@ function fillActionLabel(fill = {}) {
   if (dir.includes('close')) return '平仓';
   if (toNumber(fill.closedPnl) !== 0) return '平仓';
   return '未知';
-}
-
-function isBtcFill(fill = {}) {
-  const coin = String(fill.coin || '').toUpperCase();
-  return coin.startsWith('BTC');
-}
-
-function isOpenFill(fill = {}) {
-  return fillActionLabel(fill) === '开仓';
-}
-
-function isCloseFill(fill = {}) {
-  return fillActionLabel(fill) === '平仓';
-}
-
-function orderSideFromFill(fill = {}) {
-  if (fill.side === 'B' || fill.side === 'BUY') return 'BUY';
-  if (fill.side === 'A' || fill.side === 'SELL') return 'SELL';
-  return '';
-}
-
-function positionSideFromFill(fill = {}) {
-  const dir = String(fill.dir || '').toLowerCase();
-  if (dir.includes('long')) return 'LONG';
-  if (dir.includes('short')) return 'SHORT';
-
-  const side = orderSideFromFill(fill);
-  if (isOpenFill(fill)) {
-    if (side === 'BUY') return 'LONG';
-    if (side === 'SELL') return 'SHORT';
-  }
-  if (isCloseFill(fill)) {
-    if (side === 'BUY') return 'SHORT';
-    if (side === 'SELL') return 'LONG';
-  }
-  return 'BOTH';
 }
 
 function statusColor(status = '') {
@@ -199,18 +151,21 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
   const prevOpenMapRef = useRef({});
   const seenHistoryRef = useRef(new Set());
   const seenEventRef = useRef(new Set());
-  const seenFollowFillRef = useRef(new Set());
 
   useEffect(() => {
     prevOpenMapRef.current = {};
     seenHistoryRef.current = new Set();
     seenEventRef.current = new Set();
-    seenFollowFillRef.current = new Set();
+    setLoading(true);
+    setRefreshing(false);
+    setError('');
     setActivityEvents([]);
     setOpenOrders([]);
     setHistoryOrders([]);
     setFills([]);
     setLastUpdated(0);
+    setFollowEnabled(false);
+    setFollowCount(0);
   }, [address]);
 
   const pushEvents = useCallback((items = []) => {
@@ -313,103 +268,6 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
     })));
   }, [pushEvents]);
 
-  const copyTradeFromFills = useCallback(async (incoming = []) => {
-    if (!followEnabled || !incoming.length) return;
-    const quoteQty = Number(followQuoteQty);
-    const leverage = parseInt(followLeverage, 10);
-    if (!Number.isFinite(quoteQty) || quoteQty <= 0 || !Number.isFinite(leverage) || leverage <= 0) {
-      return;
-    }
-
-    for (const fill of incoming) {
-      if (!isBtcFill(fill)) continue;
-      const fillKey = makeFillKey(fill);
-      if (seenFollowFillRef.current.has(fillKey)) continue;
-      seenFollowFillRef.current.add(fillKey);
-
-      const side = orderSideFromFill(fill);
-      const positionSide = positionSideFromFill(fill);
-
-      if (isOpenFill(fill)) {
-        if (!side) continue;
-        try {
-          await api.placeOrder({
-            symbol: FOLLOW_SYMBOL,
-            side,
-            orderType: 'MARKET',
-            quoteQuantity: String(quoteQty),
-            leverage,
-            positionSide,
-          });
-          setFollowCount((prev) => prev + 1);
-          pushEvents([{
-            time: Date.now(),
-            title: '跟单开仓已执行',
-            detail: `${FOLLOW_SYMBOL} ${positionSide} ${side} ${quoteQty}U ${leverage}x`,
-          }]);
-        } catch (e) {
-          pushEvents([{
-            time: Date.now(),
-            title: '跟单开仓失败',
-            detail: `${FOLLOW_SYMBOL} ${positionSide} ${side}: ${e.message || '下单失败'}`,
-          }]);
-        }
-        continue;
-      }
-
-      if (isCloseFill(fill)) {
-        try {
-          await api.closePosition({
-            symbol: FOLLOW_SYMBOL,
-            positionSide,
-          });
-          setFollowCount((prev) => prev + 1);
-          pushEvents([{
-            time: Date.now(),
-            title: '跟随平仓已执行',
-            detail: `${FOLLOW_SYMBOL} ${positionSide} 平仓`,
-          }]);
-        } catch (e) {
-          pushEvents([{
-            time: Date.now(),
-            title: '跟随平仓失败',
-            detail: `${FOLLOW_SYMBOL} ${positionSide}: ${e.message || '平仓失败'}`,
-          }]);
-        }
-      }
-    }
-  }, [followEnabled, followLeverage, followQuoteQty, pushEvents]);
-
-  const fetchData = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    setError('');
-    try {
-      const [openRes, historyRes, fillsRes] = await Promise.all([
-        infoCall({ type: 'frontendOpenOrders', user: address }),
-        infoCall({ type: 'historicalOrders', user: address }),
-        infoCall({ type: 'userFills', user: address, aggregateByTime: true }),
-      ]);
-
-      const openList = Array.isArray(openRes) ? openRes : [];
-      const historyList = Array.isArray(historyRes) ? historyRes : [];
-      const fillList = Array.isArray(fillsRes) ? fillsRes : [];
-
-      applyOpenOrders(openList, false);
-      setHistoryOrders(historyList);
-      historyList.forEach((item) => {
-        seenHistoryRef.current.add(makeHistoryKey(item));
-      });
-      setFills(fillList);
-
-      setLastUpdated(Date.now());
-    } catch (e) {
-      setError(`监控拉取失败：${e.message}`);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [address, applyOpenOrders]);
-
   const clearWsTimers = useCallback(() => {
     if (pingTimerRef.current) {
       clearInterval(pingTimerRef.current);
@@ -426,23 +284,46 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
     wsRef.current.send(JSON.stringify(payload));
   }, []);
 
+  const requestSnapshot = useCallback(() => {
+    sendWs({ action: 'snapshot' });
+  }, [sendWs]);
+
+  const fetchFollowStatus = useCallback(async () => {
+    try {
+      const res = await api.hyperFollowStatus(address);
+      const status = res?.data || null;
+      if (!status || !status.enabled) {
+        setFollowEnabled(false);
+        setFollowCount(0);
+        return;
+      }
+
+      setFollowEnabled(true);
+      if (status.quoteQuantity !== undefined && status.quoteQuantity !== null) {
+        setFollowQuoteQty(String(status.quoteQuantity));
+      }
+      if (status.leverage !== undefined && status.leverage !== null) {
+        setFollowLeverage(String(status.leverage));
+      }
+      setFollowCount(Number(status.executedCount || 0));
+    } catch (_) {
+      // 状态查询失败不阻塞监控数据渲染
+    }
+  }, [address]);
+
   const connectWs = useCallback(() => {
     if (!mountedRef.current) return;
     if (wsRef.current && (wsRef.current.readyState === 0 || wsRef.current.readyState === 1)) return;
 
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(`${WS_HYPER_MONITOR_BASE}?address=${encodeURIComponent(address)}&token=${AUTH_TOKEN}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
       setWsConnected(true);
-      sendWs({ method: 'subscribe', subscription: { type: 'openOrders', user: address } });
-      sendWs({ method: 'subscribe', subscription: { type: 'orderUpdates', user: address } });
-      sendWs({ method: 'subscribe', subscription: { type: 'userEvents', user: address } });
-      sendWs({ method: 'subscribe', subscription: { type: 'userFills', user: address, aggregateByTime: true } });
-
       clearWsTimers();
+      requestSnapshot();
       pingTimerRef.current = setInterval(() => {
-        sendWs({ method: 'ping' });
+        sendWs({ action: 'ping' });
       }, WS_PING_MS);
     };
 
@@ -455,22 +336,38 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
       }
 
       if (!msg || typeof msg !== 'object') return;
-      if (msg.channel === 'pong' || msg.method === 'pong') return;
+      if (msg.channel === 'pong' || msg.method === 'pong' || msg.action === 'pong') return;
       if (msg.channel === 'subscriptionResponse') return;
+
+      if (msg.channel === 'snapshotError' || msg.channel === 'proxyError') {
+        setError(`监控拉取失败：${msg.error || '未知错误'}`);
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
 
       if (msg.channel === 'openOrders') {
         const list = Array.isArray(msg.data?.orders)
           ? msg.data.orders
           : (Array.isArray(msg.data) ? msg.data : []);
-        applyOpenOrders(list, true);
+        applyOpenOrders(list, !msg.isSnapshot);
         setLastUpdated(Date.now());
+        setLoading(false);
+        setRefreshing(false);
         return;
       }
 
       if (msg.channel === 'orderUpdates') {
         const updates = Array.isArray(msg.data) ? msg.data : [];
-        applyOrderUpdates(updates);
+        if (msg.isSnapshot) {
+          setHistoryOrders([...updates]);
+          seenHistoryRef.current = new Set(updates.map((item) => makeHistoryKey(item)));
+        } else {
+          applyOrderUpdates(updates);
+        }
         setLastUpdated(Date.now());
+        setLoading(false);
+        setRefreshing(false);
         return;
       }
 
@@ -478,10 +375,9 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
         const data = msg.data || {};
         const list = Array.isArray(data.fills) ? data.fills : [];
         applyFills(list, !!data.isSnapshot);
-        if (!data.isSnapshot) {
-          void copyTradeFromFills(list);
-        }
         setLastUpdated(Date.now());
+        setLoading(false);
+        setRefreshing(false);
         return;
       }
 
@@ -489,7 +385,6 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
         const data = msg.data || {};
         if (Array.isArray(data.fills)) {
           applyFills(data.fills, false);
-          void copyTradeFromFills(data.fills);
         }
         if (Array.isArray(data.nonUserCancel) && data.nonUserCancel.length > 0) {
           pushEvents(data.nonUserCancel.map((evt) => ({
@@ -506,6 +401,8 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
           })));
         }
         setLastUpdated(Date.now());
+        setLoading(false);
+        setRefreshing(false);
       }
     };
 
@@ -528,26 +425,29 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
     applyOpenOrders,
     applyOrderUpdates,
     clearWsTimers,
-    copyTradeFromFills,
     pushEvents,
     sendWs,
+    requestSnapshot,
   ]);
 
   useEffect(() => {
     mountedRef.current = true;
     closedByUserRef.current = false;
-
-    fetchData();
     connectWs();
+    void fetchFollowStatus();
 
-    const restTimer = setInterval(() => {
-      fetchData(true);
-    }, REST_FALLBACK_MS);
+    const snapshotTimer = setInterval(() => {
+      requestSnapshot();
+    }, SNAPSHOT_REFRESH_MS);
+    const followStatusTimer = setInterval(() => {
+      void fetchFollowStatus();
+    }, SNAPSHOT_REFRESH_MS);
 
     return () => {
       mountedRef.current = false;
       closedByUserRef.current = true;
-      clearInterval(restTimer);
+      clearInterval(snapshotTimer);
+      clearInterval(followStatusTimer);
       clearWsTimers();
       if (wsRef.current) {
         try {
@@ -556,14 +456,15 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
         wsRef.current = null;
       }
     };
-  }, [clearWsTimers, connectWs, fetchData]);
+  }, [clearWsTimers, connectWs, requestSnapshot, fetchFollowStatus]);
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchData(true);
+    requestSnapshot();
+    void fetchFollowStatus();
   };
 
-  const toggleFollow = () => {
+  const toggleFollow = async () => {
     if (!followEnabled) {
       const quoteQty = Number(followQuoteQty);
       const leverage = parseInt(followLeverage, 10);
@@ -575,12 +476,29 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
         Alert.alert('参数错误', '请输入有效的杠杆');
         return;
       }
-      Alert.alert('跟单已开启', `仅跟 ${FOLLOW_SYMBOL}，包含开仓与平仓`);
-      setFollowEnabled(true);
+
+      try {
+        await api.startHyperFollow({
+          address,
+          symbol: FOLLOW_SYMBOL,
+          quoteQuantity: String(quoteQty),
+          leverage,
+        });
+        await fetchFollowStatus();
+        Alert.alert('跟单已开启', `服务端已接管，仅跟 ${FOLLOW_SYMBOL}，包含开仓与平仓`);
+      } catch (e) {
+        Alert.alert('开启失败', e.message || '服务端启动跟单失败');
+      }
       return;
     }
-    setFollowEnabled(false);
-    Alert.alert('跟单已关闭');
+
+    try {
+      await api.stopHyperFollow(address);
+      await fetchFollowStatus();
+      Alert.alert('跟单已关闭', '服务端已停止该地址的自动跟单');
+    } catch (e) {
+      Alert.alert('关闭失败', e.message || '服务端停止跟单失败');
+    }
   };
 
   const sortedOpenOrders = useMemo(() => (
@@ -626,7 +544,7 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
 
       <Text style={styles.addrText}>{address}</Text>
       <Text style={styles.hintText}>
-        WS: {wsConnected ? '已连接' : '重连中'} | REST兜底: 30s | 最近更新: {fmtTime(lastUpdated)}
+        WS: {wsConnected ? '已连接' : '重连中'} | 服务端快照: 30s | 最近更新: {fmtTime(lastUpdated)}
       </Text>
 
       <View style={styles.tabRow}>
@@ -688,7 +606,7 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
                   </View>
                 </View>
                 <Text style={styles.followHint}>
-                  状态: {followEnabled ? '运行中' : '未启动'} | 跟开仓+平仓 | 已执行 {followCount} 次
+                  状态: {followEnabled ? '运行中(服务端)' : '未启动'} | 跟开仓+平仓 | 已执行 {followCount} 次
                 </Text>
               </View>
 

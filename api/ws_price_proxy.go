@@ -935,6 +935,8 @@ func StartWsPriceServer(port int) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/price", handleWsPrice)
 	mux.HandleFunc("/ws/book", handleWsBook)
+	mux.HandleFunc("/ws/news", handleWsNews)
+	mux.HandleFunc("/ws/hyper-monitor", handleWsHyperMonitor)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	log.Printf("[WsProxy] Price WebSocket server starting on %s", addr)
