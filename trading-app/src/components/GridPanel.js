@@ -3,7 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, Modal,
 } from 'react-native';
 import api from '../services/api';
-import { colors } from '../services/theme';
+import { colors, spacing, radius, fontSize } from '../services/theme';
 
 export default function GridPanel({ symbol }) {
   const [showModal, setShowModal] = useState(false);
@@ -64,8 +64,11 @@ export default function GridPanel({ symbol }) {
 
   return (
     <View style={styles.panel}>
-      <View style={styles.header}>
-        <Text style={styles.title}>网格交易</Text>
+      <View style={styles.titleRow}>
+        <View style={styles.titleContent}>
+          <View style={[styles.statusDot, { backgroundColor: status?.active ? colors.green : colors.textMuted }]} />
+          <Text style={styles.title}>网格交易</Text>
+        </View>
         {status?.active ? (
           <TouchableOpacity style={styles.stopBtn} onPress={handleStop}>
             <Text style={styles.btnText}>关闭</Text>
@@ -186,27 +189,35 @@ export default function GridPanel({ symbol }) {
 }
 
 const styles = StyleSheet.create({
-  panel: { backgroundColor: colors.card, borderRadius: 12, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: colors.cardBorder },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  title: { fontSize: 18, fontWeight: 'bold', color: colors.white },
-  startBtn: { backgroundColor: colors.blue, paddingHorizontal: 16, paddingVertical: 6, borderRadius: 6 },
-  stopBtn: { backgroundColor: colors.red, paddingHorizontal: 16, paddingVertical: 6, borderRadius: 6 },
-  btnText: { color: colors.white, fontWeight: '600', fontSize: 13 },
-  statusBox: { backgroundColor: colors.bg, padding: 10, borderRadius: 8, marginTop: 4 },
-  statusText: { color: colors.greenLight, fontSize: 13, marginBottom: 2 },
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
-  modal: { backgroundColor: colors.card, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: '85%' },
-  modalTitle: { fontSize: 18, fontWeight: 'bold', color: colors.white, marginBottom: 16, textAlign: 'center' },
-  row: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  panel: {
+    backgroundColor: colors.card,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.lg },
+  titleContent: { flexDirection: 'row', alignItems: 'center' },
+  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: spacing.sm },
+  title: { fontSize: fontSize.lg, fontWeight: '700', color: colors.white },
+  startBtn: { backgroundColor: colors.gold, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.pill },
+  stopBtn: { backgroundColor: colors.red, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.pill },
+  btnText: { color: colors.white, fontWeight: '700', fontSize: fontSize.sm },
+  statusBox: { backgroundColor: colors.surface, padding: spacing.md, borderRadius: radius.lg, marginTop: spacing.sm, borderWidth: 1, borderColor: colors.cardBorder },
+  statusText: { color: colors.textSecondary, fontSize: fontSize.sm, marginBottom: spacing.xs },
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end', padding: spacing.lg },
+  modal: { backgroundColor: colors.card, borderTopLeftRadius: radius.xxl, borderTopRightRadius: radius.xxl, padding: spacing.xl, maxHeight: '85%', borderWidth: 1, borderColor: colors.cardBorder },
+  modalTitle: { fontSize: fontSize.xl, fontWeight: '800', color: colors.white, marginBottom: spacing.xl, textAlign: 'center' },
+  row: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.md },
   halfInput: { flex: 1 },
-  inputRow: { marginBottom: 12 },
-  label: { color: colors.textSecondary, fontSize: 12, marginBottom: 4 },
-  input: { backgroundColor: colors.bg, borderRadius: 8, padding: 10, color: colors.white, borderWidth: 1, borderColor: colors.cardBorder, fontSize: 15 },
-  previewBox: { backgroundColor: colors.surface, borderRadius: 8, padding: 10, marginBottom: 12 },
-  previewText: { color: colors.yellow, fontSize: 12, textAlign: 'center' },
-  modalBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  inputRow: { marginBottom: spacing.md },
+  label: { color: colors.textSecondary, fontSize: fontSize.sm, marginBottom: spacing.xs },
+  input: { backgroundColor: colors.surface, borderRadius: radius.md, padding: spacing.md, color: colors.white, borderWidth: 1, borderColor: colors.cardBorder, fontSize: fontSize.md },
+  previewBox: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, marginBottom: spacing.md, borderWidth: 1, borderColor: colors.cardBorder },
+  previewText: { color: colors.textSecondary, fontSize: fontSize.sm, textAlign: 'center' },
+  modalBtn: { flex: 1, paddingVertical: spacing.md, borderRadius: radius.lg, alignItems: 'center' },
   cancelBtn: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.cardBorder },
-  cancelBtnText: { color: colors.textSecondary, fontWeight: '600', fontSize: 15 },
-  confirmBtn: { backgroundColor: colors.blue },
-  confirmBtnText: { color: colors.white, fontWeight: '600', fontSize: 15 },
+  cancelBtnText: { color: colors.textSecondary, fontWeight: '600', fontSize: fontSize.md },
+  confirmBtn: { backgroundColor: colors.gold },
+  confirmBtnText: { color: colors.white, fontWeight: '800', fontSize: fontSize.md },
 });

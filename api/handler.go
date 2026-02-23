@@ -59,6 +59,7 @@ func HandlePlaceOrder(c context.Context, ctx *app.RequestContext) {
 			return
 		}
 		record := &TradeRecord{
+			Source:        req.Source,
 			Symbol:        req.Symbol,
 			Side:          string(req.Side),
 			PositionSide:  string(req.PositionSide),
@@ -117,6 +118,22 @@ func HandleGetOperations(c context.Context, ctx *app.RequestContext) {
 		return
 	}
 	ctx.JSON(http.StatusOK, utils.H{"data": records})
+}
+
+// HandleGetLiquidationHistory GET /api/liquidation/history?limit=200
+func HandleGetLiquidationHistory(c context.Context, ctx *app.RequestContext) {
+	limitStr := ctx.DefaultQuery("limit", "120")
+	limit, _ := strconv.Atoi(limitStr)
+	if limit <= 0 {
+		limit = 120
+	}
+
+	data, err := GetLiquidationHistory(limit)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"data": data})
 }
 
 // HandleStartHyperFollow POST /api/hyper/follow/start
@@ -237,6 +254,28 @@ func HandleClosePosition(c context.Context, ctx *app.RequestContext) {
 		return
 	}
 	resp, err := ClosePositionViaWs(c, req)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"data": resp})
+}
+
+// HandleReversePosition POST /api/reverse
+// Body: {"symbol": "BTCUSDT", "quoteQuantity": "10", "leverage": 20}
+func HandleReversePosition(c context.Context, ctx *app.RequestContext) {
+	// 风控检查
+	if err := CheckRisk(); err != nil {
+		ctx.JSON(http.StatusForbidden, utils.H{"error": err.Error()})
+		return
+	}
+
+	var req ReversePositionReq
+	if err := ctx.BindAndValidate(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	resp, err := ReversePosition(c, req)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, utils.H{"error": err.Error()})
 		return
@@ -489,4 +528,85 @@ func HandleDojiStatus(c context.Context, ctx *app.RequestContext) {
 		return
 	}
 	ctx.JSON(http.StatusOK, utils.H{"data": status})
+}
+
+// ========== 资金费率监控 ==========
+
+// HandleStartFundingMonitor POST /api/funding/start
+func HandleStartFundingMonitor(c context.Context, ctx *app.RequestContext) {
+	var config FundingRateConfig
+	if err := ctx.BindAndValidate(&config); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	if err := StartFundingMonitor(config); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "funding monitor started"})
+}
+
+// HandleStopFundingMonitor POST /api/funding/stop
+func HandleStopFundingMonitor(c context.Context, ctx *app.RequestContext) {
+	if err := StopFundingMonitor(); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "funding monitor stopped"})
+}
+
+// HandleFundingStatus GET /api/funding/status
+func HandleFundingStatus(c context.Context, ctx *app.RequestContext) {
+	status := GetFundingStatus()
+	ctx.JSON(http.StatusOK, utils.H{"data": status})
+}
+
+// ========== 多策略联动 ==========
+
+// HandleStartStrategyLink POST /api/link/start
+func HandleStartStrategyLink(c context.Context, ctx *app.RequestContext) {
+	var req struct {
+		Rules []StrategyLinkRule `json:"rules"`
+	}
+	if err := ctx.BindAndValidate(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	if len(req.Rules) == 0 {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": "at least one rule is required"})
+		return
+	}
+	if err := StartStrategyLink(req.Rules); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "strategy link started", "ruleCount": len(req.Rules)})
+}
+
+// HandleStopStrategyLink POST /api/link/stop
+func HandleStopStrategyLink(c context.Context, ctx *app.RequestContext) {
+	if err := StopStrategyLink(); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "strategy link stopped"})
+}
+
+// HandleStrategyLinkStatus GET /api/link/status
+func HandleStrategyLinkStatus(c context.Context, ctx *app.RequestContext) {
+	status := GetStrategyLinkStatus()
+	ctx.JSON(http.StatusOK, utils.H{"data": status})
+}
+
+// HandleUpdateStrategyLinkRules POST /api/link/rules
+func HandleUpdateStrategyLinkRules(c context.Context, ctx *app.RequestContext) {
+	var req struct {
+		Rules []StrategyLinkRule `json:"rules"`
+	}
+	if err := ctx.BindAndValidate(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	UpdateStrategyLinkRules(req.Rules)
+	ctx.JSON(http.StatusOK, utils.H{"message": "rules updated", "ruleCount": len(req.Rules)})
 }

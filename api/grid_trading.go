@@ -18,31 +18,31 @@ type GridConfig struct {
 	PositionSide futures.PositionSideType `json:"positionSide,omitempty"` // LONG / SHORT / BOTH
 	Leverage     int                      `json:"leverage"`
 
-	UpperPrice float64 `json:"upperPrice"` // 价格上界
-	LowerPrice float64 `json:"lowerPrice"` // 价格下界
-	GridCount  int     `json:"gridCount"`  // 网格数量
-	AmountPerGrid string `json:"amountPerGrid"` // 每格投入金额(USDT)
+	UpperPrice    float64 `json:"upperPrice"`    // 价格上界
+	LowerPrice    float64 `json:"lowerPrice"`    // 价格下界
+	GridCount     int     `json:"gridCount"`     // 网格数量
+	AmountPerGrid string  `json:"amountPerGrid"` // 每格投入金额(USDT)
 
-	StopLossPrice  float64 `json:"stopLossPrice,omitempty"`  // 整体止损价，可选
+	StopLossPrice   float64 `json:"stopLossPrice,omitempty"`   // 整体止损价，可选
 	TakeProfitPrice float64 `json:"takeProfitPrice,omitempty"` // 整体止盈价，可选
 }
 
 // GridStatus 网格交易状态
 type GridStatus struct {
-	Config       GridConfig `json:"config"`
-	Active       bool       `json:"active"`
+	Config       GridConfig  `json:"config"`
+	Active       bool        `json:"active"`
 	GridLevels   []GridLevel `json:"gridLevels"`
-	FilledBuys   int        `json:"filledBuys"`   // 已成交买单数
-	FilledSells  int        `json:"filledSells"`  // 已成交卖单数
-	TotalProfit  float64    `json:"totalProfit"`  // 网格总利润
-	CurrentPrice float64   `json:"currentPrice"` // 当前价格
+	FilledBuys   int         `json:"filledBuys"`   // 已成交买单数
+	FilledSells  int         `json:"filledSells"`  // 已成交卖单数
+	TotalProfit  float64     `json:"totalProfit"`  // 网格总利润
+	CurrentPrice float64     `json:"currentPrice"` // 当前价格
 }
 
 // GridLevel 单个网格层级
 type GridLevel struct {
-	Price     float64 `json:"price"`
-	HasBuy    bool    `json:"hasBuy"`    // 是否在此价位有挂单/已买入
-	Filled    bool    `json:"filled"`    // 该层是否已持有
+	Price  float64 `json:"price"`
+	HasBuy bool    `json:"hasBuy"` // 是否在此价位有挂单/已买入
+	Filled bool    `json:"filled"` // 该层是否已持有
 }
 
 type gridState struct {
@@ -256,6 +256,7 @@ func gridBuyAtLevel(ctx context.Context, state *gridState, levelIdx int) error {
 	}
 
 	req := PlaceOrderReq{
+		Source:        "strategy_grid_buy",
 		Symbol:        cfg.Symbol,
 		Side:          futures.SideTypeBuy,
 		OrderType:     futures.OrderTypeMarket,
@@ -293,6 +294,7 @@ func gridSellAtLevel(ctx context.Context, state *gridState, levelIdx int) error 
 
 	// 卖出（平仓）同样金额
 	req := PlaceOrderReq{
+		Source:        "strategy_grid_sell",
 		Symbol:        cfg.Symbol,
 		Side:          futures.SideTypeSell,
 		OrderType:     futures.OrderTypeMarket,

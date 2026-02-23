@@ -6,8 +6,10 @@ const AUTH_TOKEN = 'wws2026tool'; // 与 config.json 中 auth.token 保持一致
 // WebSocket 价格转发地址（后端代理，不直连币安）
 const WS_PRICE_BASE = 'wss://wws741.top/ws/price';
 const WS_BOOK_BASE = 'wss://wws741.top/ws/book';
+const WS_BIG_TRADE_BASE = 'wss://wws741.top/ws/big-trade';
 const WS_NEWS_BASE = 'wss://wws741.top/ws/news';
 const WS_HYPER_MONITOR_BASE = 'wss://wws741.top/ws/hyper-monitor';
+const WS_LIQUIDATION_BASE = 'wss://wws741.top/ws/liquidation-stats';
 
 async function apiCall(method, path, body = null) {
   const options = {
@@ -20,7 +22,19 @@ async function apiCall(method, path, body = null) {
   if (body) options.body = JSON.stringify(body);
 
   const res = await fetch(`${API_BASE}${path}`, options);
-  const data = await res.json();
+  const text = await res.text();
+
+  // 尝试解析 JSON，失败时显示实际响应内容（方便排查 nginx 错误页等）
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (_e) {
+    throw new Error(`请求失败 (HTTP ${res.status}): ${text.substring(0, 200)}`);
+  }
+
+  if (!res.ok) {
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
   if (data.error) throw new Error(data.error);
   return data;
 }
@@ -41,6 +55,9 @@ export default {
   // 减仓
   reducePosition: (req) => apiCall('POST', '/reduce', req),
 
+  // 一键反手
+  reversePosition: (req) => apiCall('POST', '/reverse', req),
+
   // 查询未成交订单
   getOrders: (symbol) => apiCall('GET', `/orders?symbol=${symbol || ''}`),
   getOrderBook: (symbol, limit = 100) =>
@@ -59,12 +76,31 @@ export default {
     apiCall('GET', `/trades?symbol=${symbol || ''}&limit=${limit}`),
   getOperations: (symbol, status = 'FAILED', limit = 50) =>
     apiCall('GET', `/operations?symbol=${symbol || ''}&status=${status || ''}&limit=${limit}`),
+  getLiquidationHistory: (limit = 120) =>
+    apiCall('GET', `/liquidation/history?limit=${limit}`),
+  getAnalyticsJournal: ({ period = 'daily', from = '', to = '' } = {}) =>
+    apiCall(
+      'GET',
+      `/analytics/journal?period=${encodeURIComponent(period)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    ),
+  getAnalyticsAttribution: ({ from = '', to = '' } = {}) =>
+    apiCall(
+      'GET',
+      `/analytics/attribution?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    ),
+  getAnalyticsSentiment: ({ symbol = 'BTCUSDT', period = '5m' } = {}) =>
+    apiCall(
+      'GET',
+      `/analytics/sentiment?symbol=${encodeURIComponent(symbol)}&period=${encodeURIComponent(period)}`,
+    ),
 
   // Hyper 跟单（服务端执行）
   startHyperFollow: (config) => apiCall('POST', '/hyper/follow/start', config),
   stopHyperFollow: (address) => apiCall('POST', '/hyper/follow/stop', { address }),
   hyperFollowStatus: (address = '') =>
     apiCall('GET', `/hyper/follow/status?address=${encodeURIComponent(address || '')}`),
+  getHyperPositions: (address) =>
+    apiCall('GET', `/hyper/positions?address=${encodeURIComponent(address || '')}`),
 
   // 浮盈加仓
   startAutoScale: (config) => apiCall('POST', '/autoscale/start', config),
@@ -96,4 +132,13 @@ export default {
   dojiStatus: (symbol) => apiCall('GET', `/doji/status?symbol=${symbol}`),
 };
 
-export { API_BASE, WS_PRICE_BASE, WS_BOOK_BASE, WS_NEWS_BASE, WS_HYPER_MONITOR_BASE, AUTH_TOKEN };
+export {
+  API_BASE,
+  WS_PRICE_BASE,
+  WS_BOOK_BASE,
+  WS_BIG_TRADE_BASE,
+  WS_NEWS_BASE,
+  WS_HYPER_MONITOR_BASE,
+  WS_LIQUIDATION_BASE,
+  AUTH_TOKEN,
+};

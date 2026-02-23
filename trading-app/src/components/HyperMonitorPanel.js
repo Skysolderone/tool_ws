@@ -9,14 +9,23 @@ import {
   TextInput,
   Alert,
 } from 'react-native';
-import { colors } from '../services/theme';
-import api, { AUTH_TOKEN, WS_HYPER_MONITOR_BASE } from '../services/api';
+import { colors, spacing, radius, fontSize } from '../services/theme';
+import api, { AUTH_TOKEN, WS_HYPER_MONITOR_BASE, WS_LIQUIDATION_BASE } from '../services/api';
 
 const DEFAULT_ADDRESS = '0x15a4f009bb324a3fb9e36137136b201e3fe0dfdb';
 const FOLLOW_SYMBOL = 'BTCUSDT';
 const SNAPSHOT_REFRESH_MS = 30000;
 const WS_RECONNECT_MS = 3000;
 const WS_PING_MS = 30000;
+const EMPTY_LIQ_STATS = Object.freeze({
+  daily: [],
+  h4: [],
+  h1: [],
+  timezone: 'UTC',
+  updatedAt: 0,
+  startedAt: 0,
+  lastEventTime: 0,
+});
 
 function toNumber(value) {
   const n = Number(value);
@@ -31,6 +40,10 @@ function fmtPrice(value) {
   return toNumber(value).toLocaleString('en-US', { maximumFractionDigits: 6 });
 }
 
+function fmtUsd(value) {
+  return toNumber(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
 function fmtTime(ms) {
   const t = toNumber(ms);
   if (t <= 0) return '-';
@@ -42,6 +55,27 @@ function fmtTime(ms) {
     second: '2-digit',
     hour12: false,
   });
+}
+
+function pad2(v) {
+  return String(v).padStart(2, '0');
+}
+
+function fmtUtcTime(ms) {
+  const t = toNumber(ms);
+  if (t <= 0) return '-';
+  const d = new Date(t);
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())} UTC`;
+}
+
+function fmtUtcBucketStart(ms, mode = 'h1') {
+  const t = toNumber(ms);
+  if (t <= 0) return '-';
+  const d = new Date(t);
+  if (mode === 'day') {
+    return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+  }
+  return `${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:00`;
 }
 
 function shortHash(hash = '') {
@@ -125,13 +159,20 @@ function mergeFills(prev = [], incoming = []) {
   return deduped.slice(0, 300);
 }
 
-export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew }) {
+export default function HyperMonitorPanel({
+  address = DEFAULT_ADDRESS,
+  onHasNew,
+  withLiquidationTab = false,
+}) {
   const [activeCard, setActiveCard] = useState('orders');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState(0);
   const [wsConnected, setWsConnected] = useState(false);
+  const [liqWsConnected, setLiqWsConnected] = useState(false);
+  const [liqError, setLiqError] = useState('');
+  const [liquidationStats, setLiquidationStats] = useState(EMPTY_LIQ_STATS);
 
   const [openOrders, setOpenOrders] = useState([]);
   const [historyOrders, setHistoryOrders] = useState([]);
@@ -145,6 +186,9 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
   const wsRef = useRef(null);
   const pingTimerRef = useRef(null);
   const reconnectTimerRef = useRef(null);
+  const liqWsRef = useRef(null);
+  const liqPingTimerRef = useRef(null);
+  const liqReconnectTimerRef = useRef(null);
   const mountedRef = useRef(false);
   const closedByUserRef = useRef(false);
 
@@ -166,6 +210,8 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
     setLastUpdated(0);
     setFollowEnabled(false);
     setFollowCount(0);
+    setLiqError('');
+    setLiquidationStats(EMPTY_LIQ_STATS);
   }, [address]);
 
   const pushEvents = useCallback((items = []) => {
@@ -279,6 +325,17 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
     }
   }, []);
 
+  const clearLiqWsTimers = useCallback(() => {
+    if (liqPingTimerRef.current) {
+      clearInterval(liqPingTimerRef.current);
+      liqPingTimerRef.current = null;
+    }
+    if (liqReconnectTimerRef.current) {
+      clearTimeout(liqReconnectTimerRef.current);
+      liqReconnectTimerRef.current = null;
+    }
+  }, []);
+
   const sendWs = useCallback((payload) => {
     if (!wsRef.current || wsRef.current.readyState !== 1) return;
     wsRef.current.send(JSON.stringify(payload));
@@ -287,6 +344,15 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
   const requestSnapshot = useCallback(() => {
     sendWs({ action: 'snapshot' });
   }, [sendWs]);
+
+  const sendLiqWs = useCallback((payload) => {
+    if (!liqWsRef.current || liqWsRef.current.readyState !== 1) return;
+    liqWsRef.current.send(JSON.stringify(payload));
+  }, []);
+
+  const requestLiqSnapshot = useCallback(() => {
+    sendLiqWs({ action: 'snapshot' });
+  }, [sendLiqWs]);
 
   const fetchFollowStatus = useCallback(async () => {
     try {
@@ -404,6 +470,26 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
         setLoading(false);
         setRefreshing(false);
       }
+
+      // 跟单执行事件（后端自动跟单后推送）
+      if (msg.channel === 'followEvent') {
+        const action = msg.action === 'open' ? '跟单开仓' : '跟单平仓';
+        const side = msg.side || '';
+        const ps = msg.positionSide || '';
+        const qty = msg.quoteQty || '';
+        const lev = msg.leverage || '';
+        const oid = msg.orderId || '';
+        const detail = msg.action === 'open'
+          ? `${msg.symbol} ${ps} ${side} ${qty}U ${lev}x OID:${oid}`
+          : `${msg.symbol} ${ps}`;
+        pushEvents([{
+          time: toNumber(msg.time || Date.now()),
+          title: action,
+          detail,
+        }]);
+        // 刷新跟单计数
+        setFollowCount((c) => c + 1);
+      }
     };
 
     ws.onerror = () => {
@@ -430,14 +516,78 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
     requestSnapshot,
   ]);
 
+  const connectLiqWs = useCallback(() => {
+    if (!mountedRef.current) return;
+    if (liqWsRef.current && (liqWsRef.current.readyState === 0 || liqWsRef.current.readyState === 1)) return;
+
+    const ws = new WebSocket(`${WS_LIQUIDATION_BASE}?token=${AUTH_TOKEN}`);
+    liqWsRef.current = ws;
+
+    ws.onopen = () => {
+      setLiqWsConnected(true);
+      setLiqError('');
+      clearLiqWsTimers();
+      requestLiqSnapshot();
+      liqPingTimerRef.current = setInterval(() => {
+        sendLiqWs({ action: 'ping' });
+      }, WS_PING_MS);
+    };
+
+    ws.onmessage = (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch (_) {
+        return;
+      }
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.channel === 'pong' || msg.method === 'pong' || msg.action === 'pong') return;
+
+      if (msg.channel === 'liquidationStats') {
+        const stats = msg.stats || {};
+        setLiquidationStats({
+          daily: Array.isArray(stats.daily) ? stats.daily : [],
+          h4: Array.isArray(stats.h4) ? stats.h4 : [],
+          h1: Array.isArray(stats.h1) ? stats.h1 : [],
+          timezone: String(msg.timezone || 'UTC'),
+          updatedAt: toNumber(msg.t || Date.now()),
+          startedAt: toNumber(msg.startedAt || 0),
+          lastEventTime: toNumber(msg.lastEventTime || 0),
+        });
+        setLiqError('');
+      }
+    };
+
+    ws.onerror = () => {
+      setLiqWsConnected(false);
+      setLiqError('强平统计流连接异常');
+    };
+
+    ws.onclose = () => {
+      setLiqWsConnected(false);
+      clearLiqWsTimers();
+      liqWsRef.current = null;
+      if (!mountedRef.current || closedByUserRef.current) return;
+      liqReconnectTimerRef.current = setTimeout(() => {
+        connectLiqWs();
+      }, WS_RECONNECT_MS);
+    };
+  }, [clearLiqWsTimers, requestLiqSnapshot, sendLiqWs]);
+
   useEffect(() => {
     mountedRef.current = true;
     closedByUserRef.current = false;
     connectWs();
+    if (withLiquidationTab) {
+      connectLiqWs();
+    }
     void fetchFollowStatus();
 
     const snapshotTimer = setInterval(() => {
       requestSnapshot();
+      if (withLiquidationTab) {
+        requestLiqSnapshot();
+      }
     }, SNAPSHOT_REFRESH_MS);
     const followStatusTimer = setInterval(() => {
       void fetchFollowStatus();
@@ -449,18 +599,37 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
       clearInterval(snapshotTimer);
       clearInterval(followStatusTimer);
       clearWsTimers();
+      clearLiqWsTimers();
       if (wsRef.current) {
         try {
           wsRef.current.close();
         } catch (_) {}
         wsRef.current = null;
       }
+      if (liqWsRef.current) {
+        try {
+          liqWsRef.current.close();
+        } catch (_) {}
+        liqWsRef.current = null;
+      }
     };
-  }, [clearWsTimers, connectWs, requestSnapshot, fetchFollowStatus]);
+  }, [
+    clearLiqWsTimers,
+    clearWsTimers,
+    connectLiqWs,
+    connectWs,
+    requestLiqSnapshot,
+    requestSnapshot,
+    fetchFollowStatus,
+    withLiquidationTab,
+  ]);
 
   const onRefresh = () => {
     setRefreshing(true);
     requestSnapshot();
+    if (withLiquidationTab) {
+      requestLiqSnapshot();
+    }
     void fetchFollowStatus();
   };
 
@@ -533,6 +702,12 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
     return { filled, canceled, rejected };
   }, [sortedHistoryOrders]);
 
+  const latestLiqStats = useMemo(() => ({
+    day: liquidationStats.daily?.[0] || null,
+    h4: liquidationStats.h4?.[0] || null,
+    h1: liquidationStats.h1?.[0] || null,
+  }), [liquidationStats]);
+
   return (
     <View style={styles.card}>
       <View style={styles.header}>
@@ -560,16 +735,24 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
         >
           <Text style={[styles.tabText, activeCard === 'fills' && styles.tabTextActive]}>成交行为</Text>
         </TouchableOpacity>
+        {withLiquidationTab ? (
+          <TouchableOpacity
+            style={[styles.tabBtn, activeCard === 'liquidation' && styles.tabBtnActive]}
+            onPress={() => setActiveCard('liquidation')}
+          >
+            <Text style={[styles.tabText, activeCard === 'liquidation' && styles.tabTextActive]}>强平统计</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
-      {loading ? (
+      {loading && (!withLiquidationTab || activeCard !== 'liquidation') ? (
         <View style={styles.loadingBox}>
-          <ActivityIndicator color={colors.blue} />
+          <ActivityIndicator color={colors.gold} />
           <Text style={styles.loadingText}>监控数据加载中...</Text>
         </View>
       ) : (
         <>
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          {(activeCard !== 'liquidation' || !withLiquidationTab) && error ? <Text style={styles.errorText}>{error}</Text> : null}
 
           {activeCard === 'orders' ? (
             <>
@@ -589,9 +772,11 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
                     <TextInput
                       style={styles.followInput}
                       value={followQuoteQty}
-                      onChangeText={setFollowQuoteQty}
-                      keyboardType="decimal-pad"
+                      onChangeText={(v) => setFollowQuoteQty(v.replace(/[^0-9.]/g, ''))}
+                      keyboardType="default"
                       editable={!followEnabled}
+                      placeholder="如 10.5"
+                      placeholderTextColor={colors.textMuted}
                     />
                   </View>
                   <View style={styles.followInputWrap}>
@@ -599,7 +784,7 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
                     <TextInput
                       style={styles.followInput}
                       value={followLeverage}
-                      onChangeText={setFollowLeverage}
+                      onChangeText={(v) => setFollowLeverage(v.replace(/[^0-9]/g, ''))}
                       keyboardType="number-pad"
                       editable={!followEnabled}
                     />
@@ -701,7 +886,7 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
                 ))
               )}
             </>
-          ) : (
+          ) : activeCard === 'fills' ? (
             <>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionTitle}>最近成交</Text>
@@ -736,7 +921,44 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
                 </ScrollView>
               )}
             </>
-          )}
+          ) : withLiquidationTab ? (
+            <View style={styles.liqCard}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>Binance 强平统计（UTC）</Text>
+                <Text style={styles.sectionCount}>{liqWsConnected ? '在线' : '重连中'}</Text>
+              </View>
+              <Text style={styles.liqHint}>
+                统计粒度: 每天 / 每4小时 / 每1小时 | 最近推送: {fmtUtcTime(liquidationStats.updatedAt)} | 最近强平: {fmtUtcTime(liquidationStats.lastEventTime)}
+              </Text>
+              {liqError ? <Text style={styles.errorText}>{liqError}</Text> : null}
+
+              <View style={styles.liqSummaryRow}>
+                <View style={styles.liqSummaryItem}>
+                  <Text style={styles.liqSummaryTitle}>UTC 日</Text>
+                  <Text style={styles.liqSummaryRange}>{fmtUtcBucketStart(latestLiqStats.day?.startTime, 'day')}</Text>
+                  <Text style={styles.liqSummaryValue}>${fmtUsd(latestLiqStats.day?.totalNotional)}</Text>
+                  <Text style={styles.liqSummarySub}>笔数: {toNumber(latestLiqStats.day?.totalCount)}</Text>
+                  <Text style={styles.liqSummarySub}>BUY/SELL: {toNumber(latestLiqStats.day?.buyCount)}/{toNumber(latestLiqStats.day?.sellCount)}</Text>
+                </View>
+
+                <View style={styles.liqSummaryItem}>
+                  <Text style={styles.liqSummaryTitle}>UTC 4H</Text>
+                  <Text style={styles.liqSummaryRange}>{fmtUtcBucketStart(latestLiqStats.h4?.startTime, 'h4')}</Text>
+                  <Text style={styles.liqSummaryValue}>${fmtUsd(latestLiqStats.h4?.totalNotional)}</Text>
+                  <Text style={styles.liqSummarySub}>笔数: {toNumber(latestLiqStats.h4?.totalCount)}</Text>
+                  <Text style={styles.liqSummarySub}>BUY/SELL: {toNumber(latestLiqStats.h4?.buyCount)}/{toNumber(latestLiqStats.h4?.sellCount)}</Text>
+                </View>
+
+                <View style={styles.liqSummaryItem}>
+                  <Text style={styles.liqSummaryTitle}>UTC 1H</Text>
+                  <Text style={styles.liqSummaryRange}>{fmtUtcBucketStart(latestLiqStats.h1?.startTime, 'h1')}</Text>
+                  <Text style={styles.liqSummaryValue}>${fmtUsd(latestLiqStats.h1?.totalNotional)}</Text>
+                  <Text style={styles.liqSummarySub}>笔数: {toNumber(latestLiqStats.h1?.totalCount)}</Text>
+                  <Text style={styles.liqSummarySub}>BUY/SELL: {toNumber(latestLiqStats.h1?.buyCount)}/{toNumber(latestLiqStats.h1?.sellCount)}</Text>
+                </View>
+              </View>
+            </View>
+          ) : null}
         </>
       )}
     </View>
@@ -746,118 +968,163 @@ export default function HyperMonitorPanel({ address = DEFAULT_ADDRESS, onHasNew 
 const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.card,
-    borderRadius: 12,
+    borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.cardBorder,
-    padding: 14,
-    marginBottom: 14,
+    padding: spacing.lg,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: spacing.sm,
   },
   title: {
-    fontSize: 16,
+    fontSize: fontSize.lg,
     fontWeight: '700',
     color: colors.white,
   },
   refreshBtn: {
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    backgroundColor: colors.surface,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    backgroundColor: colors.goldBg,
   },
   refreshText: {
-    fontSize: 12,
-    color: colors.textSecondary,
+    fontSize: fontSize.sm,
+    color: colors.goldLight,
+    fontWeight: '600',
   },
   addrText: {
-    color: colors.text,
-    fontSize: 12,
-    marginBottom: 4,
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginBottom: spacing.xs,
+    fontFamily: 'monospace',
   },
   hintText: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    marginBottom: 10,
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginBottom: spacing.md,
   },
   tabRow: {
     flexDirection: 'row',
-    gap: 8,
-    marginBottom: 10,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: 3,
+    gap: 2,
+    marginBottom: spacing.md,
   },
   tabBtn: {
     flex: 1,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-    backgroundColor: colors.surface,
-    borderRadius: 8,
+    backgroundColor: 'transparent',
+    borderRadius: radius.sm,
     alignItems: 'center',
-    paddingVertical: 8,
+    paddingVertical: spacing.sm,
   },
   tabBtnActive: {
-    borderColor: colors.blue,
-    backgroundColor: colors.blueBg,
+    backgroundColor: colors.goldBg,
   },
   tabText: {
-    color: colors.textSecondary,
-    fontSize: 13,
+    color: colors.textMuted,
+    fontSize: fontSize.sm,
     fontWeight: '600',
   },
   tabTextActive: {
     color: colors.white,
+    fontWeight: '700',
   },
   loadingBox: {
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
+    borderRadius: radius.lg,
     backgroundColor: colors.surface,
-    paddingVertical: 24,
+    paddingVertical: spacing.xxl,
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 10,
+    gap: spacing.sm,
+    marginBottom: spacing.md,
   },
   loadingText: {
-    color: colors.textSecondary,
-    fontSize: 12,
+    color: colors.textMuted,
+    fontSize: fontSize.sm,
   },
   errorText: {
     color: colors.redLight,
-    fontSize: 12,
-    marginBottom: 10,
+    fontSize: fontSize.sm,
+    marginBottom: spacing.md,
   },
-  followCard: {
-    borderRadius: 10,
+  liqCard: {
+    borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.cardBorder,
     backgroundColor: colors.surface,
-    padding: 10,
-    marginBottom: 12,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  liqHint: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginBottom: spacing.sm,
+  },
+  liqSummaryRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  liqSummaryItem: {
+    flex: 1,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.card,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+  },
+  liqSummaryTitle: {
+    color: colors.white,
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+  },
+  liqSummaryRange: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginTop: 2,
+  },
+  liqSummaryValue: {
+    color: colors.goldLight,
+    fontSize: fontSize.lg,
+    fontWeight: '800',
+    marginTop: spacing.xs,
+  },
+  liqSummarySub: {
+    color: colors.textSecondary,
+    fontSize: fontSize.xs,
+    marginTop: 2,
+  },
+  followCard: {
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surface,
+    padding: spacing.md,
+    marginBottom: spacing.md,
   },
   followTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: spacing.sm,
   },
   followTitle: {
     color: colors.white,
-    fontSize: 13,
+    fontSize: fontSize.sm,
     fontWeight: '700',
   },
   followBtn: {
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
     borderWidth: 1,
   },
   followBtnStart: {
-    backgroundColor: colors.blueBg,
-    borderColor: colors.blue,
+    backgroundColor: colors.goldBg,
+    borderColor: colors.gold,
   },
   followBtnStop: {
     backgroundColor: colors.redBg,
@@ -865,119 +1132,115 @@ const styles = StyleSheet.create({
   },
   followBtnText: {
     color: colors.white,
-    fontSize: 12,
+    fontSize: fontSize.sm,
     fontWeight: '700',
   },
   followInputRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: spacing.sm,
   },
   followInputWrap: {
     flex: 1,
   },
   followInputLabel: {
-    color: colors.textSecondary,
-    fontSize: 11,
-    marginBottom: 4,
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginBottom: spacing.xs,
   },
   followInput: {
     borderWidth: 1,
     borderColor: colors.cardBorder,
     backgroundColor: colors.card,
     color: colors.text,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 12,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    fontSize: fontSize.sm,
   },
   followHint: {
-    color: colors.textSecondary,
-    fontSize: 11,
-    marginTop: 8,
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginTop: spacing.sm,
   },
   summaryRow: {
     flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
+    gap: spacing.sm,
+    marginBottom: spacing.md,
   },
   summaryItem: {
     flex: 1,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
+    borderRadius: radius.lg,
     backgroundColor: colors.surface,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.sm,
     alignItems: 'center',
   },
   summaryValue: {
     color: colors.white,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: fontSize.lg,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
   },
   summaryLabel: {
-    color: colors.textSecondary,
-    fontSize: 11,
-    marginTop: 4,
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginTop: spacing.xs,
   },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
-    marginTop: 4,
+    marginBottom: spacing.sm,
+    marginTop: spacing.xs,
   },
   sectionTitle: {
     color: colors.white,
-    fontSize: 14,
+    fontSize: fontSize.md,
     fontWeight: '700',
   },
   sectionCount: {
-    color: colors.textSecondary,
-    fontSize: 12,
+    color: colors.textMuted,
+    fontSize: fontSize.sm,
   },
   rowCard: {
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
     backgroundColor: colors.surface,
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 8,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
   },
   rowTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: spacing.xs,
   },
   rowTitle: {
     color: colors.white,
-    fontSize: 13,
+    fontSize: fontSize.md,
     fontWeight: '700',
   },
   rowSub: {
     color: colors.textSecondary,
-    fontSize: 12,
-    marginTop: 3,
+    fontSize: fontSize.sm,
+    marginTop: 2,
   },
   sideTag: {
-    fontSize: 12,
+    fontSize: fontSize.sm,
     fontWeight: '700',
   },
   statusTag: {
-    fontSize: 12,
+    fontSize: fontSize.sm,
     fontWeight: '700',
   },
   emptyBox: {
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
+    borderRadius: radius.lg,
     backgroundColor: colors.surface,
-    paddingVertical: 20,
+    paddingVertical: spacing.xl,
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: spacing.md,
   },
   emptyText: {
-    color: colors.textSecondary,
-    fontSize: 12,
+    color: colors.textMuted,
+    fontSize: fontSize.sm,
   },
 });

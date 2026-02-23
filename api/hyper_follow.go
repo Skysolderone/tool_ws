@@ -370,7 +370,7 @@ func (t *hyperFollowTask) handleUpstreamMessage(raw []byte) {
 
 func (t *hyperFollowTask) handleFills(fills []map[string]interface{}) {
 	for _, fill := range fills {
-		if !isBTCFill(fill) {
+		if !t.isTargetCoinFill(fill) {
 			continue
 		}
 
@@ -438,6 +438,18 @@ func (t *hyperFollowTask) executeOpen(fill map[string]interface{}, side, positio
 		cfg.Leverage,
 		orderID,
 	)
+
+	// 广播跟单执行事件给监控面板
+	BroadcastFollowEvent(cfg.Address, map[string]any{
+		"action":       "open",
+		"symbol":       cfg.Symbol,
+		"side":         side,
+		"positionSide": positionSide,
+		"quoteQty":     cfg.QuoteQuantity,
+		"leverage":     cfg.Leverage,
+		"orderId":      orderID,
+		"time":         time.Now().UnixMilli(),
+	})
 }
 
 func (t *hyperFollowTask) executeClose(fill map[string]interface{}, positionSide string) {
@@ -461,6 +473,14 @@ func (t *hyperFollowTask) executeClose(fill map[string]interface{}, positionSide
 
 	t.markExecuted()
 	log.Printf("[HyperFollow] Close executed for %s: %s %s", cfg.Address, cfg.Symbol, positionSide)
+
+	// 广播跟单平仓事件给监控面板
+	BroadcastFollowEvent(cfg.Address, map[string]any{
+		"action":       "close",
+		"symbol":       cfg.Symbol,
+		"positionSide": positionSide,
+		"time":         time.Now().UnixMilli(),
+	})
 }
 
 func (t *hyperFollowTask) getConfig() HyperFollowConfig {
@@ -507,9 +527,36 @@ func (t *hyperFollowTask) markFillSeen(fillKey string, ts int64) bool {
 	return false
 }
 
-func isBTCFill(fill map[string]interface{}) bool {
+// isTargetCoinFill 根据配置的 Symbol 动态匹配 fill 的 coin 字段
+// 例如 Symbol="BTCUSDT" 匹配 coin 前缀 "BTC"
+// Symbol="ETHUSDT" 匹配 coin 前缀 "ETH"
+func (t *hyperFollowTask) isTargetCoinFill(fill map[string]interface{}) bool {
 	coin := strings.ToUpper(strings.TrimSpace(parseAnyString(fill["coin"])))
-	return strings.HasPrefix(coin, "BTC")
+	if coin == "" {
+		return false
+	}
+	cfg := t.getConfig()
+	// 从 Symbol 中提取基础币种（去掉 USDT/BUSD/USDC 等后缀）
+	target := extractBaseCoin(cfg.Symbol)
+	if target == "" {
+		return false
+	}
+	return strings.HasPrefix(coin, target)
+}
+
+// extractBaseCoin 从交易对符号中提取基础币种
+// 如 "BTCUSDT" -> "BTC", "1000PEPEUSDT" -> "1000PEPE", "ETHBUSD" -> "ETH"
+func extractBaseCoin(symbol string) string {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	for _, quote := range []string{"USDT", "BUSD", "USDC", "USD"} {
+		if strings.HasSuffix(symbol, quote) {
+			base := strings.TrimSuffix(symbol, quote)
+			if base != "" {
+				return base
+			}
+		}
+	}
+	return symbol
 }
 
 func fillAction(fill map[string]interface{}) string {

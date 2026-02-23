@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Modal, FlatList,
 } from 'react-native';
-import { colors } from '../services/theme';
+import { colors, spacing, radius, fontSize } from '../services/theme';
 
 // 常用合约交易对
 const POPULAR_SYMBOLS = [
@@ -115,105 +115,109 @@ export default function SymbolPicker({ symbol, onChangeSymbol }) {
 }
 
 const styles = StyleSheet.create({
-  container: { marginBottom: 12 },
+  container: { marginBottom: 0 },
   chip: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: colors.blue,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+    backgroundColor: colors.goldBg,
+    borderWidth: 1,
+    borderColor: 'rgba(212,165,74,0.3)',
   },
-  chipText: { color: colors.white, fontSize: 15, fontWeight: 'bold' },
-  arrow: { color: colors.white, fontSize: 11 },
+  chipStatic: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  chipText: { color: colors.white, fontSize: fontSize.lg, fontWeight: '800' },
+  arrow: { color: colors.goldLight, fontSize: fontSize.xs, marginLeft: spacing.xs },
 
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'center',
-    padding: 20,
+    padding: spacing.xl,
   },
   modal: {
     backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 16,
+    borderRadius: radius.xxl,
+    padding: spacing.xl,
     maxHeight: '80%',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: colors.white,
-    textAlign: 'center',
-    marginBottom: 12,
-  },
-  searchInput: {
-    backgroundColor: colors.bg,
-    borderRadius: 8,
-    padding: 10,
-    color: colors.white,
     borderWidth: 1,
     borderColor: colors.cardBorder,
-    fontSize: 14,
-    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: fontSize.xl,
+    fontWeight: '800',
+    color: colors.white,
+    textAlign: 'center',
+    marginBottom: spacing.lg,
+  },
+  searchInput: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    color: colors.white,
+    fontSize: fontSize.md,
+    marginBottom: spacing.md,
   },
   list: {
     maxHeight: 300,
   },
   gridRow: {
-    gap: 8,
-    marginBottom: 8,
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
   },
   symbolBtn: {
     flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
     alignItems: 'center',
     backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
   },
   symbolBtnActive: {
-    backgroundColor: colors.blue,
-    borderColor: colors.blue,
+    backgroundColor: colors.gold,
   },
   symbolText: {
     color: colors.textSecondary,
-    fontSize: 13,
+    fontSize: fontSize.sm,
     fontWeight: '600',
   },
   symbolTextActive: {
     color: colors.white,
+    fontWeight: '700',
   },
   emptyText: {
     color: colors.textMuted,
     textAlign: 'center',
-    paddingVertical: 20,
+    paddingVertical: spacing.xl,
+    fontSize: fontSize.sm,
   },
   customRow: {
     flexDirection: 'row',
-    gap: 8,
-    marginTop: 12,
+    gap: spacing.sm,
+    marginTop: spacing.md,
   },
   customInput: {
     flex: 1,
-    backgroundColor: colors.bg,
-    borderRadius: 8,
-    padding: 10,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: spacing.md,
     color: colors.white,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-    fontSize: 14,
+    fontSize: fontSize.md,
   },
   customBtn: {
-    backgroundColor: colors.blue,
-    borderRadius: 8,
-    paddingHorizontal: 16,
+    backgroundColor: colors.gold,
+    borderRadius: radius.lg,
+    paddingHorizontal: spacing.xl,
     justifyContent: 'center',
   },
   customBtnText: {
     color: colors.white,
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: fontSize.md,
+    fontWeight: '700',
   },
 });

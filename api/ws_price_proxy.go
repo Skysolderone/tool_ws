@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -83,6 +84,7 @@ type bookRoom struct {
 	key      string
 	symbol   string
 	levels   int
+	step     float64 // 价格聚合步长，0 表示不聚合
 	clients  map[*wsClient]bool
 	stopC    chan struct{}
 	running  bool
@@ -518,17 +520,81 @@ func topLevels(side map[string]string, levels int, desc bool) []BookLevel {
 	return out
 }
 
-func (ob *localOrderBook) toBookMsg(symbol string, levels int, ts int64) *BookMsg {
+func (ob *localOrderBook) toBookMsg(symbol string, levels int, step float64, ts int64) *BookMsg {
 	if ts == 0 {
 		ts = time.Now().UnixMilli()
+	}
+	bids := topLevels(ob.bids, levels, true)
+	asks := topLevels(ob.asks, levels, false)
+	if step > 0 {
+		bids = aggregateLevels(ob.bids, step, levels, true)
+		asks = aggregateLevels(ob.asks, step, levels, false)
 	}
 	return &BookMsg{
 		Type:   "book",
 		Symbol: symbol,
 		Time:   ts,
-		Bids:   topLevels(ob.bids, levels, true),
-		Asks:   topLevels(ob.asks, levels, false),
+		Bids:   bids,
+		Asks:   asks,
 	}
+}
+
+// aggregateLevels 按价格步长聚合订单簿档位
+// desc=true: 买盘（从高到低）; desc=false: 卖盘（从低到高）
+func aggregateLevels(side map[string]string, step float64, levels int, desc bool) []BookLevel {
+	if step <= 0 || len(side) == 0 {
+		return topLevels(side, levels, desc)
+	}
+
+	buckets := make(map[float64]float64) // bucketPrice -> totalQty
+	for rawPrice, rawQty := range side {
+		p, err := strconv.ParseFloat(rawPrice, 64)
+		if err != nil || p <= 0 {
+			continue
+		}
+		q, err := strconv.ParseFloat(rawQty, 64)
+		if err != nil || q <= 0 {
+			continue
+		}
+		var bucket float64
+		if desc {
+			// 买盘：向下取整到步长
+			bucket = math.Floor(p/step) * step
+		} else {
+			// 卖盘：向上取整到步长
+			bucket = math.Ceil(p/step) * step
+		}
+		buckets[bucket] += q
+	}
+
+	items := make([]pricedLevel, 0, len(buckets))
+	for bp, qty := range buckets {
+		if qty <= 0 {
+			continue
+		}
+		items = append(items, pricedLevel{
+			price: bp,
+			qty:   strconv.FormatFloat(qty, 'f', -1, 64),
+			raw:   strconv.FormatFloat(bp, 'f', -1, 64),
+		})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		if desc {
+			return items[i].price > items[j].price
+		}
+		return items[i].price < items[j].price
+	})
+
+	if len(items) > levels {
+		items = items[:levels]
+	}
+
+	out := make([]BookLevel, 0, len(items))
+	for _, it := range items {
+		out = append(out, BookLevel{Price: it.raw, Qty: it.qty})
+	}
+	return out
 }
 
 func cloneDepthEvent(event *futures.WsDepthEvent) *futures.WsDepthEvent {
@@ -582,15 +648,34 @@ func normalizeBookLevels(levels int) int {
 	return 20
 }
 
-func bookRoomKey(symbol string, levels int) string {
-	return fmt.Sprintf("%s:%d", strings.ToUpper(symbol), normalizeBookLevels(levels))
+func bookRoomKey(symbol string, levels int, step float64) string {
+	return fmt.Sprintf("%s:%d:%.4f", strings.ToUpper(symbol), normalizeBookLevels(levels), step)
+}
+
+func normalizeStep(step float64) float64 {
+	if step <= 0 {
+		return 0
+	}
+	// 允许 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100
+	allowed := []float64{0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100}
+	best := 0.0
+	for _, a := range allowed {
+		if step >= a {
+			best = a
+		}
+	}
+	if best == 0 {
+		return allowed[0]
+	}
+	return best
 }
 
 // getOrCreateRoom 获取或创建订单簿房间
-func (h *bookHub) getOrCreateRoom(symbol string, levels int) *bookRoom {
+func (h *bookHub) getOrCreateRoom(symbol string, levels int, step float64) *bookRoom {
 	sym := strings.ToUpper(symbol)
 	lv := normalizeBookLevels(levels)
-	key := bookRoomKey(sym, lv)
+	st := normalizeStep(step)
+	key := bookRoomKey(sym, lv, st)
 
 	h.mu.RLock()
 	room, ok := h.symbols[key]
@@ -610,6 +695,7 @@ func (h *bookHub) getOrCreateRoom(symbol string, levels int) *bookRoom {
 		key:     key,
 		symbol:  sym,
 		levels:  lv,
+		step:    st,
 		clients: make(map[*wsClient]bool),
 		stopC:   make(chan struct{}),
 	}
@@ -618,8 +704,8 @@ func (h *bookHub) getOrCreateRoom(symbol string, levels int) *bookRoom {
 }
 
 // subscribe 客户端订阅某 symbol 的订单簿
-func (h *bookHub) subscribe(symbol string, levels int, client *wsClient) string {
-	room := h.getOrCreateRoom(symbol, levels)
+func (h *bookHub) subscribe(symbol string, levels int, step float64, client *wsClient) string {
+	room := h.getOrCreateRoom(symbol, levels, step)
 
 	room.mu.Lock()
 	room.clients[client] = true
@@ -790,7 +876,7 @@ func (h *bookHub) startBookStream(room *bookRoom) {
 				if event.FirstUpdateID <= ob.lastUpdateID && ob.lastUpdateID <= event.LastUpdateID {
 					ob.applyEvent(event)
 					synced = true
-					h.broadcastBook(room, ob.toBookMsg(room.symbol, room.levels, event.Time))
+					h.broadcastBook(room, ob.toBookMsg(room.symbol, room.levels, room.step, event.Time))
 				}
 			case <-time.After(10 * time.Second):
 				log.Printf("[WsBook] Wait first bridge event timeout for %s, resyncing", room.symbol)
@@ -842,7 +928,7 @@ func (h *bookHub) startBookStream(room *bookRoom) {
 				}
 
 				ob.applyEvent(event)
-				h.broadcastBook(room, ob.toBookMsg(room.symbol, room.levels, event.Time))
+				h.broadcastBook(room, ob.toBookMsg(room.symbol, room.levels, room.step, event.Time))
 			}
 		}
 
@@ -916,6 +1002,16 @@ func handleWsBook(w http.ResponseWriter, r *http.Request) {
 		levels = v
 	}
 
+	// 价格聚合步长（可选），0 表示不聚合
+	step := 0.0
+	stepStr := r.URL.Query().Get("step")
+	if stepStr != "" {
+		v, err := strconv.ParseFloat(stepStr, 64)
+		if err == nil && v > 0 {
+			step = normalizeStep(v)
+		}
+	}
+
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[WsBook] Upgrade failed: %v", err)
@@ -923,7 +1019,7 @@ func handleWsBook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := newWsClient(conn)
-	roomKey := obHub.subscribe(symbol, levels, client)
+	roomKey := obHub.subscribe(symbol, levels, step, client)
 
 	go client.writePump()
 	go client.readPumpBook(roomKey)
@@ -935,8 +1031,10 @@ func StartWsPriceServer(port int) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/price", handleWsPrice)
 	mux.HandleFunc("/ws/book", handleWsBook)
+	mux.HandleFunc("/ws/big-trade", handleWsBigTrade)
 	mux.HandleFunc("/ws/news", handleWsNews)
 	mux.HandleFunc("/ws/hyper-monitor", handleWsHyperMonitor)
+	mux.HandleFunc("/ws/liquidation-stats", handleWsLiquidationStats)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	log.Printf("[WsProxy] Price WebSocket server starting on %s", addr)

@@ -22,7 +22,7 @@ type PatternType string
 
 const (
 	PatternNone         PatternType = "NONE"
-	PatternDoji         PatternType = "DOJI"         // 十字星：实体极小
+	PatternDoji         PatternType = "DOJI"          // 十字星：实体极小
 	PatternHammer       PatternType = "HAMMER"        // 锤子线：下影线长，实体在上部（看涨）
 	PatternShootingStar PatternType = "SHOOTING_STAR" // 射击之星：上影线长，实体在下部（看跌）
 	PatternEngulfBull   PatternType = "ENGULF_BULL"   // 看涨吞没：阳线吞没前一阴线
@@ -38,26 +38,26 @@ type DojiConfig struct {
 	Interval string `json:"interval"` // 1m, 5m, 15m, 30m, 1h, 4h
 
 	// 形态参数
-	BodyRatio     float64 `json:"bodyRatio"`     // 十字星: 实体/全长 <= 此值视为十字星，默认 0.1 (10%)
-	ShadowRatio   float64 `json:"shadowRatio"`   // 锤子/射击之星: 影线/实体 >= 此值，默认 2.0
-	EnableDoji    bool    `json:"enableDoji"`    // 启用十字星，默认 true
-	EnableHammer  bool    `json:"enableHammer"`  // 启用锤子线/射击之星，默认 true
-	EnableEngulf  bool    `json:"enableEngulf"`  // 启用吞没形态，默认 true
+	BodyRatio    float64 `json:"bodyRatio"`    // 十字星: 实体/全长 <= 此值视为十字星，默认 0.1 (10%)
+	ShadowRatio  float64 `json:"shadowRatio"`  // 锤子/射击之星: 影线/实体 >= 此值，默认 2.0
+	EnableDoji   bool    `json:"enableDoji"`   // 启用十字星，默认 true
+	EnableHammer bool    `json:"enableHammer"` // 启用锤子线/射击之星，默认 true
+	EnableEngulf bool    `json:"enableEngulf"` // 启用吞没形态，默认 true
 
 	// 趋势确认
 	TrendBars     int     `json:"trendBars"`     // 用前 N 根 K 线判断趋势，默认 5
 	TrendStrength float64 `json:"trendStrength"` // 趋势最小涨跌幅(%)，默认 0.3
 
 	// 可选 RSI 过滤
-	EnableRSI      bool    `json:"enableRsi"`      // 是否启用 RSI 辅助过滤，默认 false
-	RSIPeriod      int     `json:"rsiPeriod"`      // RSI 周期，默认 14
-	RSIOverbought  float64 `json:"rsiOverbought"`  // 空信号需 RSI >= 此值，默认 65
-	RSIOversold    float64 `json:"rsiOversold"`    // 多信号需 RSI <= 此值，默认 35
+	EnableRSI     bool    `json:"enableRsi"`     // 是否启用 RSI 辅助过滤，默认 false
+	RSIPeriod     int     `json:"rsiPeriod"`     // RSI 周期，默认 14
+	RSIOverbought float64 `json:"rsiOverbought"` // 空信号需 RSI >= 此值，默认 65
+	RSIOversold   float64 `json:"rsiOversold"`   // 多信号需 RSI <= 此值，默认 35
 
 	// 成交量过滤
-	EnableVolume  bool    `json:"enableVolume"`  // 是否启用成交量过滤，默认 false
-	VolumePeriod  int     `json:"volumePeriod"`  // 均量周期，默认 20
-	VolumeMulti   float64 `json:"volumeMulti"`   // 量比阈值，默认 1.2
+	EnableVolume bool    `json:"enableVolume"` // 是否启用成交量过滤，默认 false
+	VolumePeriod int     `json:"volumePeriod"` // 均量周期，默认 20
+	VolumeMulti  float64 `json:"volumeMulti"`  // 量比阈值，默认 1.2
 
 	// 下单参数
 	AmountPerOrder string `json:"amountPerOrder"` // 每次投入(USDT)
@@ -70,19 +70,19 @@ type DojiConfig struct {
 
 // DojiStatus 策略状态（返回前端）
 type DojiStatus struct {
-	Config       DojiConfig  `json:"config"`
-	Active       bool        `json:"active"`
-	LastPattern  string      `json:"lastPattern"`  // 最近识别的形态
-	TrendDir     string      `json:"trendDir"`     // UP / DOWN / FLAT
-	LastSignal   string      `json:"lastSignal"`   // BUY / SELL / NONE
-	SignalTime   string      `json:"signalTime"`
-	CurrentRSI   float64     `json:"currentRsi,omitempty"`
-	VolRatio     float64     `json:"volRatio,omitempty"`
-	OpenTrades   int         `json:"openTrades"`
-	TotalTrades  int         `json:"totalTrades"`
-	TotalPnl     float64     `json:"totalPnl"`
-	LastError    string      `json:"lastError"`
-	LastCheckAt  string      `json:"lastCheckAt"`
+	Config      DojiConfig `json:"config"`
+	Active      bool       `json:"active"`
+	LastPattern string     `json:"lastPattern"` // 最近识别的形态
+	TrendDir    string     `json:"trendDir"`    // UP / DOWN / FLAT
+	LastSignal  string     `json:"lastSignal"`  // BUY / SELL / NONE
+	SignalTime  string     `json:"signalTime"`
+	CurrentRSI  float64    `json:"currentRsi,omitempty"`
+	VolRatio    float64    `json:"volRatio,omitempty"`
+	OpenTrades  int        `json:"openTrades"`
+	TotalTrades int        `json:"totalTrades"`
+	TotalPnl    float64    `json:"totalPnl"`
+	LastError   string     `json:"lastError"`
+	LastCheckAt string     `json:"lastCheckAt"`
 }
 
 type dojiState struct {
@@ -578,6 +578,7 @@ func dojiOpenPosition(ctx context.Context, state *dojiState, signal string) {
 		signal, cfg.Symbol, state.LastPattern, state.TrendDir, cfg.AmountPerOrder)
 
 	req := PlaceOrderReq{
+		Source:        "strategy_doji",
 		Symbol:        cfg.Symbol,
 		Side:          side,
 		OrderType:     futures.OrderTypeMarket,
@@ -619,6 +620,7 @@ func dojiOpenPosition(ctx context.Context, state *dojiState, signal string) {
 			return
 		}
 		record := &TradeRecord{
+			Source:        "strategy_doji",
 			Symbol:        cfg.Symbol,
 			Side:          string(side),
 			PositionSide:  string(posSide),

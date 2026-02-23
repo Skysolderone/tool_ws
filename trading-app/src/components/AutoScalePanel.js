@@ -10,7 +10,7 @@ import {
   Switch,
 } from 'react-native';
 import api from '../services/api';
-import { colors } from '../services/theme';
+import { colors, spacing, radius, fontSize } from '../services/theme';
 
 export default function AutoScalePanel({ symbol }) {
   const [showModal, setShowModal] = useState(false);
@@ -87,8 +87,11 @@ export default function AutoScalePanel({ symbol }) {
 
   return (
     <View style={styles.panel}>
-      <View style={styles.header}>
-        <Text style={styles.title}>浮盈加仓</Text>
+      <View style={styles.titleRow}>
+        <View style={styles.titleContent}>
+          <View style={[styles.statusDot, { backgroundColor: status?.active ? colors.green : colors.textMuted }]} />
+          <Text style={styles.title}>浮盈加仓</Text>
+        </View>
         {status?.active ? (
           <TouchableOpacity style={styles.stopBtn} onPress={handleStop}>
             <Text style={styles.btnText}>关闭</Text>
@@ -147,7 +150,7 @@ export default function AutoScalePanel({ symbol }) {
               {['amount', 'percent'].map((t) => (
                 <TouchableOpacity
                   key={t}
-                  style={[styles.toggleBtn, config.triggerType === t && styles.blueActive]}
+                  style={[styles.toggleBtn, config.triggerType === t && styles.goldActive]}
                   onPress={() => updateConfig('triggerType', t)}
                 >
                   <Text style={[styles.toggleText, config.triggerType === t && styles.toggleTextActive]}>
@@ -215,7 +218,7 @@ export default function AutoScalePanel({ symbol }) {
               <Switch
                 value={config.updateTPSL}
                 onValueChange={(v) => updateConfig('updateTPSL', v)}
-                trackColor={{ true: colors.blue }}
+                trackColor={{ true: colors.gold }}
               />
             </View>
 
@@ -266,67 +269,81 @@ export default function AutoScalePanel({ symbol }) {
 const styles = StyleSheet.create({
   panel: {
     backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
     borderWidth: 1,
     borderColor: colors.cardBorder,
   },
-  header: {
+  titleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: spacing.lg,
   },
-  title: { fontSize: 18, fontWeight: 'bold', color: colors.white },
+  titleContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: spacing.sm,
+  },
+  title: { fontSize: fontSize.lg, fontWeight: '700', color: colors.white },
   startBtn: {
     backgroundColor: colors.green,
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 6,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
   },
   stopBtn: {
     backgroundColor: colors.red,
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 6,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
   },
-  btnText: { color: colors.white, fontWeight: '600', fontSize: 13 },
+  btnText: { color: colors.white, fontWeight: '700', fontSize: fontSize.sm },
 
   statusBox: {
-    backgroundColor: colors.bg,
-    padding: 10,
-    borderRadius: 8,
-    marginTop: 4,
+    backgroundColor: colors.surface,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    marginTop: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
   },
-  statusText: { color: colors.greenLight, fontSize: 13, marginBottom: 2 },
+  statusText: { color: colors.textSecondary, fontSize: fontSize.sm, marginBottom: spacing.xs },
 
   // Modal
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'flex-end',
+    padding: spacing.lg,
   },
   modal: {
     backgroundColor: colors.card,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
+    borderTopLeftRadius: radius.xxl,
+    borderTopRightRadius: radius.xxl,
+    padding: spacing.xl,
     maxHeight: '85%',
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: fontSize.xl,
+    fontWeight: '800',
     color: colors.white,
-    marginBottom: 16,
+    marginBottom: spacing.xl,
     textAlign: 'center',
   },
 
-  row: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  row: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.md },
   toggleBtn: {
     flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
+    paddingVertical: spacing.md,
+    borderRadius: radius.lg,
     alignItems: 'center',
     backgroundColor: colors.surface,
     borderWidth: 1,
@@ -334,33 +351,33 @@ const styles = StyleSheet.create({
   },
   buyActive: { backgroundColor: colors.green, borderColor: colors.green },
   sellActive: { backgroundColor: colors.red, borderColor: colors.red },
-  blueActive: { backgroundColor: colors.blue, borderColor: colors.blue },
+  goldActive: { backgroundColor: colors.gold, borderColor: colors.gold },
   toggleText: { color: colors.textSecondary, fontWeight: '600' },
   toggleTextActive: { color: colors.white },
 
   halfInput: { flex: 1 },
-  inputRow: { marginBottom: 12 },
-  inputLabel: { color: colors.textSecondary, fontSize: 12, marginBottom: 4 },
+  inputRow: { marginBottom: spacing.md },
+  inputLabel: { color: colors.textSecondary, fontSize: fontSize.sm, marginBottom: spacing.xs },
   input: {
-    backgroundColor: colors.bg,
-    borderRadius: 8,
-    padding: 10,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.md,
     color: colors.white,
     borderWidth: 1,
     borderColor: colors.cardBorder,
-    fontSize: 15,
+    fontSize: fontSize.md,
   },
 
   switchRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: spacing.md,
   },
 
-  modalBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  modalBtn: { flex: 1, paddingVertical: spacing.md, borderRadius: radius.lg, alignItems: 'center' },
   cancelBtn: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.cardBorder },
-  cancelBtnText: { color: colors.textSecondary, fontWeight: '600', fontSize: 15 },
+  cancelBtnText: { color: colors.textSecondary, fontWeight: '600', fontSize: fontSize.md },
   confirmBtn: { backgroundColor: colors.green },
-  confirmBtnText: { color: colors.white, fontWeight: '600', fontSize: 15 },
+  confirmBtnText: { color: colors.white, fontWeight: '800', fontSize: fontSize.md },
 });

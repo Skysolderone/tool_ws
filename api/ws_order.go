@@ -16,18 +16,26 @@ import (
 // 如果设置了 stopLossPrice + riskReward，主单成交后自动挂止盈止损单
 // 返回 *PlaceOrderResult 包含主单和可选的止盈止损单
 func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult, error) {
+	recordFailure := func(action string, opErr error, relatedOrderID int64) {
+		SaveFailedOperation(action, req.Source, req.Symbol, req, relatedOrderID, opErr)
+	}
+	fail := func(action string, opErr error) (*PlaceOrderResult, error) {
+		recordFailure(action, opErr, 0)
+		return nil, opErr
+	}
+
 	// 验证必填字段
 	if req.QuoteQuantity == "" {
-		return nil, fmt.Errorf("quoteQuantity is required")
+		return fail("PLACE_ORDER", fmt.Errorf("quoteQuantity is required"))
 	}
 	if req.Leverage == 0 {
-		return nil, fmt.Errorf("leverage is required")
+		return fail("PLACE_ORDER", fmt.Errorf("leverage is required"))
 	}
 	if req.Side == "" {
-		return nil, fmt.Errorf("side is required")
+		return fail("PLACE_ORDER", fmt.Errorf("side is required"))
 	}
 	if req.OrderType == "" {
-		return nil, fmt.Errorf("ordertype is required")
+		return fail("PLACE_ORDER", fmt.Errorf("ordertype is required"))
 	}
 
 	// 验证止盈止损参数
@@ -38,13 +46,13 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 	needTPSL := (hasStopPrice || hasStopAmount) && hasRatio
 
 	if hasStopPrice && hasStopAmount {
-		return nil, fmt.Errorf("stopLossPrice and stopLossAmount cannot be set at the same time, use one")
+		return fail("PLACE_ORDER", fmt.Errorf("stopLossPrice and stopLossAmount cannot be set at the same time, use one"))
 	}
 	if (hasStopPrice || hasStopAmount) && !hasRatio {
-		return nil, fmt.Errorf("riskReward is required when stopLossPrice or stopLossAmount is set")
+		return fail("PLACE_ORDER", fmt.Errorf("riskReward is required when stopLossPrice or stopLossAmount is set"))
 	}
 	if hasRatio && !hasStopPrice && !hasStopAmount {
-		return nil, fmt.Errorf("stopLossPrice or stopLossAmount is required when riskReward is set")
+		return fail("PLACE_ORDER", fmt.Errorf("stopLossPrice or stopLossAmount is required when riskReward is set"))
 	}
 
 	// 如果未指定 positionSide，默认使用 BOTH（单向持仓模式）
@@ -55,14 +63,14 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 	// 先调整该交易对的杠杆倍数
 	_, err := ChangeLeverage(ctx, req.Symbol, req.Leverage)
 	if err != nil {
-		return nil, fmt.Errorf("change leverage: %w", err)
+		return fail("PLACE_ORDER", fmt.Errorf("change leverage: %w", err))
 	}
 	log.Printf("[WsOrder] Leverage set to %dx for %s", req.Leverage, req.Symbol)
 
 	// 根据 USDT 金额和杠杆计算代币数量
 	quantity, err := calculateQuantityFromUSDT(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("calculate quantity: %w", err)
+		return fail("PLACE_ORDER", fmt.Errorf("calculate quantity: %w", err))
 	}
 
 	// 尝试 WebSocket 下单
@@ -85,7 +93,7 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 	if mainOrder == nil {
 		mainOrder, err = restPlaceOrder(ctx, req, quantity)
 		if err != nil {
-			return nil, err
+			return fail("PLACE_ORDER", err)
 		}
 	}
 
@@ -104,18 +112,28 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 			entryPrice, parseErr = getCurrentPrice(ctx, req.Symbol, "")
 			if parseErr != nil {
 				log.Printf("[TPSL] Warning: cannot determine entry price, skip TP/SL: %v", parseErr)
+				recordFailure("PLACE_TPSL", fmt.Errorf("cannot determine entry price: %w", parseErr), mainOrder.OrderID)
 				return result, nil
 			}
 		}
 
+		// 清空 combo TP 临时结果
+		lastComboTPResults = nil
+
 		tp, sl, tpslErr := PlaceTPSLOrders(ctx, req, entryPrice, quantity)
 		if tpslErr != nil {
 			log.Printf("[TPSL] Warning: failed to place TP/SL orders: %v", tpslErr)
-			// 主单已成功，止盈止损失败不算整体失败，返回主单结果 + 错误信息
+			recordFailure("PLACE_TPSL", tpslErr, mainOrder.OrderID)
 			return result, nil
 		}
 		result.TakeProfit = tp
 		result.StopLoss = sl
+
+		// 如果是阶梯止盈，设置完整的 TP 列表
+		if len(lastComboTPResults) > 0 {
+			result.TakeProfits = lastComboTPResults
+			lastComboTPResults = nil
+		}
 	}
 
 	return result, nil

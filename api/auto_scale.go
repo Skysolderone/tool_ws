@@ -251,6 +251,7 @@ func executeScaleIn(ctx context.Context, state *autoScaleState) error {
 
 	// 构建加仓请求（不带止盈止损，TP/SL单独处理）
 	scaleReq := PlaceOrderReq{
+		Source:        "strategy_autoscale",
 		Symbol:        cfg.Symbol,
 		Side:          cfg.Side,
 		OrderType:     futures.OrderTypeMarket,

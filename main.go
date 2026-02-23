@@ -69,13 +69,19 @@ func main() {
 		apiGroup.POST("/leverage", api.HandleChangeLeverage)
 		apiGroup.POST("/reduce", api.HandleReducePosition)
 		apiGroup.POST("/close", api.HandleClosePosition)
+		apiGroup.POST("/reverse", api.HandleReversePosition)
 
 		// 交易记录
 		apiGroup.GET("/trades", api.HandleGetTrades)
 		apiGroup.GET("/operations", api.HandleGetOperations)
+		apiGroup.GET("/liquidation/history", api.HandleGetLiquidationHistory)
+		apiGroup.GET("/analytics/journal", api.HandleGetAnalyticsJournal)
+		apiGroup.GET("/analytics/attribution", api.HandleGetAnalyticsAttribution)
+		apiGroup.GET("/analytics/sentiment", api.HandleGetAnalyticsSentiment)
 		apiGroup.POST("/hyper/follow/start", api.HandleStartHyperFollow)
 		apiGroup.POST("/hyper/follow/stop", api.HandleStopHyperFollow)
 		apiGroup.GET("/hyper/follow/status", api.HandleHyperFollowStatus)
+		apiGroup.GET("/hyper/positions", api.HandleGetHyperPositions)
 
 		// 浮盈加仓
 		apiGroup.POST("/autoscale/start", api.HandleStartAutoScale)

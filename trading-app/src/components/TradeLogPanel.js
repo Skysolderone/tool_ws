@@ -8,9 +8,23 @@ import {
   ScrollView,
 } from 'react-native';
 import api from '../services/api';
-import { colors } from '../services/theme';
+import { colors, spacing, radius, fontSize } from '../services/theme';
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
+const ACTION_LABELS = {
+  PLACE_ORDER: '下单',
+  PLACE_TPSL: '挂止盈止损',
+};
+const SOURCE_LABELS = {
+  manual: '手动',
+  strategy_doji: '形态策略',
+  strategy_signal: '信号策略',
+  strategy_dca: '定投策略',
+  strategy_grid_buy: '网格买入',
+  strategy_grid_sell: '网格卖出',
+  strategy_autoscale: '浮盈加仓',
+  unknown: '未知来源',
+};
 
 // 获取某月的天数
 function getDaysInMonth(year, month) {
@@ -41,17 +55,28 @@ export default function TradeLogPanel({ symbol }) {
   const [month, setMonth] = useState(now.getMonth()); // 0-indexed
   const [selectedDate, setSelectedDate] = useState(todayKey());
   const [trades, setTrades] = useState([]);
+  const [operations, setOperations] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const fetchTrades = useCallback(async () => {
-    try {
-      const res = await api.getTrades(symbol, 200);
-      setTrades(res?.data || []);
-    } catch (e) {
-      console.warn('获取交易记录失败:', e.message);
-    } finally {
-      setLoading(false);
+    const [tradeRes, opRes] = await Promise.allSettled([
+      api.getTrades(symbol, 200),
+      api.getOperations(symbol, 'FAILED', 200),
+    ]);
+
+    if (tradeRes.status === 'fulfilled') {
+      setTrades(tradeRes.value?.data || []);
+    } else {
+      console.warn('获取交易记录失败:', tradeRes.reason?.message || String(tradeRes.reason));
     }
+
+    if (opRes.status === 'fulfilled') {
+      setOperations(opRes.value?.data || []);
+    } else {
+      console.warn('获取操作记录失败:', opRes.reason?.message || String(opRes.reason));
+    }
+
+    setLoading(false);
   }, [symbol]);
 
   useEffect(() => {
@@ -71,6 +96,18 @@ export default function TradeLogPanel({ symbol }) {
     });
     return map;
   }, [trades]);
+
+  // 操作记录按日期分组 { "2026-02-16": [op, op, ...] }
+  const opGroupedByDate = useMemo(() => {
+    const map = {};
+    operations.forEach((op) => {
+      const d = new Date(op.createdAt);
+      const key = dateKey(d);
+      if (!map[key]) map[key] = [];
+      map[key].push(op);
+    });
+    return map;
+  }, [operations]);
 
   // 每日盈亏汇总 { "2026-02-16": { pnl: 123.45, count: 3 } }
   const dailySummary = useMemo(() => {
@@ -127,12 +164,13 @@ export default function TradeLogPanel({ symbol }) {
   // 选中日期的交易
   const selectedTrades = groupedByDate[selectedDate] || [];
   const selectedDayPnl = dailySummary[selectedDate];
+  const selectedOperations = opGroupedByDate[selectedDate] || [];
 
   if (loading) {
     return (
       <View style={styles.card}>
         <Text style={styles.cardTitle}>收益日志</Text>
-        <ActivityIndicator color={colors.blue} style={{ marginTop: 20 }} />
+        <ActivityIndicator color={colors.gold} style={{ marginTop: 20 }} />
       </View>
     );
   }
@@ -209,7 +247,7 @@ export default function TradeLogPanel({ symbol }) {
               <Text style={[
                 styles.dayText,
                 isSelected && styles.dayTextSelected,
-                isToday && !isSelected && { color: colors.blue },
+                isToday && !isSelected && { color: colors.gold },
               ]}>
                 {day}
               </Text>
@@ -264,8 +302,8 @@ export default function TradeLogPanel({ symbol }) {
                         {isLong ? 'LONG' : 'SHORT'}
                       </Text>
                     </View>
-                    <View style={[styles.badge, { backgroundColor: colors.blueBg }]}>
-                      <Text style={[styles.badgeText, { color: colors.blue }]}>{item.leverage}x</Text>
+                    <View style={[styles.badge, { backgroundColor: colors.goldBg }]}>
+                      <Text style={[styles.badgeText, { color: colors.gold }]}>{item.leverage}x</Text>
                     </View>
                     <View style={[styles.badge, {
                       backgroundColor: item.status === 'OPEN' ? colors.greenBg : colors.surface,
@@ -321,6 +359,39 @@ export default function TradeLogPanel({ symbol }) {
             );
           })
         )}
+
+        <View style={styles.operationSection}>
+          <View style={styles.detailHeader}>
+            <Text style={styles.detailTitle}>{selectedDate.replace(/-/g, '/')} 操作记录</Text>
+            <Text style={styles.opHint}>仅失败</Text>
+          </View>
+
+          {selectedOperations.length === 0 ? (
+            <Text style={styles.empty}>当天无失败操作</Text>
+          ) : (
+            selectedOperations.map((item, idx) => {
+              const date = new Date(item.createdAt);
+              const timeStr = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
+              const action = ACTION_LABELS[item.action] || item.action || '未知操作';
+              const source = SOURCE_LABELS[item.source] || item.source || '未知来源';
+
+              return (
+                <View key={item.id || `${item.createdAt}-${idx}`} style={styles.opItem}>
+                  <View style={styles.opHeader}>
+                    <View style={styles.opTitleRow}>
+                      <Text style={styles.opAction}>{action}</Text>
+                      <View style={styles.opBadge}>
+                        <Text style={styles.opBadgeText}>{source}</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.tradeTime}>{timeStr}</Text>
+                  </View>
+                  <Text style={styles.opError}>{item.errorMessage || '-'}</Text>
+                </View>
+              );
+            })
+          )}
+        </View>
       </View>
     </View>
   );
@@ -329,10 +400,10 @@ export default function TradeLogPanel({ symbol }) {
 const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.card,
-    borderRadius: 12,
+    borderRadius: radius.xl,
     borderWidth: 1,
     borderColor: colors.cardBorder,
-    padding: 14,
+    padding: spacing.lg,
     marginBottom: 16,
   },
   // 月份导航
@@ -345,7 +416,7 @@ const styles = StyleSheet.create({
   navBtn: {
     width: 36,
     height: 36,
-    borderRadius: 8,
+    borderRadius: radius.md,
     backgroundColor: colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
@@ -356,29 +427,30 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   monthTitle: {
-    fontSize: 17,
-    fontWeight: '700',
+    fontSize: fontSize.xl,
+    fontWeight: '800',
     color: colors.white,
   },
   // 月统计
   monthStatsRow: {
     flexDirection: 'row',
     backgroundColor: colors.surface,
-    borderRadius: 8,
-    padding: 10,
+    borderRadius: radius.lg,
+    padding: spacing.md,
     marginBottom: 12,
+    gap: spacing.xs,
   },
   monthStatItem: {
     flex: 1,
     alignItems: 'center',
   },
   monthStatValue: {
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: fontSize.lg,
+    fontWeight: '800',
     color: colors.white,
   },
   monthStatLabel: {
-    fontSize: 10,
+    fontSize: fontSize.xs,
     color: colors.textSecondary,
     marginTop: 2,
   },
@@ -395,7 +467,7 @@ const styles = StyleSheet.create({
   weekText: {
     fontSize: 12,
     color: colors.textMuted,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   // 日历
   calendarGrid: {
@@ -408,27 +480,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 2,
-    borderRadius: 6,
+    borderRadius: radius.md,
   },
   dayCellSelected: {
-    backgroundColor: colors.blue,
+    backgroundColor: colors.gold,
   },
   dayCellToday: {
     backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: colors.blue,
+    borderColor: colors.gold,
   },
   dayText: {
     fontSize: 13,
     color: colors.text,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   dayTextSelected: {
     color: colors.white,
     fontWeight: '700',
   },
   dayPnl: {
-    fontSize: 8,
+    fontSize: fontSize.xs,
     fontWeight: '600',
     marginTop: 1,
   },
@@ -446,7 +518,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   detailTitle: {
-    fontSize: 14,
+    fontSize: fontSize.md,
     fontWeight: '700',
     color: colors.white,
   },
@@ -463,8 +535,8 @@ const styles = StyleSheet.create({
   // 交易项
   tradeItem: {
     backgroundColor: colors.surface,
-    borderRadius: 8,
-    padding: 10,
+    borderRadius: radius.lg,
+    padding: spacing.md,
     marginBottom: 8,
   },
   tradeRow: {
@@ -479,14 +551,14 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   tradeSymbol: {
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: fontSize.md,
+    fontWeight: '800',
     color: colors.white,
   },
   badge: {
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 3,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: radius.xs,
   },
   badgeText: {
     fontSize: 10,
@@ -525,5 +597,55 @@ const styles = StyleSheet.create({
   tpslText: {
     fontSize: 11,
     color: colors.textSecondary,
+  },
+  operationSection: {
+    marginTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.cardBorder,
+    paddingTop: 10,
+  },
+  opHint: {
+    fontSize: 11,
+    color: colors.textMuted,
+  },
+  opItem: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: 10,
+    marginBottom: 8,
+  },
+  opHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  opTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  opAction: {
+    fontSize: 13,
+    color: colors.white,
+    fontWeight: '700',
+  },
+  opBadge: {
+    backgroundColor: colors.goldBg,
+    borderWidth: 1,
+    borderColor: colors.gold,
+    borderRadius: radius.xs,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  opBadgeText: {
+    color: colors.gold,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  opError: {
+    fontSize: 12,
+    color: colors.redLight,
+    lineHeight: 18,
   },
 });

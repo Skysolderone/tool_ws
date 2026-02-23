@@ -300,6 +300,7 @@ func dcaExecute(ctx context.Context, state *dcaState) error {
 		state.OrderCount+1, cfg.Symbol, cfg.Side, cfg.PositionSide, cfg.AmountPerOrder)
 
 	req := PlaceOrderReq{
+		Source:        "strategy_dca",
 		Symbol:        cfg.Symbol,
 		Side:          cfg.Side,
 		OrderType:     futures.OrderTypeMarket,

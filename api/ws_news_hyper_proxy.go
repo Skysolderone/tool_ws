@@ -78,6 +78,10 @@ var (
 			Key:  "0xzx",
 			Name: "0xzx",
 			URL:  "https://0xzx.com/feed/",
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
 		},
 	}
 
@@ -90,9 +94,18 @@ var (
 	reAtomLink = regexp.MustCompile(`(?is)<link\b[^>]*href=["']([^"']+)["'][^>]*/?>`)
 	reAddress  = regexp.MustCompile(`^0x[a-fA-F0-9]{40}$`)
 
+	// 预编译的 XML tag 正则缓存
+	tagRegexCache   = make(map[string]*regexp.Regexp)
+	tagRegexCacheMu sync.RWMutex
+
 	nHub = &newsHub{
 		clients: make(map[*wsClient]bool),
 	}
+
+	// hyperMonitor 客户端注册表：address -> []*wsClient
+	// 跟单事件通过此注册表广播给正在监控同一地址的所有前端
+	hyperMonitorClients   = make(map[string]map[*wsClient]bool)
+	hyperMonitorClientsMu sync.RWMutex
 )
 
 func handleWsNews(w http.ResponseWriter, r *http.Request) {
@@ -295,6 +308,10 @@ func fetchNewsFeed(source newsFeedSource) ([]newsItem, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 兜底默认 Header，防止被目标站 403
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; NewsBot/1.0)")
+	req.Header.Set("Accept", "application/rss+xml, application/xml, text/xml, */*")
+	// 源自定义 Header 覆盖默认值
 	for k, v := range source.Headers {
 		req.Header.Set(k, v)
 	}
@@ -380,8 +397,27 @@ func extractAtomLink(block string) string {
 	return ""
 }
 
+func getTagRegex(tag string) *regexp.Regexp {
+	tagRegexCacheMu.RLock()
+	re, ok := tagRegexCache[tag]
+	tagRegexCacheMu.RUnlock()
+	if ok {
+		return re
+	}
+
+	tagRegexCacheMu.Lock()
+	defer tagRegexCacheMu.Unlock()
+	// double check
+	if re, ok = tagRegexCache[tag]; ok {
+		return re
+	}
+	re = regexp.MustCompile(`(?is)<` + regexp.QuoteMeta(tag) + `(?:\s[^>]*)?>(.*?)</` + regexp.QuoteMeta(tag) + `>`)
+	tagRegexCache[tag] = re
+	return re
+}
+
 func pickTag(block string, tag string) string {
-	pattern := regexp.MustCompile(`(?is)<` + regexp.QuoteMeta(tag) + `(?:\\s[^>]*)?>(.*?)</` + regexp.QuoteMeta(tag) + `>`)
+	pattern := getTagRegex(tag)
 	match := pattern.FindStringSubmatch(block)
 	if len(match) < 2 {
 		return ""
@@ -494,6 +530,58 @@ func readPumpNews(client *wsClient) {
 	}
 }
 
+// registerHyperMonitorClient 注册监控客户端
+func registerHyperMonitorClient(address string, client *wsClient) {
+	addr := strings.ToLower(address)
+	hyperMonitorClientsMu.Lock()
+	defer hyperMonitorClientsMu.Unlock()
+	if hyperMonitorClients[addr] == nil {
+		hyperMonitorClients[addr] = make(map[*wsClient]bool)
+	}
+	hyperMonitorClients[addr][client] = true
+}
+
+// unregisterHyperMonitorClient 注销监控客户端
+func unregisterHyperMonitorClient(address string, client *wsClient) {
+	addr := strings.ToLower(address)
+	hyperMonitorClientsMu.Lock()
+	defer hyperMonitorClientsMu.Unlock()
+	if m, ok := hyperMonitorClients[addr]; ok {
+		delete(m, client)
+		if len(m) == 0 {
+			delete(hyperMonitorClients, addr)
+		}
+	}
+}
+
+// BroadcastFollowEvent 跟单引擎调用：将执行事件推送给所有监控同一地址的前端客户端
+func BroadcastFollowEvent(address string, event map[string]any) {
+	addr := strings.ToLower(address)
+	hyperMonitorClientsMu.RLock()
+	clients := hyperMonitorClients[addr]
+	list := make([]*wsClient, 0, len(clients))
+	for c := range clients {
+		list = append(list, c)
+	}
+	hyperMonitorClientsMu.RUnlock()
+
+	if len(list) == 0 {
+		return
+	}
+
+	event["channel"] = "followEvent"
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	for _, c := range list {
+		select {
+		case c.sendCh <- raw:
+		default:
+		}
+	}
+}
+
 func handleWsHyperMonitor(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	if Cfg.Auth.Token != "" && token != Cfg.Auth.Token {
@@ -520,6 +608,8 @@ func handleWsHyperMonitor(w http.ResponseWriter, r *http.Request) {
 
 func runHyperMonitorSession(client *wsClient, address string) {
 	defer client.close()
+	registerHyperMonitorClient(address, client)
+	defer unregisterHyperMonitorClient(address, client)
 
 	snapshotReqC := make(chan struct{}, 1)
 	go readPumpHyperClient(client, snapshotReqC)

@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
 import api, { AUTH_TOKEN, WS_BOOK_BASE } from '../services/api';
-import { colors } from '../services/theme';
+import { colors, spacing, radius, fontSize } from '../services/theme';
 
 const PRICE_STEP_OPTIONS = [0.1, 1, 5, 10];
 const ROW_OPTIONS = [15, 20, 30];
 const BOOK_SNAPSHOT_LIMIT = 1000;
-const BOOK_WS_LEVELS = 1000;
+const BOOK_WS_LEVELS = 100; // 后端聚合后不需要1000档，100档足够
 
 function toNum(v) {
   const n = parseFloat(v);
@@ -104,7 +104,8 @@ export default function OrderBookPanel({ symbol }) {
 
     const connectWs = () => {
       if (!alive) return;
-      const url = `${WS_BOOK_BASE}?symbol=${symbol}&levels=${BOOK_WS_LEVELS}&token=${AUTH_TOKEN}`;
+      // 把 step 传给后端，后端聚合后再推送
+      const url = `${WS_BOOK_BASE}?symbol=${symbol}&levels=${BOOK_WS_LEVELS}&step=${priceStep}&token=${AUTH_TOKEN}`;
       ws = new WebSocket(url);
 
       ws.onopen = () => {
@@ -152,7 +153,7 @@ export default function OrderBookPanel({ symbol }) {
         ws.close();
       }
     };
-  }, [symbol]);
+  }, [symbol, priceStep]); // step 变化也重连
 
   const mergedBids = useMemo(
     () => mergeLevels(snapshotBids, liveBids, 'bid'),
@@ -163,8 +164,13 @@ export default function OrderBookPanel({ symbol }) {
     [snapshotAsks, liveAsks],
   );
 
-  const bids = useMemo(() => buildBookRows(mergedBids, priceStep, 'bid', rowCount), [mergedBids, priceStep, rowCount]);
-  const asks = useMemo(() => buildBookRows(mergedAsks, priceStep, 'ask', rowCount), [mergedAsks, priceStep, rowCount]);
+  // 后端已按 step 聚合，前端只需截取显示行数
+  const bids = useMemo(() => {
+    return mergedBids.slice(0, rowCount).map((lv) => ({ price: toNum(lv.p), qty: toNum(lv.q) }));
+  }, [mergedBids, rowCount]);
+  const asks = useMemo(() => {
+    return mergedAsks.slice(0, rowCount).map((lv) => ({ price: toNum(lv.p), qty: toNum(lv.q) }));
+  }, [mergedAsks, rowCount]);
 
   // 卖盘倒序显示（价格高的在上，低的在下靠近spread）
   const asksReversed = useMemo(() => [...asks].reverse(), [asks]);
@@ -320,9 +326,8 @@ export default function OrderBookPanel({ symbol }) {
 const styles = StyleSheet.create({
   panel: {
     backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 12,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
     borderWidth: 1,
     borderColor: colors.cardBorder,
   },
@@ -333,7 +338,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  title: { color: colors.white, fontSize: 16, fontWeight: '700' },
+  title: { color: colors.white, fontSize: fontSize.lg, fontWeight: '700' },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   online: { backgroundColor: colors.greenLight },
   offline: { backgroundColor: colors.redLight },
@@ -342,21 +347,21 @@ const styles = StyleSheet.create({
   controlRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: spacing.md,
     gap: 8,
   },
   chipGroup: { flexDirection: 'row', gap: 4 },
   chip: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 4,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.sm,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.cardBorder,
   },
-  chipActive: { backgroundColor: colors.blueBg, borderColor: colors.blue },
+  chipActive: { backgroundColor: colors.goldBg, borderColor: colors.gold },
   chipText: { color: colors.textSecondary, fontSize: 11, fontWeight: '600' },
-  chipTextActive: { color: colors.blue },
+  chipTextActive: { color: colors.gold, fontWeight: '700' },
 
   // Table header
   tableHeader: {
@@ -373,7 +378,7 @@ const styles = StyleSheet.create({
   // Rows
   row: {
     flexDirection: 'row',
-    height: 20,
+    height: 22,
     alignItems: 'center',
     position: 'relative',
     overflow: 'hidden',
@@ -405,25 +410,24 @@ const styles = StyleSheet.create({
   cellLeft: { textAlign: 'left' },
   cellRight: { textAlign: 'right' },
   dimText: { color: colors.textMuted, fontSize: 10 },
-  askPrice: { color: colors.redLight, fontWeight: '600' },
-  bidPrice: { color: colors.greenLight, fontWeight: '600' },
+  askPrice: { color: colors.redLight, fontWeight: '700' },
+  bidPrice: { color: colors.greenLight, fontWeight: '700' },
 
   // Spread
   spreadRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 6,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: colors.cardBorder,
-    marginVertical: 2,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    marginVertical: spacing.xs,
     gap: 10,
   },
   spreadPrice: {
     color: colors.white,
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontSize: fontSize.xl,
+    fontWeight: '800',
     fontVariant: ['tabular-nums'],
   },
   spreadLabel: {
@@ -434,10 +438,10 @@ const styles = StyleSheet.create({
   // Buy/Sell ratio bar
   ratioRow: {
     flexDirection: 'row',
-    height: 4,
-    borderRadius: 2,
+    height: 5,
+    borderRadius: 3,
     overflow: 'hidden',
-    marginTop: 10,
+    marginTop: spacing.md,
   },
   ratioBar: { height: '100%' },
   ratioBid: { backgroundColor: colors.greenLight },
@@ -447,5 +451,5 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginTop: 4,
   },
-  ratioText: { fontSize: 11, fontWeight: '600' },
+  ratioText: { fontSize: fontSize.xs, fontWeight: '700' },
 });

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -51,6 +52,8 @@ func InitDB() error {
 func autoMigrate() error {
 	return DB.AutoMigrate(
 		&TradeRecord{},
+		&OperationRecord{},
+		&LiquidationStatRecord{},
 	)
 }
 
@@ -58,22 +61,39 @@ func autoMigrate() error {
 
 // TradeRecord 交易记录
 type TradeRecord struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	Source           string    `gorm:"type:varchar(40);index" json:"source"` // manual / strategy_xxx / hyper_follow
+	Symbol           string    `gorm:"type:varchar(20);index" json:"symbol"`
+	Side             string    `gorm:"type:varchar(10)" json:"side"`         // BUY / SELL
+	PositionSide     string    `gorm:"type:varchar(10)" json:"positionSide"` // LONG / SHORT / BOTH
+	OrderType        string    `gorm:"type:varchar(20)" json:"orderType"`    // MARKET / LIMIT
+	OrderID          int64     `gorm:"index" json:"orderId"`
+	Quantity         string    `gorm:"type:varchar(30)" json:"quantity"`
+	Price            string    `gorm:"type:varchar(30)" json:"price"`         // 成交均价
+	QuoteQuantity    string    `gorm:"type:varchar(30)" json:"quoteQuantity"` // 下单金额 (USDT)
+	Leverage         int       `json:"leverage"`
+	StopLossPrice    string    `gorm:"type:varchar(30)" json:"stopLossPrice,omitempty"`
+	TakeProfitPrice  string    `gorm:"type:varchar(30)" json:"takeProfitPrice,omitempty"`
+	StopLossAlgoID   int64     `json:"stopLossAlgoId,omitempty"`
+	TakeProfitAlgoID int64     `json:"takeProfitAlgoId,omitempty"`
+	RealizedPnl      string    `gorm:"type:varchar(30)" json:"realizedPnl,omitempty"` // 已实现盈亏
+	CloseReason      string    `gorm:"type:varchar(40);index" json:"closeReason,omitempty"`
+	ClosedAt         *time.Time `gorm:"index" json:"closedAt,omitempty"`
+	Status           string    `gorm:"type:varchar(20);index" json:"status"`          // OPEN / CLOSED
+	CreatedAt        time.Time `gorm:"autoCreateTime" json:"createdAt"`
+	UpdatedAt        time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
+}
+
+// OperationRecord 操作记录（用于追踪失败下单等事件）
+type OperationRecord struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
 	Symbol         string    `gorm:"type:varchar(20);index" json:"symbol"`
-	Side           string    `gorm:"type:varchar(10)" json:"side"`                 // BUY / SELL
-	PositionSide   string    `gorm:"type:varchar(10)" json:"positionSide"`         // LONG / SHORT / BOTH
-	OrderType      string    `gorm:"type:varchar(20)" json:"orderType"`            // MARKET / LIMIT
-	OrderID        int64     `gorm:"index" json:"orderId"`
-	Quantity       string    `gorm:"type:varchar(30)" json:"quantity"`
-	Price          string    `gorm:"type:varchar(30)" json:"price"`                // 成交均价
-	QuoteQuantity  string    `gorm:"type:varchar(30)" json:"quoteQuantity"`        // 下单金额 (USDT)
-	Leverage       int       `json:"leverage"`
-	StopLossPrice  string    `gorm:"type:varchar(30)" json:"stopLossPrice,omitempty"`
-	TakeProfitPrice string  `gorm:"type:varchar(30)" json:"takeProfitPrice,omitempty"`
-	StopLossAlgoID  int64   `json:"stopLossAlgoId,omitempty"`
-	TakeProfitAlgoID int64  `json:"takeProfitAlgoId,omitempty"`
-	RealizedPnl    string    `gorm:"type:varchar(30)" json:"realizedPnl,omitempty"` // 已实现盈亏
-	Status         string    `gorm:"type:varchar(20);index" json:"status"`          // OPEN / CLOSED
+	Source         string    `gorm:"type:varchar(40);index" json:"source"` // manual / strategy_xxx / unknown
+	Action         string    `gorm:"type:varchar(40);index" json:"action"` // PLACE_ORDER / PLACE_TPSL
+	Status         string    `gorm:"type:varchar(20);index" json:"status"` // FAILED / SUCCESS
+	ErrorMessage   string    `gorm:"type:text" json:"errorMessage"`
+	RequestBody    string    `gorm:"type:text" json:"requestBody,omitempty"`
+	RelatedOrderID int64     `gorm:"index" json:"relatedOrderId,omitempty"`
 	CreatedAt      time.Time `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt      time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 }
@@ -82,10 +102,61 @@ type TradeRecord struct {
 
 // SaveTradeRecord 保存交易记录
 func SaveTradeRecord(record *TradeRecord) error {
-	if DB == nil {
+	if DB == nil || record == nil {
+		return nil
+	}
+	if record.Source == "" {
+		record.Source = "manual"
+	}
+	if record.Status == "" {
+		record.Status = "OPEN"
+	}
+	if record.Status == "CLOSED" && record.ClosedAt == nil {
+		now := time.Now().UTC()
+		record.ClosedAt = &now
+	}
+	return DB.Create(record).Error
+}
+
+// SaveOperationRecord 保存操作记录
+func SaveOperationRecord(record *OperationRecord) error {
+	if DB == nil || record == nil {
 		return nil
 	}
 	return DB.Create(record).Error
+}
+
+// SaveFailedOperation 保存失败操作记录
+func SaveFailedOperation(action, source, symbol string, req any, relatedOrderID int64, opErr error) {
+	if opErr == nil {
+		return
+	}
+	if source == "" {
+		source = "unknown"
+	}
+
+	reqBody := ""
+	if req != nil {
+		b, err := json.Marshal(req)
+		if err != nil {
+			reqBody = fmt.Sprintf(`{"marshalError":%q}`, err.Error())
+		} else {
+			reqBody = string(b)
+		}
+	}
+
+	record := &OperationRecord{
+		Symbol:         symbol,
+		Source:         source,
+		Action:         action,
+		Status:         "FAILED",
+		ErrorMessage:   opErr.Error(),
+		RequestBody:    reqBody,
+		RelatedOrderID: relatedOrderID,
+	}
+	if err := SaveOperationRecord(record); err != nil {
+		log.Printf("[DB] Failed to save operation record: %v", err)
+	}
 }
 
 // UpdateTradeRecord 更新交易记录
@@ -105,6 +176,26 @@ func GetTradeRecords(symbol string, limit int) ([]TradeRecord, error) {
 	q := DB.Order("created_at DESC")
 	if symbol != "" {
 		q = q.Where("symbol = ?", symbol)
+	}
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.Find(&records).Error
+	return records, err
+}
+
+// GetOperationRecords 查询操作记录
+func GetOperationRecords(symbol, status string, limit int) ([]OperationRecord, error) {
+	if DB == nil {
+		return nil, nil
+	}
+	var records []OperationRecord
+	q := DB.Order("created_at DESC")
+	if symbol != "" {
+		q = q.Where("symbol = ?", symbol)
+	}
+	if status != "" {
+		q = q.Where("status = ?", status)
 	}
 	if limit > 0 {
 		q = q.Limit(limit)

@@ -26,17 +26,17 @@ type SignalConfig struct {
 	Interval string `json:"interval"`
 
 	// RSI 参数
-	RSIPeriod      int     `json:"rsiPeriod"`      // RSI 周期，默认 14
-	RSIOverbought  float64 `json:"rsiOverbought"`  // 超买阈值，默认 70
-	RSIOversold    float64 `json:"rsiOversold"`     // 超卖阈值，默认 30
+	RSIPeriod     int     `json:"rsiPeriod"`     // RSI 周期，默认 14
+	RSIOverbought float64 `json:"rsiOverbought"` // 超买阈值，默认 70
+	RSIOversold   float64 `json:"rsiOversold"`   // 超卖阈值，默认 30
 
 	// 成交量参数
 	VolumePeriod int     `json:"volumePeriod"` // 成交量均线周期，默认 20
 	VolumeMulti  float64 `json:"volumeMulti"`  // 成交量 > 均量 × 倍数 才确认信号，默认 1.5
 
 	// 下单参数
-	AmountPerOrder string  `json:"amountPerOrder"` // 每次投入(USDT)
-	MaxPositions   int     `json:"maxPositions"`   // 最大同时持仓数，默认 1
+	AmountPerOrder string `json:"amountPerOrder"` // 每次投入(USDT)
+	MaxPositions   int    `json:"maxPositions"`   // 最大同时持仓数，默认 1
 
 	// 止盈止损
 	StopLossPercent   float64 `json:"stopLossPercent,omitempty"`   // 止损百分比，如 2 = 2%
@@ -49,19 +49,19 @@ type SignalConfig struct {
 
 // SignalStatus 策略状态
 type SignalStatus struct {
-	Config       SignalConfig `json:"config"`
-	Active       bool         `json:"active"`
-	CurrentRSI   float64      `json:"currentRsi"`
-	CurrentVol   float64      `json:"currentVol"`   // 当前成交量
-	AvgVol       float64      `json:"avgVol"`        // 平均成交量
-	VolRatio     float64      `json:"volRatio"`      // 当前量/均量
-	LastSignal   string       `json:"lastSignal"`    // BUY / SELL / NONE
-	SignalTime   string       `json:"signalTime"`    // 最近信号时间
-	OpenTrades   int          `json:"openTrades"`    // 当前持仓数
-	TotalTrades  int          `json:"totalTrades"`   // 总交易次数
-	TotalPnl     float64      `json:"totalPnl"`      // 总盈亏
-	LastError    string       `json:"lastError"`
-	LastCheckAt  string       `json:"lastCheckAt"`
+	Config      SignalConfig `json:"config"`
+	Active      bool         `json:"active"`
+	CurrentRSI  float64      `json:"currentRsi"`
+	CurrentVol  float64      `json:"currentVol"`  // 当前成交量
+	AvgVol      float64      `json:"avgVol"`      // 平均成交量
+	VolRatio    float64      `json:"volRatio"`    // 当前量/均量
+	LastSignal  string       `json:"lastSignal"`  // BUY / SELL / NONE
+	SignalTime  string       `json:"signalTime"`  // 最近信号时间
+	OpenTrades  int          `json:"openTrades"`  // 当前持仓数
+	TotalTrades int          `json:"totalTrades"` // 总交易次数
+	TotalPnl    float64      `json:"totalPnl"`    // 总盈亏
+	LastError   string       `json:"lastError"`
+	LastCheckAt string       `json:"lastCheckAt"`
 }
 
 type signalState struct {
@@ -369,6 +369,7 @@ func signalOpenPosition(ctx context.Context, state *signalState, signal string) 
 		signal, cfg.Symbol, cfg.AmountPerOrder, cfg.Leverage)
 
 	req := PlaceOrderReq{
+		Source:        "strategy_signal",
 		Symbol:        cfg.Symbol,
 		Side:          side,
 		OrderType:     futures.OrderTypeMarket,
@@ -410,6 +411,7 @@ func signalOpenPosition(ctx context.Context, state *signalState, signal string) 
 			return
 		}
 		record := &TradeRecord{
+			Source:        "strategy_signal",
 			Symbol:        cfg.Symbol,
 			Side:          string(side),
 			PositionSide:  string(posSide),

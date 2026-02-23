@@ -1,29 +1,22 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  Alert,
-  Modal,
+  View, Text, TextInput, TouchableOpacity,
+  StyleSheet, Alert, Modal,
 } from 'react-native';
 import api from '../services/api';
-import { colors } from '../services/theme';
+import { colors, spacing, radius, fontSize } from '../services/theme';
 
 export default function PositionPanel({ symbol }) {
   const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [reduceModal, setReduceModal] = useState(null); // 当前正在减仓的 position
+  const [reduceModal, setReduceModal] = useState(null);
   const [reducePercent, setReducePercent] = useState('50');
 
   const fetchPositions = useCallback(async () => {
     try {
       const data = await api.getPositions();
       setPositions(data.data || []);
-    } catch (e) {
-      // 静默失败
-    }
+    } catch (_) {}
   }, []);
 
   useEffect(() => {
@@ -32,11 +25,42 @@ export default function PositionPanel({ symbol }) {
     return () => clearInterval(timer);
   }, [fetchPositions]);
 
-  // 平仓
+  const handleReverse = (pos) => {
+    const amt = parseFloat(pos.positionAmt);
+    const direction = amt > 0 ? '多' : '空';
+    const newDirection = amt > 0 ? '空' : '多';
+    Alert.alert(
+      '一键反手',
+      `${pos.symbol} ${direction} → ${newDirection}\n将平仓并反向开仓（等值保证金）`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '确认反手',
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            try {
+              const resp = await api.reversePosition({
+                symbol: pos.symbol,
+                positionSide: pos.positionSide || '',
+              });
+              const openId = resp.data?.openOrder?.orderId || 'N/A';
+              Alert.alert('反手成功', `已反向开仓，订单ID: ${openId}`);
+              fetchPositions();
+            } catch (e) {
+              Alert.alert('反手失败', e.message);
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const handleClose = (pos) => {
     const amt = parseFloat(pos.positionAmt);
     const direction = amt > 0 ? '多' : '空';
-
     Alert.alert(
       '确认平仓',
       `${pos.symbol} ${direction} ${Math.abs(amt)} 个\n将全部市价平仓`,
@@ -65,14 +89,12 @@ export default function PositionPanel({ symbol }) {
     );
   };
 
-  // 减仓
   const handleReduce = async () => {
     if (!reduceModal) return;
     const pct = parseFloat(reducePercent);
     if (!pct || pct <= 0 || pct > 100) {
       return Alert.alert('提示', '请输入 1-100 的百分比');
     }
-
     setLoading(true);
     try {
       await api.reducePosition({
@@ -97,14 +119,17 @@ export default function PositionPanel({ symbol }) {
   return (
     <View style={styles.panel}>
       <View style={styles.header}>
-        <Text style={styles.title}>持仓 ({filtered.length})</Text>
-        <TouchableOpacity onPress={fetchPositions}>
-          <Text style={styles.refreshText}>刷新</Text>
+        <Text style={styles.title}>当前持仓</Text>
+        <TouchableOpacity onPress={fetchPositions} style={styles.refreshBtn} activeOpacity={0.7}>
+          <Text style={styles.refreshText}>🔄 刷新</Text>
         </TouchableOpacity>
       </View>
 
       {filtered.length === 0 ? (
-        <Text style={styles.emptyText}>暂无持仓</Text>
+        <View style={styles.emptyWrap}>
+          <Text style={styles.emptyIcon}>📊</Text>
+          <Text style={styles.emptyText}>暂无持仓</Text>
+        </View>
       ) : (
         filtered.map((pos, idx) => {
           const amt = parseFloat(pos.positionAmt);
@@ -113,57 +138,68 @@ export default function PositionPanel({ symbol }) {
           const entry = parseFloat(pos.entryPrice);
           const mark = parseFloat(pos.markPrice);
           const liq = parseFloat(pos.liquidationPrice);
+          const pnlPct = entry > 0 ? ((mark - entry) / entry * 100 * (isLong ? 1 : -1)).toFixed(2) : '0.00';
 
           return (
-            <View key={`${pos.symbol}-${pos.positionSide}-${idx}`} style={styles.card}>
-              {/* 头部 */}
-              <View style={styles.cardHeader}>
-                <View style={styles.symbolRow}>
-                  <Text style={styles.symbolText}>{pos.symbol}</Text>
-                  <View style={[styles.badge, isLong ? styles.badgeLong : styles.badgeShort]}>
-                    <Text style={styles.badgeText}>
-                      {isLong ? '多' : '空'} {pos.leverage}x
+            <View key={`${pos.symbol}-${pos.positionSide}-${idx}`} style={[styles.card, { borderLeftWidth: 3, borderLeftColor: isLong ? colors.green : colors.red }]}>
+              {/* 顶部：币对 + 方向 | 盈亏 */}
+              <View style={styles.cardTop}>
+                <View style={styles.cardTopLeft}>
+                  <Text style={styles.posSymbol}>{pos.symbol}</Text>
+                  <View style={[styles.sideBadge, { backgroundColor: isLong ? colors.greenBg : colors.redBg }]}>
+                    <Text style={[styles.sideBadgeText, { color: isLong ? colors.greenLight : colors.redLight }]}>
+                      {isLong ? 'LONG' : 'SHORT'}
                     </Text>
                   </View>
+                  <Text style={styles.levText}>{pos.leverage}×</Text>
                 </View>
-                <Text style={[styles.pnl, pnl >= 0 ? styles.pnlGreen : styles.pnlRed]}>
-                  {pnl >= 0 ? '+' : ''}{pnl.toFixed(4)} U
-                </Text>
+                <View style={styles.cardTopRight}>
+                  <Text style={[styles.pnlValue, { color: pnl >= 0 ? colors.greenLight : colors.redLight }]}>
+                    {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} U
+                  </Text>
+                  <Text style={[styles.pnlPct, { color: pnl >= 0 ? colors.greenLight : colors.redLight }]}>
+                    {pnl >= 0 ? '+' : ''}{pnlPct}%
+                  </Text>
+                </View>
               </View>
 
-              {/* 详情 */}
-              <View style={styles.details}>
-                <View style={styles.detailItem}>
-                  <Text style={styles.detailLabel}>数量</Text>
-                  <Text style={styles.detailValue}>{Math.abs(amt)}</Text>
+              {/* 中间：数据网格 */}
+              <View style={styles.dataGrid}>
+                <View style={styles.dataCell}>
+                  <Text style={styles.dataLabel}>数量</Text>
+                  <Text style={styles.dataValue}>{Math.abs(amt)}</Text>
                 </View>
-                <View style={styles.detailItem}>
-                  <Text style={styles.detailLabel}>开仓价</Text>
-                  <Text style={styles.detailValue}>{entry.toFixed(2)}</Text>
+                <View style={styles.dataCell}>
+                  <Text style={styles.dataLabel}>开仓价</Text>
+                  <Text style={styles.dataValue}>{entry.toFixed(2)}</Text>
                 </View>
-                <View style={styles.detailItem}>
-                  <Text style={styles.detailLabel}>标记价</Text>
-                  <Text style={styles.detailValue}>{mark.toFixed(2)}</Text>
+                <View style={styles.dataCell}>
+                  <Text style={styles.dataLabel}>标记价</Text>
+                  <Text style={styles.dataValue}>{mark.toFixed(2)}</Text>
                 </View>
                 {liq > 0 && (
-                  <View style={styles.detailItem}>
-                    <Text style={styles.detailLabel}>强平价</Text>
-                    <Text style={[styles.detailValue, styles.liqPrice]}>{liq.toFixed(2)}</Text>
+                  <View style={styles.dataCell}>
+                    <Text style={styles.dataLabel}>强平价</Text>
+                    <Text style={[styles.dataValue, { color: colors.orange }]}>{liq.toFixed(2)}</Text>
                   </View>
                 )}
               </View>
 
-              {/* 操作按钮：减仓 + 平仓 */}
-              <View style={styles.btnRow}>
+              {/* 底部操作 */}
+              <View style={styles.actionRow}>
                 <TouchableOpacity
                   style={styles.reduceBtn}
-                  onPress={() => {
-                    setReducePercent('50');
-                    setReduceModal(pos);
-                  }}
+                  onPress={() => { setReducePercent('50'); setReduceModal(pos); }}
                   disabled={loading}
                 >
                   <Text style={styles.reduceBtnText}>减仓</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.reverseBtn}
+                  onPress={() => handleReverse(pos)}
+                  disabled={loading}
+                >
+                  <Text style={styles.reverseBtnText}>反手</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.closeBtn}
@@ -182,36 +218,27 @@ export default function PositionPanel({ symbol }) {
       <Modal visible={!!reduceModal} animationType="fade" transparent>
         <View style={styles.overlay}>
           <View style={styles.modal}>
-            <Text style={styles.modalTitle}>
-              减仓 {reduceModal?.symbol}
-            </Text>
-            <Text style={styles.modalSubtitle}>
-              当前持仓: {reduceModal ? Math.abs(parseFloat(reduceModal.positionAmt)) : 0} 个
+            <Text style={styles.modalTitle}>减仓 {reduceModal?.symbol}</Text>
+            <Text style={styles.modalSub}>
+              当前: {reduceModal ? Math.abs(parseFloat(reduceModal.positionAmt)) : 0} 个
             </Text>
 
-            {/* 快捷百分比 */}
-            <View style={styles.percentRow}>
+            <View style={styles.pctRow}>
               {['25', '50', '75', '100'].map((pct) => (
                 <TouchableOpacity
                   key={pct}
-                  style={[styles.percentChip, reducePercent === pct && styles.percentChipActive]}
+                  style={[styles.pctChip, reducePercent === pct && styles.pctChipActive]}
                   onPress={() => setReducePercent(pct)}
                 >
-                  <Text
-                    style={[
-                      styles.percentChipText,
-                      reducePercent === pct && styles.percentChipTextActive,
-                    ]}
-                  >
+                  <Text style={[styles.pctChipText, reducePercent === pct && styles.pctChipTextActive]}>
                     {pct}%
                   </Text>
                 </TouchableOpacity>
               ))}
             </View>
 
-            {/* 自定义百分比 */}
-            <View style={styles.customPercentRow}>
-              <Text style={styles.inputLabel}>减仓比例 (%)</Text>
+            <View style={styles.customInput}>
+              <Text style={styles.customLabel}>自定义比例 (%)</Text>
               <TextInput
                 style={styles.input}
                 value={reducePercent}
@@ -222,22 +249,12 @@ export default function PositionPanel({ symbol }) {
               />
             </View>
 
-            {/* 操作 */}
-            <View style={styles.modalBtnRow}>
-              <TouchableOpacity
-                style={styles.modalCancelBtn}
-                onPress={() => setReduceModal(null)}
-              >
-                <Text style={styles.modalCancelText}>取消</Text>
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setReduceModal(null)}>
+                <Text style={styles.cancelText}>取消</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.modalConfirmBtn}
-                onPress={handleReduce}
-                disabled={loading}
-              >
-                <Text style={styles.modalConfirmText}>
-                  确认减仓 {reducePercent}%
-                </Text>
+              <TouchableOpacity style={styles.confirmBtn} onPress={handleReduce} disabled={loading}>
+                <Text style={styles.confirmText}>确认减仓 {reducePercent}%</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -250,9 +267,8 @@ export default function PositionPanel({ symbol }) {
 const styles = StyleSheet.create({
   panel: {
     backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
     borderWidth: 1,
     borderColor: colors.cardBorder,
   },
@@ -260,145 +276,267 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: spacing.md,
   },
-  title: { fontSize: 18, fontWeight: 'bold', color: colors.white },
-  refreshText: { color: colors.blue, fontSize: 14 },
-  emptyText: { color: colors.textMuted, textAlign: 'center', paddingVertical: 20 },
-
-  card: {
-    backgroundColor: colors.bg,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
+  title: {
+    fontSize: fontSize.md,
+    fontWeight: '700',
+    color: colors.white,
+  },
+  refreshBtn: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.pill,
+    backgroundColor: colors.goldBg,
     borderWidth: 1,
-    borderColor: colors.cardBorder,
+    borderColor: 'rgba(212,165,74,0.3)',
   },
-  cardHeader: {
+  refreshText: {
+    color: colors.goldLight,
+    fontSize: fontSize.sm,
+    fontWeight: '600',
+  },
+
+  // 空状态
+  emptyWrap: {
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  emptyIcon: {
+    fontSize: 36,
+    marginBottom: spacing.sm,
+  },
+  emptyText: {
+    color: colors.textMuted,
+    fontSize: fontSize.sm,
+  },
+
+  // 持仓卡片
+  card: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  cardTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
+    alignItems: 'flex-start',
+    marginBottom: spacing.md,
   },
-  symbolRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  symbolText: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
-  badge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
-  badgeLong: { backgroundColor: colors.greenBg },
-  badgeShort: { backgroundColor: colors.redBg },
-  badgeText: { color: colors.white, fontSize: 11, fontWeight: '600' },
-  pnl: { fontSize: 16, fontWeight: 'bold' },
-  pnlGreen: { color: colors.greenLight },
-  pnlRed: { color: colors.redLight },
-
-  details: { flexDirection: 'row', marginBottom: 10, gap: 16, flexWrap: 'wrap' },
-  detailItem: {},
-  detailLabel: { color: colors.textMuted, fontSize: 11 },
-  detailValue: { color: colors.textSecondary, fontSize: 13, marginTop: 2 },
-  liqPrice: { color: colors.yellow },
-
-  // 按钮行
-  btnRow: {
+  cardTopLeft: {
     flexDirection: 'row',
-    gap: 8,
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  posSymbol: {
+    color: colors.white,
+    fontSize: fontSize.lg,
+    fontWeight: '700',
+  },
+  sideBadge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+  },
+  sideBadgeText: {
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+  },
+  levText: {
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+    fontWeight: '600',
+  },
+  cardTopRight: {
+    alignItems: 'flex-end',
+  },
+  pnlValue: {
+    fontSize: fontSize.xl,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  pnlPct: {
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+
+  // 数据网格
+  dataGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: spacing.md,
+    gap: spacing.xs,
+    borderTopWidth: 1,
+    borderTopColor: colors.cardBorder,
+    paddingTop: spacing.md,
+  },
+  dataCell: {
+    width: '48%',
+    paddingVertical: spacing.xs,
+  },
+  dataLabel: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginBottom: 2,
+  },
+  dataValue: {
+    color: colors.text,
+    fontSize: fontSize.sm,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+
+  // 操作按钮
+  actionRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
   },
   reduceBtn: {
     flex: 1,
-    backgroundColor: colors.surface,
-    paddingVertical: 8,
-    borderRadius: 8,
+    paddingVertical: spacing.md,
+    borderRadius: radius.sm,
     alignItems: 'center',
-    borderWidth: 1,
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
     borderColor: colors.yellow,
   },
-  reduceBtnText: { color: colors.yellow, fontWeight: 'bold', fontSize: 14 },
+  reduceBtnText: {
+    color: colors.yellow,
+    fontWeight: '700',
+    fontSize: fontSize.sm,
+  },
+  reverseBtn: {
+    flex: 1,
+    paddingVertical: spacing.md,
+    borderRadius: radius.sm,
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderColor: colors.gold,
+  },
+  reverseBtnText: {
+    color: colors.gold,
+    fontWeight: '700',
+    fontSize: fontSize.sm,
+  },
   closeBtn: {
     flex: 1,
-    backgroundColor: colors.red,
-    paddingVertical: 8,
-    borderRadius: 8,
+    paddingVertical: spacing.md,
+    borderRadius: radius.sm,
     alignItems: 'center',
+    backgroundColor: colors.red,
+    shadowColor: colors.redGlow,
+    shadowRadius: 6,
+    shadowOpacity: 0.5,
+    elevation: 3,
   },
-  closeBtnText: { color: colors.white, fontWeight: 'bold', fontSize: 14 },
+  closeBtnText: {
+    color: colors.white,
+    fontWeight: '700',
+    fontSize: fontSize.sm,
+  },
 
   // 减仓弹窗
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    padding: spacing.xl,
   },
   modal: {
     backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 20,
+    borderRadius: radius.xxl,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    padding: spacing.xl,
     width: '100%',
     maxWidth: 400,
+    shadowColor: colors.shadow,
+    shadowRadius: 12,
+    shadowOpacity: 0.8,
+    elevation: 6,
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: fontSize.lg,
+    fontWeight: '700',
     color: colors.white,
     textAlign: 'center',
-    marginBottom: 4,
+    marginBottom: spacing.xs,
   },
-  modalSubtitle: {
-    fontSize: 13,
+  modalSub: {
+    fontSize: fontSize.sm,
     color: colors.textSecondary,
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: spacing.lg,
   },
-
-  percentRow: {
+  pctRow: {
     flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
+    gap: spacing.sm,
+    marginBottom: spacing.md,
   },
-  percentChip: {
+  pctChip: {
     flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
     alignItems: 'center',
     backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
   },
-  percentChipActive: {
-    backgroundColor: colors.blue,
-    borderColor: colors.blue,
+  pctChipActive: {
+    backgroundColor: colors.goldBg,
   },
-  percentChipText: { color: colors.textSecondary, fontWeight: '600', fontSize: 14 },
-  percentChipTextActive: { color: colors.white },
-
-  customPercentRow: { marginBottom: 16 },
-  inputLabel: { color: colors.textSecondary, fontSize: 12, marginBottom: 4 },
+  pctChipText: {
+    color: colors.textMuted,
+    fontWeight: '600',
+    fontSize: fontSize.sm,
+  },
+  pctChipTextActive: {
+    color: colors.gold,
+    fontWeight: '700',
+  },
+  customInput: {
+    marginBottom: spacing.lg,
+  },
+  customLabel: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginBottom: spacing.xs,
+  },
   input: {
-    backgroundColor: colors.bg,
-    borderRadius: 8,
-    padding: 10,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.md,
     color: colors.white,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-    fontSize: 15,
+    fontSize: fontSize.md,
   },
-
-  modalBtnRow: { flexDirection: 'row', gap: 12 },
-  modalCancelBtn: {
+  modalActions: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  cancelBtn: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: 10,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
     alignItems: 'center',
     backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
   },
-  modalCancelText: { color: colors.textSecondary, fontWeight: '600', fontSize: 15 },
-  modalConfirmBtn: {
+  cancelText: {
+    color: colors.textSecondary,
+    fontWeight: '600',
+    fontSize: fontSize.md,
+  },
+  confirmBtn: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: 10,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
     alignItems: 'center',
     backgroundColor: colors.yellow,
   },
-  modalConfirmText: { color: colors.bg, fontWeight: '600', fontSize: 15 },
+  confirmText: {
+    color: colors.bg,
+    fontWeight: '700',
+    fontSize: fontSize.md,
+  },
 });

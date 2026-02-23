@@ -180,6 +180,9 @@ func updateTradeFromOrder(record *TradeRecord, update futures.WsOrderTradeUpdate
 		changed = true
 	case futures.OrderStatusTypeCanceled, futures.OrderStatusTypeExpired, futures.OrderStatusTypeRejected:
 		record.Status = "CANCELED"
+		record.CloseReason = "order_canceled"
+		now := time.Now().UTC()
+		record.ClosedAt = &now
 		changed = true
 	}
 
@@ -238,6 +241,9 @@ func updateOpenTradeWithPnl(update futures.WsOrderTradeUpdate) {
 		}
 		if allClosed {
 			record.Status = "CLOSED"
+			record.CloseReason = "position_closed"
+			now := time.Now().UTC()
+			record.ClosedAt = &now
 			log.Printf("[UserStream] Position fully closed: %s %s, PnL=%s", symbol, positionSide, record.RealizedPnl)
 		}
 	}

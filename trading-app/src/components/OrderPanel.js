@@ -1,17 +1,20 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  Alert,
-  ActivityIndicator,
+  View, Text, TextInput, TouchableOpacity,
+  StyleSheet, Alert, ActivityIndicator, ScrollView, Modal,
 } from 'react-native';
-import api, { WS_PRICE_BASE, AUTH_TOKEN } from '../services/api';
-import { colors } from '../services/theme';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import api from '../services/api';
+import { colors, spacing, radius, fontSize } from '../services/theme';
 
-export default function OrderPanel({ symbol }) {
+const TEMPLATES_KEY = '@order_templates';
+
+/**
+ * 下单面板（专业交易所风格）
+ * @param {string} symbol
+ * @param {number|null} externalMarkPrice - 从 App.js 传入的实时价格
+ */
+export default function OrderPanel({ symbol, externalMarkPrice }) {
   const [side, setSide] = useState('BUY');
   const [quoteQty, setQuoteQty] = useState('5');
   const [leverage, setLeverage] = useState('10');
@@ -19,67 +22,39 @@ export default function OrderPanel({ symbol }) {
   const [riskReward, setRiskReward] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
-  const [markPrice, setMarkPrice] = useState(null);
+  const [showTpsl, setShowTpsl] = useState(false);
+
+  // 阶梯止盈
+  const [useComboTP, setUseComboTP] = useState(false);
+  const [tpLevels, setTpLevels] = useState([
+    { percent: '50', riskReward: '2' },
+    { percent: '50', riskReward: '5' },
+  ]);
+
+  // 模板
+  const [templates, setTemplates] = useState([]);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [savingTemplate, setSavingTemplate] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+
   const [walletBalance, setWalletBalance] = useState(null);
-  const lastUpdateRef = useRef(0);
-  const pendingPriceRef = useRef(null);
-  const rafRef = useRef(null);
-
-  // 节流更新价格，最多 200ms 一次，避免过度渲染
-  const throttledSetPrice = useCallback((price) => {
-    pendingPriceRef.current = price;
-    const now = Date.now();
-    if (now - lastUpdateRef.current >= 200) {
-      lastUpdateRef.current = now;
-      setMarkPrice(price);
-    } else if (!rafRef.current) {
-      rafRef.current = setTimeout(() => {
-        lastUpdateRef.current = Date.now();
-        setMarkPrice(pendingPriceRef.current);
-        rafRef.current = null;
-      }, 200 - (now - lastUpdateRef.current));
-    }
-  }, []);
-
-  // 通过后端 WebSocket 代理获取实时价格（后端连币安，转发给 app）
-  useEffect(() => {
-    if (!symbol) return;
-    const url = `${WS_PRICE_BASE}?symbol=${symbol}&token=${AUTH_TOKEN}`;
-    let ws = null;
-    let reconnectTimer = null;
-    let backoff = 1000;
-
-    const connect = () => {
-      ws = new WebSocket(url);
-      ws.onopen = () => {
-        backoff = 1000; // 连接成功重置
-      };
-      ws.onmessage = (evt) => {
-        try {
-          const data = JSON.parse(evt.data);
-          if (data.p) throttledSetPrice(parseFloat(data.p));
-        } catch (_) {}
-      };
-      ws.onerror = () => {};
-      ws.onclose = () => {
-        reconnectTimer = setTimeout(() => {
-          backoff = Math.min(backoff * 2, 30000);
-          connect();
-        }, backoff);
-      };
-    };
-
-    connect();
-    return () => {
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (rafRef.current) clearTimeout(rafRef.current);
-      if (ws) { ws.onclose = null; ws.close(); }
-    };
-  }, [symbol, throttledSetPrice]);
-
   const [positions, setPositions] = useState([]);
 
-  // 定期获取钱包余额 + 当前持仓（全仓模式计算强平价需要）
+  const markPrice = externalMarkPrice;
+
+  // 加载模板
+  useEffect(() => {
+    AsyncStorage.getItem(TEMPLATES_KEY).then((data) => {
+      if (data) setTemplates(JSON.parse(data));
+    }).catch(() => {});
+  }, []);
+
+  const saveTemplates = async (list) => {
+    setTemplates(list);
+    await AsyncStorage.setItem(TEMPLATES_KEY, JSON.stringify(list));
+  };
+
+  // 定期获取钱包余额 + 当前持仓
   useEffect(() => {
     let alive = true;
     const fetchAccountData = async () => {
@@ -102,50 +77,72 @@ export default function OrderPanel({ symbol }) {
     return () => { alive = false; clearInterval(timer); };
   }, []);
 
-  // 实时计算止损价、止盈价、强平价
+  // 实时计算
   const tpslPreview = useMemo(() => {
     if (!markPrice) return null;
     const qty = parseFloat(quoteQty);
     const lev = parseInt(leverage, 10);
     if (!qty || !lev) return null;
 
-    // 新订单的仓位数量
     const newQuantity = (qty * lev) / markPrice;
-    // 币安 ETHUSDT 维持保证金率
     const mmRate = 0.005;
+    const res = {};
 
-    const result = {};
-
-    // ========== 止盈止损预览 ==========
+    // TP/SL 预览
     const sl = parseFloat(stopLossAmount);
-    const rr = parseFloat(riskReward);
-    if (sl && rr) {
-      const slDistance = sl / newQuantity;
+    if (sl) {
+      const slDist = sl / newQuantity;
       if (side === 'BUY') {
-        result.slPrice = (markPrice - slDistance).toFixed(2);
-        result.tpPrice = (markPrice + slDistance * rr).toFixed(2);
+        res.slPrice = (markPrice - slDist).toFixed(2);
       } else {
-        result.slPrice = (markPrice + slDistance).toFixed(2);
-        result.tpPrice = (markPrice - slDistance * rr).toFixed(2);
+        res.slPrice = (markPrice + slDist).toFixed(2);
       }
-      result.tpProfit = (sl * rr).toFixed(2);
+
+      if (useComboTP && tpLevels.length > 0) {
+        // 阶梯止盈预览
+        res.tpLevelPreviews = tpLevels.map((lv) => {
+          const rr = parseFloat(lv.riskReward) || 0;
+          const pct = parseFloat(lv.percent) || 0;
+          let tp;
+          if (side === 'BUY') {
+            tp = markPrice + slDist * rr;
+          } else {
+            tp = markPrice - slDist * rr;
+          }
+          return {
+            percent: pct,
+            riskReward: rr,
+            tpPrice: tp.toFixed(2),
+            profit: (sl * rr * pct / 100).toFixed(2),
+          };
+        });
+        res.tpProfit = res.tpLevelPreviews.reduce((s, l) => s + parseFloat(l.profit), 0).toFixed(2);
+      } else {
+        const rr = parseFloat(riskReward);
+        if (rr) {
+          if (side === 'BUY') {
+            res.tpPrice = (markPrice + slDist * rr).toFixed(2);
+          } else {
+            res.tpPrice = (markPrice - slDist * rr).toFixed(2);
+          }
+          res.tpProfit = (sl * rr).toFixed(2);
+        }
+      }
     }
 
-    // ========== 强平价（合并已有持仓）==========
+    // 合并已有持仓 → 强平价
     const newPosSide = side === 'BUY' ? 'LONG' : 'SHORT';
     let existingQty = 0;
     let existingEntry = 0;
     let existingLiqPrice = null;
 
     for (const pos of positions) {
-      const posAmt = parseFloat(pos.positionAmt || pos.PositionAmt || 0);
-      const posEntry = parseFloat(pos.entryPrice || pos.EntryPrice || 0);
-      const posSym = pos.symbol || pos.Symbol || '';
-      const posSide = pos.positionSide || pos.PositionSide || 'BOTH';
-      const posLiq = parseFloat(pos.liquidationPrice || pos.LiquidationPrice || 0);
-
+      const posAmt = parseFloat(pos.positionAmt || 0);
+      const posEntry = parseFloat(pos.entryPrice || 0);
+      const posSym = pos.symbol || '';
+      const posSide = pos.positionSide || 'BOTH';
+      const posLiq = parseFloat(pos.liquidationPrice || 0);
       if (posAmt === 0) continue;
-
       if (posSym === symbol && (posSide === newPosSide || posSide === 'BOTH')) {
         existingQty = Math.abs(posAmt);
         existingEntry = posEntry;
@@ -153,42 +150,25 @@ export default function OrderPanel({ symbol }) {
       }
     }
 
-    // 合并后的总仓位
     const totalQty = existingQty + newQuantity;
     const avgEntry = totalQty > 0
       ? (existingQty * existingEntry + newQuantity * markPrice) / totalQty
       : markPrice;
-
-    // 全仓强平价公式（币安官方）:
-    // 全仓下，强平触发条件: 保证金余额 = 维持保证金
-    // 即: WB + UPNL = posNotional × MMR
-    //
-    // 用全仓总保证金(WB)推导:
-    // LONG:  LiqPrice = avgEntry - (WB - posNotional × MMR) / totalQty
-    // SHORT: LiqPrice = avgEntry + (WB - posNotional × MMR) / totalQty
-    //
-    // 如果没有余额数据，用杠杆估算:
-    //   margin ≈ posNotional / leverage
-    //   LONG:  LiqPrice = avgEntry × (1 - 1/lev + MMR)
-    //   SHORT: LiqPrice = avgEntry × (1 + 1/lev - MMR)
 
     let liqPrice;
     const wb = walletBalance;
     const posNotional = avgEntry * totalQty;
 
     if (wb != null && wb > 0) {
-      // 有真实余额数据
       const maintMargin = posNotional * mmRate;
       if (side === 'BUY') {
         liqPrice = avgEntry - (wb - maintMargin) / totalQty;
       } else {
         liqPrice = avgEntry + (wb - maintMargin) / totalQty;
       }
-      result.walletBalance = wb.toFixed(2);
-      const effectiveLev = posNotional / wb;
-      result.effectiveLev = effectiveLev.toFixed(1);
+      res.walletBalance = wb.toFixed(2);
+      res.effectiveLev = (posNotional / wb).toFixed(1);
     } else {
-      // 无余额数据，按杠杆估算
       if (side === 'BUY') {
         liqPrice = avgEntry * (1 - 1 / lev + mmRate);
       } else {
@@ -197,19 +177,14 @@ export default function OrderPanel({ symbol }) {
     }
 
     if (liqPrice < 0) liqPrice = 0;
-    result.liqPrice = liqPrice.toFixed(2);
+    res.liqPrice = liqPrice.toFixed(2);
+    if (existingLiqPrice) res.binanceLiqPrice = existingLiqPrice.toFixed(2);
+    res.existingQty = existingQty > 0 ? existingQty.toFixed(4) : null;
+    res.totalQty = totalQty.toFixed(4);
+    res.avgEntry = avgEntry.toFixed(2);
 
-    // 如果已有持仓且币安返回了强平价，也一并显示
-    if (existingLiqPrice) {
-      result.binanceLiqPrice = existingLiqPrice.toFixed(2);
-    }
-
-    result.existingQty = existingQty > 0 ? existingQty.toFixed(4) : null;
-    result.totalQty = totalQty.toFixed(4);
-    result.avgEntry = avgEntry.toFixed(2);
-
-    return result;
-  }, [markPrice, stopLossAmount, riskReward, quoteQty, leverage, side, walletBalance, positions, symbol]);
+    return res;
+  }, [markPrice, stopLossAmount, riskReward, quoteQty, leverage, side, walletBalance, positions, symbol, useComboTP, tpLevels]);
 
   const handleOrder = async () => {
     if (!symbol) return Alert.alert('提示', '请选择交易对');
@@ -225,9 +200,20 @@ export default function OrderPanel({ symbol }) {
       leverage: parseInt(leverage, 10),
     };
 
-    if (stopLossAmount && riskReward) {
+    if (stopLossAmount) {
       req.stopLossAmount = parseFloat(stopLossAmount);
-      req.riskReward = parseFloat(riskReward);
+
+      if (useComboTP && tpLevels.length > 0) {
+        // 阶梯止盈
+        req.tpLevels = tpLevels.map((lv) => ({
+          percent: parseFloat(lv.percent) || 0,
+          riskReward: parseFloat(lv.riskReward) || 0,
+        }));
+        // 需要一个 riskReward 给 SL 计算用（取第一级的）
+        req.riskReward = req.tpLevels[0].riskReward;
+      } else if (riskReward) {
+        req.riskReward = parseFloat(riskReward);
+      }
     }
 
     setLoading(true);
@@ -243,63 +229,160 @@ export default function OrderPanel({ symbol }) {
     }
   };
 
+  // 阶梯止盈管理
+  const addTPLevel = () => {
+    if (tpLevels.length >= 5) return;
+    setTpLevels([...tpLevels, { percent: '', riskReward: '' }]);
+  };
+  const removeTPLevel = (idx) => {
+    setTpLevels(tpLevels.filter((_, i) => i !== idx));
+  };
+  const updateTPLevel = (idx, field, value) => {
+    const next = [...tpLevels];
+    next[idx] = { ...next[idx], [field]: value };
+    setTpLevels(next);
+  };
+
+  // 模板操作
+  const handleSaveTemplate = async () => {
+    if (!templateName.trim()) return Alert.alert('提示', '请输入模板名称');
+    const tpl = {
+      id: Date.now().toString(),
+      name: templateName.trim(),
+      symbol,
+      side,
+      quoteQty,
+      leverage,
+      stopLossAmount,
+      riskReward,
+      useComboTP,
+      tpLevels: useComboTP ? tpLevels : [],
+    };
+    const next = [tpl, ...templates].slice(0, 10); // 最多10个
+    await saveTemplates(next);
+    setTemplateName('');
+    setSavingTemplate(false);
+    Alert.alert('已保存', `模板 "${tpl.name}" 已保存`);
+  };
+
+  const applyTemplate = (tpl) => {
+    setSide(tpl.side || 'BUY');
+    setQuoteQty(tpl.quoteQty || '5');
+    setLeverage(tpl.leverage || '10');
+    setStopLossAmount(tpl.stopLossAmount || '');
+    setRiskReward(tpl.riskReward || '');
+    setUseComboTP(tpl.useComboTP || false);
+    if (tpl.tpLevels && tpl.tpLevels.length > 0) {
+      setTpLevels(tpl.tpLevels);
+    }
+    if (tpl.stopLossAmount) setShowTpsl(true);
+    setShowTemplates(false);
+  };
+
+  const deleteTemplate = async (id) => {
+    const next = templates.filter((t) => t.id !== id);
+    await saveTemplates(next);
+  };
+
+  const isBuy = side === 'BUY';
+
   return (
     <View style={styles.panel}>
-      <View style={styles.titleRow}>
-        <Text style={styles.title}>下单</Text>
-        {markPrice && (
-          <Text style={styles.priceTag}>{symbol} {markPrice.toFixed(2)}</Text>
-        )}
+      {/* === 模板快捷栏 === */}
+      <View style={styles.tplBar}>
+        <TouchableOpacity
+          style={styles.tplBtn}
+          onPress={() => setShowTemplates(!showTemplates)}
+        >
+          <Text style={styles.tplBtnText}>📋 模板</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.tplBtn}
+          onPress={() => setSavingTemplate(true)}
+        >
+          <Text style={styles.tplBtnText}>💾 存为模板</Text>
+        </TouchableOpacity>
       </View>
 
-      {/* 方向选择 */}
+      {/* 模板列表 */}
+      {showTemplates && templates.length > 0 && (
+        <ScrollView horizontal style={styles.tplList} showsHorizontalScrollIndicator={false}>
+          {templates.map((tpl) => (
+            <TouchableOpacity
+              key={tpl.id}
+              style={styles.tplChip}
+              onPress={() => applyTemplate(tpl)}
+              onLongPress={() => {
+                Alert.alert('删除模板', `确认删除 "${tpl.name}" ?`, [
+                  { text: '取消', style: 'cancel' },
+                  { text: '删除', style: 'destructive', onPress: () => deleteTemplate(tpl.id) },
+                ]);
+              }}
+            >
+              <Text style={styles.tplChipName}>{tpl.name}</Text>
+              <Text style={styles.tplChipSub}>
+                {tpl.side === 'BUY' ? '多' : '空'} {tpl.quoteQty}U {tpl.leverage}×
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
+      {showTemplates && templates.length === 0 && (
+        <Text style={styles.tplEmpty}>暂无模板，下单前点 "存为模板" 保存</Text>
+      )}
+
+      {/* === 方向选择 === */}
       <View style={styles.sideRow}>
         <TouchableOpacity
-          style={[styles.sideBtn, side === 'BUY' && styles.buyActive]}
+          style={[styles.sideBtn, styles.sideBtnBuy, isBuy && styles.buyActive]}
           onPress={() => setSide('BUY')}
+          activeOpacity={0.8}
         >
-          <Text style={[styles.sideText, side === 'BUY' && styles.sideTextActive]}>
-            做多 BUY
-          </Text>
+          <Text style={[styles.sideText, isBuy && styles.sideTextActive]}>做多</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.sideBtn, side === 'SELL' && styles.sellActive]}
+          style={[styles.sideBtn, styles.sideBtnSell, !isBuy && styles.sellActive]}
           onPress={() => setSide('SELL')}
+          activeOpacity={0.8}
         >
-          <Text style={[styles.sideText, side === 'SELL' && styles.sideTextActive]}>
-            做空 SELL
-          </Text>
+          <Text style={[styles.sideText, !isBuy && styles.sideTextActive]}>做空</Text>
         </TouchableOpacity>
       </View>
 
-      {/* 金额和杠杆 */}
-      <View style={styles.inputRow}>
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>金额 (USDT)</Text>
+      {/* === 金额输入 === */}
+      <View style={styles.fieldRow}>
+        <Text style={styles.fieldLabel}>金额</Text>
+        <View style={styles.fieldInputWrap}>
           <TextInput
-            style={styles.input}
+            style={styles.fieldInput}
             value={quoteQty}
             onChangeText={setQuoteQty}
             keyboardType="decimal-pad"
-            placeholder="5"
+            placeholder="0.00"
             placeholderTextColor={colors.textMuted}
           />
+          <Text style={styles.fieldUnit}>USDT</Text>
         </View>
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>杠杆</Text>
+      </View>
+
+      {/* === 杠杆 === */}
+      <View style={styles.fieldRow}>
+        <Text style={styles.fieldLabel}>杠杆</Text>
+        <View style={styles.fieldInputWrap}>
           <TextInput
-            style={styles.input}
+            style={styles.fieldInput}
             value={leverage}
             onChangeText={setLeverage}
             keyboardType="number-pad"
             placeholder="10"
             placeholderTextColor={colors.textMuted}
           />
+          <Text style={styles.fieldUnit}>×</Text>
         </View>
       </View>
 
       {/* 快捷杠杆 */}
-      <View style={styles.leverageRow}>
+      <View style={styles.levRow}>
         {['5', '10', '20', '50', '100'].map((lev) => (
           <TouchableOpacity
             key={lev}
@@ -307,118 +390,246 @@ export default function OrderPanel({ symbol }) {
             onPress={() => setLeverage(lev)}
           >
             <Text style={[styles.levChipText, leverage === lev && styles.levChipTextActive]}>
-              {lev}x
+              {lev}×
             </Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      {/* 止盈止损 */}
-      <Text style={styles.subTitle}>止盈止损（可选）</Text>
-      <View style={styles.inputRow}>
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>止损金额 (U)</Text>
-          <TextInput
-            style={styles.input}
-            value={stopLossAmount}
-            onChangeText={setStopLossAmount}
-            keyboardType="decimal-pad"
-            placeholder="如 1"
-            placeholderTextColor={colors.textMuted}
-          />
+      {/* === 止盈止损折叠 === */}
+      <TouchableOpacity
+        style={styles.tpslToggle}
+        onPress={() => setShowTpsl(!showTpsl)}
+        activeOpacity={0.7}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs }}>
+          <Text style={styles.tpslToggleIcon}>{showTpsl ? '⊖' : '⊕'}</Text>
+          <Text style={styles.tpslToggleText}>止盈止损</Text>
         </View>
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>盈亏比</Text>
-          <TextInput
-            style={styles.input}
-            value={riskReward}
-            onChangeText={setRiskReward}
-            keyboardType="decimal-pad"
-            placeholder="如 3 (1:3)"
-            placeholderTextColor={colors.textMuted}
-          />
-        </View>
-      </View>
+        <Text style={styles.tpslToggleArrow}>{showTpsl ? '▾' : '▸'}</Text>
+      </TouchableOpacity>
 
-      {/* 实时价格预览 */}
-      {tpslPreview && (
-        <View style={styles.previewBox}>
-          {tpslPreview.slPrice && (
-            <View style={styles.previewRow}>
-              <Text style={styles.previewLabelRed}>止损价</Text>
-              <Text style={styles.previewValueRed}>{tpslPreview.slPrice}</Text>
-              <Text style={styles.previewLoss}>-{stopLossAmount} U</Text>
+      {showTpsl && (
+        <View style={styles.tpslBox}>
+          {/* 止损金额 */}
+          <View style={styles.tpslInputRow}>
+            <View style={styles.tpslInputGroup}>
+              <Text style={styles.tpslLabel}>止损金额(U)</Text>
+              <TextInput
+                style={styles.tpslInput}
+                value={stopLossAmount}
+                onChangeText={setStopLossAmount}
+                keyboardType="decimal-pad"
+                placeholder="1"
+                placeholderTextColor={colors.textMuted}
+              />
             </View>
-          )}
-          {tpslPreview.tpPrice && (
-            <View style={styles.previewRow}>
-              <Text style={styles.previewLabelGreen}>止盈价</Text>
-              <Text style={styles.previewValueGreen}>{tpslPreview.tpPrice}</Text>
-              <Text style={styles.previewProfit}>+{tpslPreview.tpProfit} U</Text>
-            </View>
-          )}
-          <View style={styles.previewRow}>
-            <Text style={styles.previewLabelOrange}>强平价</Text>
-            <Text style={styles.previewValueOrange}>{tpslPreview.liqPrice}</Text>
-            {tpslPreview.effectiveLev && (
-              <Text style={styles.previewWallet}>实际 {tpslPreview.effectiveLev}x</Text>
+            {!useComboTP && (
+              <View style={styles.tpslInputGroup}>
+                <Text style={styles.tpslLabel}>盈亏比</Text>
+                <TextInput
+                  style={styles.tpslInput}
+                  value={riskReward}
+                  onChangeText={setRiskReward}
+                  keyboardType="decimal-pad"
+                  placeholder="3"
+                  placeholderTextColor={colors.textMuted}
+                />
+              </View>
             )}
           </View>
-          {tpslPreview.binanceLiqPrice && (
-            <View style={styles.previewRow}>
-              <Text style={styles.previewLabelOrange}>当前强平</Text>
-              <Text style={styles.previewValueOrange}>{tpslPreview.binanceLiqPrice}</Text>
+
+          {/* 阶梯止盈开关 */}
+          <TouchableOpacity
+            style={styles.comboToggle}
+            onPress={() => setUseComboTP(!useComboTP)}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.comboCheck, useComboTP && styles.comboCheckActive]}>
+              {useComboTP && <Text style={styles.comboCheckMark}>✓</Text>}
+            </View>
+            <Text style={styles.comboToggleText}>阶梯止盈</Text>
+            <Text style={styles.comboHint}>分批止盈，锁定利润</Text>
+          </TouchableOpacity>
+
+          {/* 阶梯止盈列表 */}
+          {useComboTP && (
+            <View style={styles.comboBox}>
+              {tpLevels.map((lv, idx) => (
+                <View key={idx} style={styles.comboRow}>
+                  <Text style={styles.comboIdx}>#{idx + 1}</Text>
+                  <View style={styles.comboField}>
+                    <Text style={styles.comboFieldLabel}>比例%</Text>
+                    <TextInput
+                      style={styles.comboInput}
+                      value={lv.percent}
+                      onChangeText={(v) => updateTPLevel(idx, 'percent', v)}
+                      keyboardType="decimal-pad"
+                      placeholder="50"
+                      placeholderTextColor={colors.textMuted}
+                    />
+                  </View>
+                  <View style={styles.comboField}>
+                    <Text style={styles.comboFieldLabel}>盈亏比</Text>
+                    <TextInput
+                      style={styles.comboInput}
+                      value={lv.riskReward}
+                      onChangeText={(v) => updateTPLevel(idx, 'riskReward', v)}
+                      keyboardType="decimal-pad"
+                      placeholder="3"
+                      placeholderTextColor={colors.textMuted}
+                    />
+                  </View>
+                  {tpLevels.length > 1 && (
+                    <TouchableOpacity
+                      style={styles.comboRemove}
+                      onPress={() => removeTPLevel(idx)}
+                    >
+                      <Text style={styles.comboRemoveText}>✕</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ))}
+              {tpLevels.length < 5 && (
+                <TouchableOpacity style={styles.comboAdd} onPress={addTPLevel}>
+                  <Text style={styles.comboAddText}>+ 添加级别</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
-          <View style={styles.previewRow}>
-            <Text style={styles.previewDetail}>
-              {tpslPreview.walletBalance ? `余额 ${tpslPreview.walletBalance} U | ` : ''}
-              {tpslPreview.existingQty
-                ? `已有 ${tpslPreview.existingQty} → 合计 ${tpslPreview.totalQty} | 均价 ${tpslPreview.avgEntry}`
-                : `数量 ${tpslPreview.totalQty} | 均价 ${tpslPreview.avgEntry}`
-              }
-            </Text>
-          </View>
         </View>
       )}
 
-      {/* 下单按钮 */}
+      {/* === 预估信息网格 === */}
+      {tpslPreview && (
+        <View style={styles.previewGrid}>
+          {tpslPreview.slPrice && (
+            <View style={styles.previewItem}>
+              <Text style={styles.previewLabel}>止损价</Text>
+              <Text style={[styles.previewValue, { color: colors.redLight }]}>{tpslPreview.slPrice}</Text>
+            </View>
+          )}
+          {/* 单级止盈 */}
+          {tpslPreview.tpPrice && !tpslPreview.tpLevelPreviews && (
+            <View style={styles.previewItem}>
+              <Text style={styles.previewLabel}>止盈价</Text>
+              <Text style={[styles.previewValue, { color: colors.greenLight }]}>{tpslPreview.tpPrice}</Text>
+            </View>
+          )}
+          {/* 阶梯止盈 */}
+          {tpslPreview.tpLevelPreviews && tpslPreview.tpLevelPreviews.map((lv, idx) => (
+            <View key={idx} style={styles.previewItem}>
+              <Text style={styles.previewLabel}>TP{idx + 1} ({lv.percent}%)</Text>
+              <Text style={[styles.previewValue, { color: colors.greenLight }]}>
+                {lv.tpPrice} (+{lv.profit}U)
+              </Text>
+            </View>
+          ))}
+          <View style={styles.previewItem}>
+            <Text style={styles.previewLabel}>强平价</Text>
+            <Text style={[styles.previewValue, { color: colors.orange }]}>{tpslPreview.liqPrice}</Text>
+          </View>
+          {tpslPreview.tpProfit && (
+            <View style={styles.previewItem}>
+              <Text style={styles.previewLabel}>预计总盈利</Text>
+              <Text style={[styles.previewValue, { color: colors.greenLight }]}>+{tpslPreview.tpProfit}</Text>
+            </View>
+          )}
+          <View style={styles.previewItem}>
+            <Text style={styles.previewLabel}>数量</Text>
+            <Text style={styles.previewValue}>{tpslPreview.totalQty}</Text>
+          </View>
+          <View style={styles.previewItem}>
+            <Text style={styles.previewLabel}>均价</Text>
+            <Text style={styles.previewValue}>{tpslPreview.avgEntry}</Text>
+          </View>
+          {tpslPreview.effectiveLev && (
+            <View style={styles.previewItem}>
+              <Text style={styles.previewLabel}>实际杠杆</Text>
+              <Text style={styles.previewValue}>{tpslPreview.effectiveLev}×</Text>
+            </View>
+          )}
+          {tpslPreview.binanceLiqPrice && (
+            <View style={styles.previewItem}>
+              <Text style={styles.previewLabel}>当前强平</Text>
+              <Text style={[styles.previewValue, { color: colors.orange }]}>{tpslPreview.binanceLiqPrice}</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* === 下单按钮 === */}
       <TouchableOpacity
-        style={[
-          styles.orderBtn,
-          side === 'BUY' ? styles.orderBtnBuy : styles.orderBtnSell,
-          loading && styles.disabled,
-        ]}
+        style={[styles.orderBtn, isBuy ? styles.orderBuy : styles.orderSell, loading && styles.disabled]}
         onPress={handleOrder}
         disabled={loading}
+        activeOpacity={0.8}
       >
         {loading ? (
           <ActivityIndicator color="#fff" />
         ) : (
           <Text style={styles.orderBtnText}>
-            {side === 'BUY' ? '做多' : '做空'} {symbol || '---'} / 市价
+            {isBuy ? '买入做多' : '卖出做空'}
           </Text>
         )}
       </TouchableOpacity>
 
-      {/* 下单结果 */}
+      {/* === 下单结果 === */}
       {result && (
         <View style={styles.resultBox}>
           <Text style={styles.resultText}>
-            主单: {result.order?.status} | 均价: {result.order?.avgPrice || result.order?.price}
+            {result.order?.status} | 均价 {result.order?.avgPrice || result.order?.price}
           </Text>
-          {result.takeProfit && (
-            <Text style={styles.resultGreen}>
-              止盈: {result.takeProfit.triggerPrice} (algoId: {result.takeProfit.algoId})
+          {result.takeProfits && result.takeProfits.length > 0 ? (
+            result.takeProfits.map((tp, i) => (
+              <Text key={i} style={[styles.resultText, { color: colors.greenLight }]}>
+                TP{i + 1} {tp.triggerPrice}
+              </Text>
+            ))
+          ) : result.takeProfit ? (
+            <Text style={[styles.resultText, { color: colors.greenLight }]}>
+              止盈 {result.takeProfit.triggerPrice}
             </Text>
-          )}
+          ) : null}
           {result.stopLoss && (
-            <Text style={styles.resultRed}>
-              止损: {result.stopLoss.triggerPrice} (algoId: {result.stopLoss.algoId})
+            <Text style={[styles.resultText, { color: colors.redLight }]}>
+              止损 {result.stopLoss.triggerPrice}
             </Text>
           )}
         </View>
       )}
+
+      {/* === 保存模板弹窗 === */}
+      <Modal visible={savingTemplate} animationType="fade" transparent>
+        <View style={styles.overlay}>
+          <View style={styles.modal}>
+            <Text style={styles.modalTitle}>保存下单模板</Text>
+            <Text style={styles.modalSub}>
+              {side === 'BUY' ? '做多' : '做空'} {quoteQty}U {leverage}×
+              {stopLossAmount ? ` | SL ${stopLossAmount}U` : ''}
+            </Text>
+            <TextInput
+              style={styles.tplNameInput}
+              value={templateName}
+              onChangeText={setTemplateName}
+              placeholder="输入模板名称"
+              placeholderTextColor={colors.textMuted}
+              autoFocus
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => { setSavingTemplate(false); setTemplateName(''); }}
+              >
+                <Text style={styles.cancelText}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.confirmBtn} onPress={handleSaveTemplate}>
+                <Text style={styles.confirmText}>保存</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -426,150 +637,457 @@ export default function OrderPanel({ symbol }) {
 const styles = StyleSheet.create({
   panel: {
     backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
     borderWidth: 1,
     borderColor: colors.cardBorder,
   },
-  titleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  title: { fontSize: 18, fontWeight: 'bold', color: colors.white },
-  priceTag: {
-    fontSize: 13,
-    color: colors.yellow || '#f0b90b',
-    fontWeight: '600',
-  },
-  subTitle: { fontSize: 14, color: colors.textSecondary, marginBottom: 8, marginTop: 4 },
 
-  sideRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
-  sideBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
-    alignItems: 'center',
+  // 模板栏
+  tplBar: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  tplBtn: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.pill,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.cardBorder,
   },
-  buyActive: { backgroundColor: colors.green, borderColor: colors.green },
-  sellActive: { backgroundColor: colors.red, borderColor: colors.red },
-  sideText: { color: colors.textSecondary, fontWeight: '600', fontSize: 15 },
-  sideTextActive: { color: colors.white },
-
-  inputRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
-  inputGroup: { flex: 1 },
-  inputLabel: { color: colors.textSecondary, fontSize: 12, marginBottom: 4 },
-  input: {
-    backgroundColor: colors.bg,
-    borderRadius: 8,
-    padding: 10,
-    color: colors.white,
+  tplBtnText: {
+    color: colors.textSecondary,
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+  },
+  tplList: {
+    marginBottom: spacing.md,
+    maxHeight: 56,
+  },
+  tplChip: {
+    backgroundColor: colors.goldBg,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginRight: spacing.sm,
     borderWidth: 1,
-    borderColor: colors.cardBorder,
-    fontSize: 15,
+    borderColor: 'rgba(212,165,74,0.3)',
+    minWidth: 80,
+  },
+  tplChipName: {
+    color: colors.gold,
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+  },
+  tplChipSub: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginTop: 2,
+  },
+  tplEmpty: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    textAlign: 'center',
+    marginBottom: spacing.md,
   },
 
-  leverageRow: { flexDirection: 'row', gap: 6, marginBottom: 12 },
+  // 方向
+  sideRow: {
+    flexDirection: 'row',
+    marginBottom: spacing.lg,
+  },
+  sideBtn: {
+    flex: 1,
+    paddingVertical: spacing.md,
+    alignItems: 'center',
+    backgroundColor: 'rgba(37,32,25,0.6)',
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  sideBtnBuy: {
+    borderTopLeftRadius: radius.md,
+    borderBottomLeftRadius: radius.md,
+    borderTopRightRadius: 0,
+    borderBottomRightRadius: 0,
+  },
+  sideBtnSell: {
+    borderTopLeftRadius: 0,
+    borderBottomLeftRadius: 0,
+    borderTopRightRadius: radius.md,
+    borderBottomRightRadius: radius.md,
+    borderLeftWidth: 0,
+  },
+  buyActive: {
+    backgroundColor: colors.green,
+    borderColor: colors.green,
+    shadowColor: colors.greenGlow,
+    shadowRadius: 8,
+    shadowOpacity: 1,
+    elevation: 4,
+  },
+  sellActive: {
+    backgroundColor: colors.red,
+    borderColor: colors.red,
+    shadowColor: colors.redGlow,
+    shadowRadius: 8,
+    shadowOpacity: 1,
+    elevation: 4,
+  },
+  sideText: {
+    color: colors.textMuted,
+    fontWeight: '700',
+    fontSize: fontSize.md,
+  },
+  sideTextActive: {
+    color: colors.white,
+  },
+
+  // 字段输入
+  fieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  fieldLabel: {
+    color: colors.textSecondary,
+    fontSize: fontSize.sm,
+    fontWeight: '500',
+    width: 36,
+  },
+  fieldInputWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  fieldInput: {
+    flex: 1,
+    color: colors.white,
+    fontSize: fontSize.xl,
+    fontWeight: '700',
+    paddingVertical: spacing.md,
+    fontVariant: ['tabular-nums'],
+  },
+  fieldUnit: {
+    color: colors.textMuted,
+    fontSize: fontSize.sm,
+    fontWeight: '600',
+    marginLeft: spacing.sm,
+  },
+
+  // 杠杆快选
+  levRow: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+    marginBottom: spacing.lg,
+  },
   levChip: {
     flex: 1,
     paddingVertical: 6,
-    borderRadius: 6,
+    borderRadius: radius.pill,
     alignItems: 'center',
     backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
   },
-  levChipActive: { backgroundColor: colors.blue, borderColor: colors.blue },
-  levChipText: { color: colors.textSecondary, fontSize: 12, fontWeight: '600' },
-  levChipTextActive: { color: colors.white },
+  levChipActive: {
+    backgroundColor: colors.goldBg,
+    borderWidth: 1,
+    borderColor: colors.gold,
+  },
+  levChipText: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+  },
+  levChipTextActive: {
+    color: colors.gold,
+    fontWeight: '700',
+  },
 
-  previewBox: {
-    backgroundColor: colors.bg,
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 12,
+  // TP/SL 折叠
+  tpslToggle: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+    marginBottom: spacing.sm,
+  },
+  tpslToggleText: {
+    color: colors.textSecondary,
+    fontSize: fontSize.sm,
+    fontWeight: '600',
+  },
+  tpslToggleIcon: {
+    color: colors.gold,
+    fontSize: fontSize.lg,
+    fontWeight: '600',
+  },
+  tpslToggleArrow: {
+    color: colors.textMuted,
+    fontSize: fontSize.sm,
+  },
+  tpslBox: {
+    marginBottom: spacing.md,
+  },
+  tpslInputRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  tpslInputGroup: {
+    flex: 1,
+  },
+  tpslLabel: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginBottom: spacing.xs,
+  },
+  tpslInput: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    color: colors.white,
+    fontSize: fontSize.md,
     borderWidth: 1,
     borderColor: colors.cardBorder,
   },
-  previewRow: {
+
+  // 阶梯止盈
+  comboToggle: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 4,
+    marginTop: spacing.md,
+    gap: spacing.sm,
   },
-  previewLabelRed: {
-    color: colors.redLight || '#ef5350',
-    fontSize: 13,
-    fontWeight: '600',
-    width: 52,
+  comboCheck: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: colors.textMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  previewValueRed: {
-    color: colors.redLight || '#ef5350',
-    fontSize: 15,
-    fontWeight: 'bold',
-    flex: 1,
+  comboCheckActive: {
+    borderColor: colors.gold,
+    backgroundColor: colors.goldBg,
   },
-  previewLoss: {
-    color: colors.redLight || '#ef5350',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  previewLabelGreen: {
-    color: colors.greenLight || '#66bb6a',
-    fontSize: 13,
-    fontWeight: '600',
-    width: 52,
-  },
-  previewValueGreen: {
-    color: colors.greenLight || '#66bb6a',
-    fontSize: 15,
-    fontWeight: 'bold',
-    flex: 1,
-  },
-  previewProfit: {
-    color: colors.greenLight || '#66bb6a',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  previewLabelOrange: {
-    color: '#ffa726',
-    fontSize: 13,
-    fontWeight: '600',
-    width: 52,
-  },
-  previewValueOrange: {
-    color: '#ffa726',
-    fontSize: 15,
-    fontWeight: 'bold',
-    flex: 1,
-  },
-  previewWallet: {
-    color: colors.textSecondary,
+  comboCheckMark: {
+    color: colors.gold,
     fontSize: 12,
+    fontWeight: '800',
   },
-  previewDetail: {
-    color: colors.textMuted || colors.textSecondary,
-    fontSize: 11,
+  comboToggleText: {
+    color: colors.textSecondary,
+    fontSize: fontSize.sm,
+    fontWeight: '600',
+  },
+  comboHint: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginLeft: 'auto',
+  },
+  comboBox: {
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  comboRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginBottom: spacing.xs,
+  },
+  comboIdx: {
+    color: colors.gold,
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+    width: 22,
+  },
+  comboField: {
     flex: 1,
   },
-
-  orderBtn: { paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginTop: 4 },
-  orderBtnBuy: { backgroundColor: colors.green },
-  orderBtnSell: { backgroundColor: colors.red },
-  disabled: { opacity: 0.6 },
-  orderBtnText: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
-
-  resultBox: {
-    marginTop: 12,
-    padding: 10,
-    backgroundColor: colors.bg,
-    borderRadius: 8,
+  comboFieldLabel: {
+    color: colors.textMuted,
+    fontSize: 10,
+    marginBottom: 2,
   },
-  resultText: { color: colors.text, fontSize: 13 },
-  resultGreen: { color: colors.greenLight, fontSize: 13, marginTop: 4 },
-  resultRed: { color: colors.redLight, fontSize: 13, marginTop: 4 },
+  comboInput: {
+    backgroundColor: colors.card,
+    borderRadius: radius.sm,
+    padding: spacing.xs,
+    color: colors.white,
+    fontSize: fontSize.sm,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    textAlign: 'center',
+  },
+  comboRemove: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(217,68,82,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 14,
+  },
+  comboRemoveText: {
+    color: colors.redLight,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  comboAdd: {
+    paddingVertical: spacing.xs,
+    alignItems: 'center',
+    marginTop: spacing.xs,
+  },
+  comboAddText: {
+    color: colors.gold,
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+  },
+
+  // 预估信息
+  previewGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    gap: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  previewItem: {
+    width: '48%',
+    paddingVertical: spacing.xs,
+  },
+  previewLabel: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginBottom: 2,
+  },
+  previewValue: {
+    color: colors.text,
+    fontSize: fontSize.md,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+
+  // 下单按钮
+  orderBtn: {
+    paddingVertical: spacing.xl,
+    borderRadius: radius.lg,
+    alignItems: 'center',
+  },
+  orderBuy: {
+    backgroundColor: colors.green,
+    shadowColor: colors.greenGlow,
+    shadowRadius: 8,
+    shadowOpacity: 0.6,
+    elevation: 4,
+  },
+  orderSell: {
+    backgroundColor: colors.red,
+    shadowColor: colors.redGlow,
+    shadowRadius: 8,
+    shadowOpacity: 0.6,
+    elevation: 4,
+  },
+  disabled: { opacity: 0.5 },
+  orderBtnText: {
+    color: colors.white,
+    fontSize: fontSize.xl,
+    fontWeight: '800',
+  },
+
+  // 结果
+  resultBox: {
+    marginTop: spacing.sm,
+    padding: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    gap: spacing.xs,
+  },
+  resultText: {
+    color: colors.text,
+    fontSize: fontSize.sm,
+  },
+
+  // 弹窗
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
+  },
+  modal: {
+    backgroundColor: colors.card,
+    borderRadius: radius.xxl,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    padding: spacing.xl,
+    width: '100%',
+    maxWidth: 400,
+  },
+  modalTitle: {
+    fontSize: fontSize.lg,
+    fontWeight: '700',
+    color: colors.white,
+    textAlign: 'center',
+    marginBottom: spacing.xs,
+  },
+  modalSub: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: spacing.lg,
+  },
+  tplNameInput: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    color: colors.white,
+    fontSize: fontSize.md,
+    marginBottom: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  cancelBtn: {
+    flex: 1,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+  },
+  cancelText: {
+    color: colors.textSecondary,
+    fontWeight: '600',
+    fontSize: fontSize.md,
+  },
+  confirmBtn: {
+    flex: 1,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    backgroundColor: colors.gold,
+  },
+  confirmText: {
+    color: colors.bg,
+    fontWeight: '700',
+    fontSize: fontSize.md,
+  },
 });

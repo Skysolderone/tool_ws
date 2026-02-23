@@ -11,7 +11,14 @@ import (
 	"github.com/adshao/go-binance/v2/futures"
 )
 
+// TPLevel 阶梯止盈级别
+type TPLevel struct {
+	Percent    float64 `json:"percent"`    // 该级别平仓比例(%)，如 50 表示平 50% 仓位
+	RiskReward float64 `json:"riskReward"` // 该级别盈亏比，如 2 表示 1:2
+}
+
 type PlaceOrderReq struct {
+	Source       string                   `json:"source,omitempty"` // manual / strategy_xxx
 	Symbol       string                   `json:"symbol"`
 	Side         futures.SideType         `json:"side"`      // BUY / SELL
 	OrderType    futures.OrderType        `json:"orderType"` // LIMIT / MARKET
@@ -32,13 +39,33 @@ type PlaceOrderReq struct {
 	// 例：stopLossAmount=1, riskReward=3 表示最多亏1U，盈利目标3U
 	StopLossAmount float64 `json:"stopLossAmount,omitempty"` // 最大亏损金额(USDT)
 	RiskReward     float64 `json:"riskReward,omitempty"`     // 盈亏比，如 3 表示 1:3
+
+	// 阶梯止盈：设置后替代单一止盈，支持多级止盈
+	// 例：[{percent:50, riskReward:2}, {percent:50, riskReward:5}]
+	// 表示 50% 仓位在 1:2 止盈，剩余 50% 在 1:5 止盈
+	TPLevels []TPLevel `json:"tpLevels,omitempty"`
+}
+
+// ReversePositionReq 一键反手请求
+type ReversePositionReq struct {
+	Symbol        string `json:"symbol"`                   // 交易对，必填
+	PositionSide  string `json:"positionSide,omitempty"`   // LONG / SHORT / BOTH
+	QuoteQuantity string `json:"quoteQuantity,omitempty"`  // 反向开仓金额(USDT)，不填则用原仓位等值保证金
+	Leverage      int    `json:"leverage,omitempty"`       // 反向杠杆，不填则用原仓位杠杆
 }
 
 // PlaceOrderResult 下单结果，包含主单和可选的止盈止损单
 type PlaceOrderResult struct {
-	Order      *futures.CreateOrderResponse `json:"order"`                // 主单
-	TakeProfit *AlgoOrderResponse           `json:"takeProfit,omitempty"` // 止盈单 (Algo Order)
-	StopLoss   *AlgoOrderResponse           `json:"stopLoss,omitempty"`   // 止损单 (Algo Order)
+	Order       *futures.CreateOrderResponse `json:"order"`                      // 主单
+	TakeProfit  *AlgoOrderResponse           `json:"takeProfit,omitempty"`       // 止盈单 (单级)
+	TakeProfits []*AlgoOrderResponse         `json:"takeProfits,omitempty"`      // 阶梯止盈单列表
+	StopLoss    *AlgoOrderResponse           `json:"stopLoss,omitempty"`         // 止损单 (Algo Order)
+}
+
+// ReversePositionResult 一键反手结果
+type ReversePositionResult struct {
+	CloseOrder *futures.CreateOrderResponse `json:"closeOrder"`          // 平仓单
+	OpenOrder  *futures.CreateOrderResponse `json:"openOrder,omitempty"` // 反向开仓单
 }
 
 // PlaceOrder 下单，支持市价单/限价单/止损止盈
@@ -409,88 +436,107 @@ func formatPrice(price float64, precision int) string {
 	return formatted
 }
 
+// calcStopLossPrice 根据请求参数计算止损价
+func calcStopLossPrice(req PlaceOrderReq, entryPrice float64, quantity string) (float64, float64, error) {
+	isBuy := req.Side == futures.SideTypeBuy
+	var stopLossPrice, slDistance float64
+
+	if req.StopLossPrice != "" {
+		var err error
+		stopLossPrice, err = strconv.ParseFloat(req.StopLossPrice, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid stopLossPrice: %w", err)
+		}
+		if isBuy {
+			slDistance = entryPrice - stopLossPrice
+		} else {
+			slDistance = stopLossPrice - entryPrice
+		}
+	} else if req.StopLossAmount > 0 {
+		qty, parseErr := strconv.ParseFloat(quantity, 64)
+		if parseErr != nil || qty == 0 {
+			return 0, 0, fmt.Errorf("invalid quantity for TPSL calculation: %s", quantity)
+		}
+		slDistance = req.StopLossAmount / qty
+		if isBuy {
+			stopLossPrice = entryPrice - slDistance
+		} else {
+			stopLossPrice = entryPrice + slDistance
+		}
+		log.Printf("[TPSL] stopLossAmount=%.2f USDT, quantity=%s, slDistance=%.4f, SL=%.4f",
+			req.StopLossAmount, quantity, slDistance, stopLossPrice)
+	} else {
+		return 0, 0, fmt.Errorf("stopLossPrice or stopLossAmount is required")
+	}
+
+	return stopLossPrice, slDistance, nil
+}
+
 // PlaceTPSLOrders 在主单成交后挂止盈止损单
-// entryPrice: 入场价（市价单用 avgPrice，限价单用 price）
-// quantity: 与主单相同的数量（代币数量字符串）
-//
-// 支持两种模式：
-//  1. stopLossPrice + riskReward → 直接用止损价，计算止盈价
-//  2. stopLossAmount + riskReward → 根据 USDT 亏损金额计算止损价和止盈价
-//     公式：止损价距 = stopLossAmount / quantity, SL = entry ± 价距, TP = entry ± 价距×riskReward
+// 支持单级止盈和阶梯止盈两种模式：
+//   - 单级：用 riskReward 计算单个 TP (closePosition=true)
+//   - 阶梯：用 tpLevels 数组，每级指定 percent + riskReward，按比例拆分数量
 func PlaceTPSLOrders(ctx context.Context, req PlaceOrderReq, entryPrice float64, quantity string) (tp *AlgoOrderResponse, sl *AlgoOrderResponse, err error) {
 	isBuy := req.Side == futures.SideTypeBuy
 
-	var stopLossPrice, takeProfitPrice float64
-
-	if req.StopLossPrice != "" {
-		// 方式1：用户直接指定止损价
-		stopLossPrice, err = strconv.ParseFloat(req.StopLossPrice, 64)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid stopLossPrice: %w", err)
-		}
-		takeProfitPrice = calcTPSLPrices(entryPrice, stopLossPrice, req.RiskReward, isBuy)
-	} else if req.StopLossAmount > 0 {
-		// 方式2：根据 USDT 亏损金额计算
-		qty, parseErr := strconv.ParseFloat(quantity, 64)
-		if parseErr != nil || qty == 0 {
-			return nil, nil, fmt.Errorf("invalid quantity for TPSL calculation: %s", quantity)
-		}
-		// 止损价距（每个代币承受的价格波动）= USDT亏损额 / 代币数量
-		slDistance := req.StopLossAmount / qty
-		if isBuy {
-			stopLossPrice = entryPrice - slDistance
-			takeProfitPrice = entryPrice + slDistance*req.RiskReward
-		} else {
-			stopLossPrice = entryPrice + slDistance
-			takeProfitPrice = entryPrice - slDistance*req.RiskReward
-		}
-		log.Printf("[TPSL] stopLossAmount=%.2f USDT, quantity=%s, slDistance=%.4f, SL=%.4f, TP=%.4f",
-			req.StopLossAmount, quantity, slDistance, stopLossPrice, takeProfitPrice)
-	} else {
-		return nil, nil, fmt.Errorf("stopLossPrice or stopLossAmount is required")
+	// 计算止损价
+	stopLossPrice, slDistance, err := calcStopLossPrice(req, entryPrice, quantity)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	// 验证价格合理性
-	if isBuy {
-		if stopLossPrice >= entryPrice {
-			return nil, nil, fmt.Errorf("stopLossPrice (%.2f) must be below entryPrice (%.2f) for BUY", stopLossPrice, entryPrice)
-		}
-		if takeProfitPrice <= entryPrice {
-			return nil, nil, fmt.Errorf("calculated takeProfitPrice (%.2f) must be above entryPrice (%.2f)", takeProfitPrice, entryPrice)
-		}
-	} else {
-		if stopLossPrice <= entryPrice {
-			return nil, nil, fmt.Errorf("stopLossPrice (%.2f) must be above entryPrice (%.2f) for SELL", stopLossPrice, entryPrice)
-		}
-		if takeProfitPrice >= entryPrice {
-			return nil, nil, fmt.Errorf("calculated takeProfitPrice (%.2f) must be below entryPrice (%.2f)", takeProfitPrice, entryPrice)
-		}
+	// 验证止损价合理性
+	if isBuy && stopLossPrice >= entryPrice {
+		return nil, nil, fmt.Errorf("stopLossPrice (%.2f) must be below entryPrice (%.2f) for BUY", stopLossPrice, entryPrice)
+	}
+	if !isBuy && stopLossPrice <= entryPrice {
+		return nil, nil, fmt.Errorf("stopLossPrice (%.2f) must be above entryPrice (%.2f) for SELL", stopLossPrice, entryPrice)
 	}
 
-	// 获取价格精度
+	// 获取价格和数量精度
 	pricePrecision, err := getSymbolPricePrecision(ctx, req.Symbol)
 	if err != nil {
 		return nil, nil, err
 	}
-	tpPriceStr := formatPrice(takeProfitPrice, pricePrecision)
 	slPriceStr := formatPrice(stopLossPrice, pricePrecision)
 
-	// 止盈止损的平仓方向：做多用 SELL 平，做空用 BUY 平
 	closeSide := futures.SideTypeSell
 	if !isBuy {
 		closeSide = futures.SideTypeBuy
 	}
 
-	log.Printf("[TPSL] entryPrice=%.4f, stopLoss=%s, takeProfit=%s, riskReward=1:%.1f",
-		entryPrice, slPriceStr, tpPriceStr, req.RiskReward)
-
-	// 确保 positionSide 有值
 	positionSide := req.PositionSide
 	if positionSide == "" {
 		positionSide = futures.PositionSideTypeBoth
 	}
 
-	// 下止盈单 (TAKE_PROFIT_MARKET: 触发后市价平仓) — 使用 Algo Order API
+	// 如果有阶梯止盈，走 combo 路径
+	if len(req.TPLevels) > 0 {
+		return placeComboTPSL(ctx, req, entryPrice, quantity, stopLossPrice, slDistance, pricePrecision, closeSide, positionSide)
+	}
+
+	// 单级止盈
+	var takeProfitPrice float64
+	if isBuy {
+		takeProfitPrice = entryPrice + slDistance*req.RiskReward
+	} else {
+		takeProfitPrice = entryPrice - slDistance*req.RiskReward
+	}
+
+	// 验证止盈价
+	if isBuy && takeProfitPrice <= entryPrice {
+		return nil, nil, fmt.Errorf("calculated takeProfitPrice (%.2f) must be above entryPrice (%.2f)", takeProfitPrice, entryPrice)
+	}
+	if !isBuy && takeProfitPrice >= entryPrice {
+		return nil, nil, fmt.Errorf("calculated takeProfitPrice (%.2f) must be below entryPrice (%.2f)", takeProfitPrice, entryPrice)
+	}
+
+	tpPriceStr := formatPrice(takeProfitPrice, pricePrecision)
+
+	log.Printf("[TPSL] entryPrice=%.4f, stopLoss=%s, takeProfit=%s, riskReward=1:%.1f",
+		entryPrice, slPriceStr, tpPriceStr, req.RiskReward)
+
+	// 下止盈单
 	tpResult, err := PlaceAlgoOrder(ctx, AlgoOrderParams{
 		Symbol:        req.Symbol,
 		Side:          string(closeSide),
@@ -503,7 +549,7 @@ func PlaceTPSLOrders(ctx context.Context, req PlaceOrderReq, entryPrice float64,
 		return nil, nil, fmt.Errorf("place take-profit order: %w", err)
 	}
 
-	// 下止损单 (STOP_MARKET: 触发后市价平仓) — 使用 Algo Order API
+	// 下止损单
 	slResult, err := PlaceAlgoOrder(ctx, AlgoOrderParams{
 		Symbol:        req.Symbol,
 		Side:          string(closeSide),
@@ -513,11 +559,205 @@ func PlaceTPSLOrders(ctx context.Context, req PlaceOrderReq, entryPrice float64,
 		PositionSide:  string(positionSide),
 	})
 	if err != nil {
-		// 止损挂单失败，尝试撤销已挂的止盈单
 		log.Printf("[TPSL] stop-loss failed, cancelling take-profit algo order %d: %v", tpResult.AlgoID, err)
 		_ = CancelAlgoOrder(ctx, req.Symbol, tpResult.AlgoID)
 		return nil, nil, fmt.Errorf("place stop-loss order: %w", err)
 	}
 
 	return tpResult, slResult, nil
+}
+
+// placeComboTPSL 阶梯止盈止损：多个 TP 级别 + 一个 SL
+// 每个 TP 级别按 percent 拆分数量，SL 使用 closePosition=true 平掉剩余
+func placeComboTPSL(ctx context.Context, req PlaceOrderReq, entryPrice float64, quantity string,
+	stopLossPrice, slDistance float64, pricePrecision int,
+	closeSide futures.SideType, positionSide futures.PositionSideType,
+) (tp *AlgoOrderResponse, sl *AlgoOrderResponse, err error) {
+	isBuy := req.Side == futures.SideTypeBuy
+	slPriceStr := formatPrice(stopLossPrice, pricePrecision)
+
+	// 验证 tpLevels 总比例
+	var totalPct float64
+	for _, lv := range req.TPLevels {
+		if lv.Percent <= 0 || lv.RiskReward <= 0 {
+			return nil, nil, fmt.Errorf("tpLevels: each level must have positive percent and riskReward")
+		}
+		totalPct += lv.Percent
+	}
+	if math.Abs(totalPct-100) > 0.01 {
+		return nil, nil, fmt.Errorf("tpLevels: total percent must equal 100, got %.2f", totalPct)
+	}
+
+	// 获取数量精度
+	qtyPrecision, stepSize, err := getSymbolPrecision(ctx, req.Symbol)
+	if err != nil {
+		return nil, nil, err
+	}
+	totalQty, _ := strconv.ParseFloat(quantity, 64)
+
+	var tpResults []*AlgoOrderResponse
+	var placedAlgoIDs []int64
+
+	// 逐级下止盈单
+	for i, lv := range req.TPLevels {
+		var tpPrice float64
+		if isBuy {
+			tpPrice = entryPrice + slDistance*lv.RiskReward
+		} else {
+			tpPrice = entryPrice - slDistance*lv.RiskReward
+		}
+		tpPriceStr := formatPrice(tpPrice, pricePrecision)
+
+		// 计算该级别的数量
+		levelQty := totalQty * lv.Percent / 100
+		levelQty = roundToStepSize(levelQty, stepSize)
+		levelQtyStr := formatQuantity(levelQty, qtyPrecision)
+
+		log.Printf("[ComboTPSL] Level %d: %.0f%% qty=%s, TP=%.4f (rr=1:%.1f)",
+			i+1, lv.Percent, levelQtyStr, tpPrice, lv.RiskReward)
+
+		tpResult, tpErr := PlaceAlgoOrder(ctx, AlgoOrderParams{
+			Symbol:       req.Symbol,
+			Side:         string(closeSide),
+			OrderType:    "TAKE_PROFIT_MARKET",
+			TriggerPrice: tpPriceStr,
+			Quantity:     levelQtyStr,
+			PositionSide: string(positionSide),
+		})
+		if tpErr != nil {
+			// 撤销已挂的止盈单
+			for _, id := range placedAlgoIDs {
+				_ = CancelAlgoOrder(ctx, req.Symbol, id)
+			}
+			return nil, nil, fmt.Errorf("place combo TP level %d: %w", i+1, tpErr)
+		}
+		tpResults = append(tpResults, tpResult)
+		placedAlgoIDs = append(placedAlgoIDs, tpResult.AlgoID)
+	}
+
+	// 下止损单 (closePosition=true，平掉剩余全部)
+	slResult, slErr := PlaceAlgoOrder(ctx, AlgoOrderParams{
+		Symbol:        req.Symbol,
+		Side:          string(closeSide),
+		OrderType:     "STOP_MARKET",
+		TriggerPrice:  slPriceStr,
+		ClosePosition: true,
+		PositionSide:  string(positionSide),
+	})
+	if slErr != nil {
+		for _, id := range placedAlgoIDs {
+			_ = CancelAlgoOrder(ctx, req.Symbol, id)
+		}
+		return nil, nil, fmt.Errorf("place combo SL: %w", slErr)
+	}
+
+	// 返回第一个 TP 作为兼容字段，完整列表在 TakeProfits
+	var firstTP *AlgoOrderResponse
+	if len(tpResults) > 0 {
+		firstTP = tpResults[0]
+	}
+
+	// 注意：tpResults 存储在调用方的 PlaceOrderResult.TakeProfits 中
+	// 这里通过闭包无法直接设置，需要调用方处理
+	// 暂时返回 firstTP, slResult；调用方需检查 req.TPLevels 来获取完整列表
+	// 为了解决这个问题，我们把 tpResults 存在全局临时变量中
+	lastComboTPResults = tpResults
+
+	return firstTP, slResult, nil
+}
+
+// lastComboTPResults 临时存储最近一次 combo TP 的所有结果
+// 在 PlaceOrderViaWs 中读取后清空
+var lastComboTPResults []*AlgoOrderResponse
+
+// ReversePosition 一键反手：平掉当前仓位，然后反向开仓
+func ReversePosition(ctx context.Context, req ReversePositionReq) (*ReversePositionResult, error) {
+	if req.Symbol == "" {
+		return nil, fmt.Errorf("symbol is required")
+	}
+
+	posSide := futures.PositionSideType(req.PositionSide)
+	if posSide == "" {
+		posSide = futures.PositionSideTypeBoth
+	}
+
+	// 查询当前仓位
+	position, err := findPosition(ctx, req.Symbol, posSide)
+	if err != nil {
+		return nil, fmt.Errorf("find position: %w", err)
+	}
+
+	posAmt, _ := strconv.ParseFloat(position.PositionAmt, 64)
+	if posAmt == 0 {
+		return nil, fmt.Errorf("no open position for %s", req.Symbol)
+	}
+
+	isLong := posAmt > 0
+	entryPrice, _ := strconv.ParseFloat(position.EntryPrice, 64)
+	posLeverage, _ := strconv.Atoi(position.Leverage)
+
+	// 平仓
+	closeResp, err := ClosePositionViaWs(ctx, ClosePositionReq{
+		Symbol:       req.Symbol,
+		PositionSide: posSide,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("close position: %w", err)
+	}
+
+	result := &ReversePositionResult{CloseOrder: closeResp}
+
+	// 计算反向开仓参数
+	leverage := req.Leverage
+	if leverage == 0 {
+		leverage = posLeverage
+	}
+
+	quoteQty := req.QuoteQuantity
+	if quoteQty == "" {
+		// 用原仓位的保证金等值开仓：notional / leverage
+		absAmt := math.Abs(posAmt)
+		notional := absAmt * entryPrice
+		margin := notional / float64(leverage)
+		quoteQty = strconv.FormatFloat(margin, 'f', 2, 64)
+	}
+
+	// 反向：原多→开空，原空→开多
+	var newSide futures.SideType
+	var newPosSide futures.PositionSideType
+	if isLong {
+		newSide = futures.SideTypeSell
+		newPosSide = futures.PositionSideTypeShort
+	} else {
+		newSide = futures.SideTypeBuy
+		newPosSide = futures.PositionSideTypeLong
+	}
+	if posSide == futures.PositionSideTypeBoth {
+		newPosSide = futures.PositionSideTypeBoth
+	}
+
+	// 反向开仓
+	openReq := PlaceOrderReq{
+		Source:        "reverse",
+		Symbol:        req.Symbol,
+		Side:          newSide,
+		OrderType:     futures.OrderTypeMarket,
+		PositionSide:  newPosSide,
+		QuoteQuantity: quoteQty,
+		Leverage:      leverage,
+	}
+
+	openResult, err := PlaceOrderViaWs(ctx, openReq)
+	if err != nil {
+		log.Printf("[Reverse] Close succeeded but open failed: %v", err)
+		return result, fmt.Errorf("reverse open failed (position already closed): %w", err)
+	}
+	result.OpenOrder = openResult.Order
+
+	log.Printf("[Reverse] %s %s → %s, closeOrderId=%d, openOrderId=%d",
+		req.Symbol, map[bool]string{true: "LONG", false: "SHORT"}[isLong],
+		map[bool]string{true: "SHORT", false: "LONG"}[isLong],
+		closeResp.OrderID, openResult.Order.OrderID)
+
+	return result, nil
 }
