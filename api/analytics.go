@@ -378,7 +378,7 @@ func includeTradeForAnalytics(r TradeRecord) bool {
 }
 
 func parseTradePnl(r TradeRecord) float64 {
-	v, _ := strconv.ParseFloat(strings.TrimSpace(r.RealizedPnl), 64)
+	v := r.RealizedPnl
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0
 	}

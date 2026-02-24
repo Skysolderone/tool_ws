@@ -3,7 +3,6 @@ package api
 import (
 	"fmt"
 	"log"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -11,7 +10,7 @@ import (
 // RiskConfig 风控配置
 type RiskConfig struct {
 	DailyMaxLosses int  `json:"dailyMaxLosses"` // 每日最大亏损次数，0=不限制
-	Enabled        bool `json:"enabled"`         // 是否启用风控
+	Enabled        bool `json:"enabled"`        // 是否启用风控
 }
 
 // riskState 风控运行时状态
@@ -151,7 +150,7 @@ func recoverDailyPnl() {
 	var totalPnl float64
 	var lossCount int
 	for _, r := range records {
-		pnl, _ := strconv.ParseFloat(r.RealizedPnl, 64)
+		pnl := r.RealizedPnl
 		totalPnl += pnl
 		if pnl < 0 {
 			lossCount++

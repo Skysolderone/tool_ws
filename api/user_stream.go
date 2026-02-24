@@ -141,7 +141,7 @@ func handleOrderUpdate(update futures.WsOrderTradeUpdate) {
 
 	// 2. 如果是平仓单（reduceOnly / 止盈止损触发），找到对应的 OPEN 记录
 	if realizedPnl != "" && realizedPnl != "0" && realizedPnl != "0.00000000" {
-		pnl, _ := strconv.ParseFloat(realizedPnl, 64)
+		pnl := parseNumeric(realizedPnl)
 		if pnl != 0 {
 			updateOpenTradeWithPnl(update)
 		}
@@ -157,19 +157,19 @@ func updateTradeFromOrder(record *TradeRecord, update futures.WsOrderTradeUpdate
 		// 如果有 lastFilledPrice 更有意义
 	}
 	if update.AveragePrice != "" && update.AveragePrice != "0" {
-		record.Price = update.AveragePrice
+		record.Price = parseNumeric(update.AveragePrice)
 		changed = true
 	}
 
 	// 更新数量
 	if update.AccumulatedFilledQty != "" && update.AccumulatedFilledQty != "0" {
-		record.Quantity = update.AccumulatedFilledQty
+		record.Quantity = parseNumeric(update.AccumulatedFilledQty)
 		changed = true
 	}
 
 	// 更新 realizedPnl
 	if update.RealizedPnL != "" && update.RealizedPnL != "0" && update.RealizedPnL != "0.00000000" {
-		record.RealizedPnl = update.RealizedPnL
+		record.RealizedPnl = parseNumeric(update.RealizedPnL)
 		changed = true
 	}
 
@@ -190,7 +190,7 @@ func updateTradeFromOrder(record *TradeRecord, update futures.WsOrderTradeUpdate
 		if err := UpdateTradeRecord(record); err != nil {
 			log.Printf("[UserStream] Failed to update trade record %d: %v", record.ID, err)
 		} else {
-			log.Printf("[UserStream] Updated trade record: id=%d, orderId=%d, price=%s", record.ID, record.OrderID, record.Price)
+			log.Printf("[UserStream] Updated trade record: id=%d, orderId=%d, price=%.8f", record.ID, record.OrderID, record.Price)
 		}
 	}
 }
@@ -221,9 +221,7 @@ func updateOpenTradeWithPnl(update futures.WsOrderTradeUpdate) {
 	}
 
 	// 累加 realizedPnl（可能多次部分平仓）
-	oldPnl, _ := strconv.ParseFloat(record.RealizedPnl, 64)
-	newPnl, _ := strconv.ParseFloat(realizedPnl, 64)
-	record.RealizedPnl = strconv.FormatFloat(oldPnl+newPnl, 'f', 8, 64)
+	record.RealizedPnl += parseNumeric(realizedPnl)
 
 	// 判断是否完全平仓：查询该 symbol 的当前仓位
 	ctx := context.Background()
@@ -244,19 +242,19 @@ func updateOpenTradeWithPnl(update futures.WsOrderTradeUpdate) {
 			record.CloseReason = "position_closed"
 			now := time.Now().UTC()
 			record.ClosedAt = &now
-			log.Printf("[UserStream] Position fully closed: %s %s, PnL=%s", symbol, positionSide, record.RealizedPnl)
+			log.Printf("[UserStream] Position fully closed: %s %s, PnL=%.8f", symbol, positionSide, record.RealizedPnl)
 		}
 	}
 
 	if err := UpdateTradeRecord(&record); err != nil {
 		log.Printf("[UserStream] Failed to update PnL for trade %d: %v", record.ID, err)
 	} else {
-		log.Printf("[UserStream] Updated PnL: id=%d, symbol=%s, pnl=%s, status=%s",
+		log.Printf("[UserStream] Updated PnL: id=%d, symbol=%s, pnl=%.8f, status=%s",
 			record.ID, symbol, record.RealizedPnl, record.Status)
 	}
 
 	// 通知风控模块
-	pnlFloat, _ := strconv.ParseFloat(realizedPnl, 64)
+	pnlFloat := parseNumeric(realizedPnl)
 	if pnlFloat != 0 {
 		AddDailyPnl(pnlFloat)
 	}

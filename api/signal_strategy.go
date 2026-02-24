@@ -417,18 +417,18 @@ func signalOpenPosition(ctx context.Context, state *signalState, signal string) 
 			PositionSide:  string(posSide),
 			OrderType:     "MARKET",
 			OrderID:       result.Order.OrderID,
-			Quantity:      result.Order.OrigQuantity,
-			Price:         result.Order.AvgPrice,
-			QuoteQuantity: cfg.AmountPerOrder,
+			Quantity:      parseNumeric(result.Order.OrigQuantity),
+			Price:         parseNumeric(result.Order.AvgPrice),
+			QuoteQuantity: parseNumeric(cfg.AmountPerOrder),
 			Leverage:      cfg.Leverage,
 			Status:        "OPEN",
 		}
 		if result.TakeProfit != nil {
-			record.TakeProfitPrice = result.TakeProfit.TriggerPrice
+			record.TakeProfitPrice = parseNumericPtr(result.TakeProfit.TriggerPrice)
 			record.TakeProfitAlgoID = result.TakeProfit.AlgoID
 		}
 		if result.StopLoss != nil {
-			record.StopLossPrice = result.StopLoss.TriggerPrice
+			record.StopLossPrice = parseNumericPtr(result.StopLoss.TriggerPrice)
 			record.StopLossAlgoID = result.StopLoss.AlgoID
 		}
 		if err := SaveTradeRecord(record); err != nil {

@@ -7,8 +7,19 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/adshao/go-binance/v2/futures"
+)
+
+const exchangeInfoCacheTTL = 5 * time.Minute
+
+var (
+	exchangeInfoMu       sync.RWMutex
+	exchangeInfoRefresh  sync.Mutex
+	exchangeInfoCachedAt time.Time
+	exchangeInfoData     *futures.ExchangeInfo
 )
 
 // TPLevel 阶梯止盈级别
@@ -48,18 +59,18 @@ type PlaceOrderReq struct {
 
 // ReversePositionReq 一键反手请求
 type ReversePositionReq struct {
-	Symbol        string `json:"symbol"`                   // 交易对，必填
-	PositionSide  string `json:"positionSide,omitempty"`   // LONG / SHORT / BOTH
-	QuoteQuantity string `json:"quoteQuantity,omitempty"`  // 反向开仓金额(USDT)，不填则用原仓位等值保证金
-	Leverage      int    `json:"leverage,omitempty"`       // 反向杠杆，不填则用原仓位杠杆
+	Symbol        string `json:"symbol"`                  // 交易对，必填
+	PositionSide  string `json:"positionSide,omitempty"`  // LONG / SHORT / BOTH
+	QuoteQuantity string `json:"quoteQuantity,omitempty"` // 反向开仓金额(USDT)，不填则用原仓位等值保证金
+	Leverage      int    `json:"leverage,omitempty"`      // 反向杠杆，不填则用原仓位杠杆
 }
 
 // PlaceOrderResult 下单结果，包含主单和可选的止盈止损单
 type PlaceOrderResult struct {
-	Order       *futures.CreateOrderResponse `json:"order"`                      // 主单
-	TakeProfit  *AlgoOrderResponse           `json:"takeProfit,omitempty"`       // 止盈单 (单级)
-	TakeProfits []*AlgoOrderResponse         `json:"takeProfits,omitempty"`      // 阶梯止盈单列表
-	StopLoss    *AlgoOrderResponse           `json:"stopLoss,omitempty"`         // 止损单 (Algo Order)
+	Order       *futures.CreateOrderResponse `json:"order"`                 // 主单
+	TakeProfit  *AlgoOrderResponse           `json:"takeProfit,omitempty"`  // 止盈单 (单级)
+	TakeProfits []*AlgoOrderResponse         `json:"takeProfits,omitempty"` // 阶梯止盈单列表
+	StopLoss    *AlgoOrderResponse           `json:"stopLoss,omitempty"`    // 止损单 (Algo Order)
 }
 
 // ReversePositionResult 一键反手结果
@@ -189,7 +200,7 @@ func getCurrentPrice(ctx context.Context, symbol, limitPrice string) (float64, e
 
 // getSymbolPrecision 获取交易对的精度和步长信息
 func getSymbolPrecision(ctx context.Context, symbol string) (precision int, stepSize float64, err error) {
-	info, err := Client.NewExchangeInfoService().Do(ctx)
+	info, err := getExchangeInfoCached(ctx)
 	if err != nil {
 		return 0, 0, fmt.Errorf("fetch exchange info: %w", err)
 	}
@@ -415,7 +426,7 @@ func calcTPSLPrices(entryPrice, stopLossPrice, riskReward float64, isBuy bool) (
 
 // getSymbolPricePrecision 获取交易对的价格精度
 func getSymbolPricePrecision(ctx context.Context, symbol string) (int, error) {
-	info, err := Client.NewExchangeInfoService().Do(ctx)
+	info, err := getExchangeInfoCached(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("fetch exchange info: %w", err)
 	}
@@ -426,6 +437,44 @@ func getSymbolPricePrecision(ctx context.Context, symbol string) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("symbol %s not found", symbol)
+}
+
+func getExchangeInfoCached(ctx context.Context) (*futures.ExchangeInfo, error) {
+	now := time.Now()
+
+	exchangeInfoMu.RLock()
+	if exchangeInfoData != nil && now.Sub(exchangeInfoCachedAt) < exchangeInfoCacheTTL {
+		data := exchangeInfoData
+		exchangeInfoMu.RUnlock()
+		return data, nil
+	}
+	exchangeInfoMu.RUnlock()
+
+	// 仅允许一个请求刷新缓存，避免高并发下重复请求 Binance。
+	exchangeInfoRefresh.Lock()
+	defer exchangeInfoRefresh.Unlock()
+
+	// double check
+	now = time.Now()
+	exchangeInfoMu.RLock()
+	if exchangeInfoData != nil && now.Sub(exchangeInfoCachedAt) < exchangeInfoCacheTTL {
+		data := exchangeInfoData
+		exchangeInfoMu.RUnlock()
+		return data, nil
+	}
+	exchangeInfoMu.RUnlock()
+
+	info, err := Client.NewExchangeInfoService().Do(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	exchangeInfoMu.Lock()
+	exchangeInfoData = info
+	exchangeInfoCachedAt = time.Now()
+	exchangeInfoMu.Unlock()
+
+	return info, nil
 }
 
 // formatPrice 格式化价格为指定精度的字符串

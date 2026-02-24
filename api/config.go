@@ -52,6 +52,8 @@ type DatabaseConfig struct {
 	DBName   string `json:"dbname"`
 	SSLMode  string `json:"sslmode"`
 	TimeZone string `json:"timezone"`
+	// AutoMigrate 是否在启动时自动执行数据库迁移；默认 true
+	AutoMigrate bool `json:"autoMigrate"`
 }
 
 // DSN 生成 PostgreSQL 连接字符串
@@ -74,6 +76,13 @@ var Cfg Config
 // LoadConfig 从 JSON 文件加载配置
 // configPath: 配置文件路径，如 "config.json"
 func LoadConfig(configPath string) error {
+	// 默认值
+	Cfg = Config{
+		Database: DatabaseConfig{
+			AutoMigrate: true,
+		},
+	}
+
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read config file %s: %w", configPath, err)

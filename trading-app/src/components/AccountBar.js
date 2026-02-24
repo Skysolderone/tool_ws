@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useMemo } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import api, { WS_PRICE_BASE, AUTH_TOKEN } from '../services/api';
 import { colors, spacing, radius, fontSize } from '../services/theme';
 import SymbolPicker from './SymbolPicker';
 
@@ -8,34 +7,14 @@ import SymbolPicker from './SymbolPicker';
  * 交易 Tab 顶部账户摘要条
  * 左: SymbolPicker  中: 实时价格+涨跌  右: 余额+今日盈亏
  */
-export default function AccountBar({ symbol, onChangeSymbol, markPrice }) {
-  const [balance, setBalance] = useState(null);
-  const [todayPnl, setTodayPnl] = useState(null);
-
-  const fetchAccount = useCallback(async () => {
-    try {
-      const res = await api.getBalance();
-      if (res?.data) {
-        const balVal = parseFloat(res.data.crossWalletBalance || res.data.balance || '0');
-        setBalance(balVal);
-        // todayPnl 可从 positions unrealizedProfit 汇总
-        const posRes = await api.getPositions();
-        if (posRes?.data) {
-          let pnl = 0;
-          posRes.data.forEach((p) => {
-            pnl += parseFloat(p.unRealizedProfit || '0');
-          });
-          setTodayPnl(pnl);
-        }
-      }
-    } catch (_) {}
-  }, []);
-
-  useEffect(() => {
-    fetchAccount();
-    const iv = setInterval(fetchAccount, 10000);
-    return () => clearInterval(iv);
-  }, [fetchAccount]);
+export default function AccountBar({ symbol, onChangeSymbol, markPrice, balance, positions = [] }) {
+  const todayPnl = useMemo(() => {
+    let pnl = 0;
+    positions.forEach((p) => {
+      pnl += parseFloat(p.unRealizedProfit || '0');
+    });
+    return pnl;
+  }, [positions]);
 
   const fmtPrice = (v) => {
     if (v == null) return '--';

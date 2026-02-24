@@ -65,18 +65,18 @@ func HandlePlaceOrder(c context.Context, ctx *app.RequestContext) {
 			PositionSide:  string(req.PositionSide),
 			OrderType:     string(req.OrderType),
 			OrderID:       resp.Order.OrderID,
-			Quantity:      resp.Order.OrigQuantity,
-			Price:         resp.Order.AvgPrice,
-			QuoteQuantity: req.QuoteQuantity,
+			Quantity:      parseNumeric(resp.Order.OrigQuantity),
+			Price:         parseNumeric(resp.Order.AvgPrice),
+			QuoteQuantity: parseNumeric(req.QuoteQuantity),
 			Leverage:      req.Leverage,
 			Status:        "OPEN",
 		}
 		if resp.TakeProfit != nil {
-			record.TakeProfitPrice = resp.TakeProfit.TriggerPrice
+			record.TakeProfitPrice = parseNumericPtr(resp.TakeProfit.TriggerPrice)
 			record.TakeProfitAlgoID = resp.TakeProfit.AlgoID
 		}
 		if resp.StopLoss != nil {
-			record.StopLossPrice = resp.StopLoss.TriggerPrice
+			record.StopLossPrice = parseNumericPtr(resp.StopLoss.TriggerPrice)
 			record.StopLossAlgoID = resp.StopLoss.AlgoID
 		}
 		if err := SaveTradeRecord(record); err != nil {

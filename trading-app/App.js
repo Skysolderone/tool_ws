@@ -64,6 +64,10 @@ export default function App() {
   // ===== 全局交易币对 =====
   const [tradeSymbol, setTradeSymbol] = useState(DEFAULT_SYMBOL);
   const [strategySymbol, setStrategySymbol] = useState(DEFAULT_SYMBOL);
+  const [accountSnapshot, setAccountSnapshot] = useState({
+    balance: null,
+    positions: [],
+  });
 
   // ===== 新闻/监控 =====
   const [newsHasNew, setNewsHasNew] = useState(false);
@@ -101,6 +105,35 @@ export default function App() {
       }, 200 - (now - lastUpdateRef.current));
     }
   }, []);
+
+  // ===== 统一账户轮询（余额 + 持仓）=====
+  const refreshAccountSnapshot = useCallback(async () => {
+    try {
+      const [balRes, posRes] = await Promise.all([
+        api.getBalance(),
+        api.getPositions(),
+      ]);
+      const balance = parseFloat(balRes?.data?.crossWalletBalance || balRes?.data?.balance || '0');
+      setAccountSnapshot({
+        balance: Number.isFinite(balance) ? balance : 0,
+        positions: posRes?.data || [],
+      });
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const run = async () => {
+      if (!active) return;
+      await refreshAccountSnapshot();
+    };
+    run();
+    const timer = setInterval(run, 5000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [refreshAccountSnapshot]);
 
   // 全局 WS 价格连接
   useEffect(() => {
@@ -254,6 +287,8 @@ export default function App() {
               symbol={tradeSymbol}
               onChangeSymbol={setTradeSymbol}
               markPrice={markPrice}
+              balance={accountSnapshot.balance}
+              positions={accountSnapshot.positions}
             />
             <SubTabBar
               tabs={TRADE_SUB_TABS}
@@ -262,10 +297,19 @@ export default function App() {
               style={{ marginTop: spacing.sm }}
             />
             {tradeSubTab === 'order' && (
-              <OrderPanel symbol={tradeSymbol} externalMarkPrice={markPrice} />
+              <OrderPanel
+                symbol={tradeSymbol}
+                externalMarkPrice={markPrice}
+                walletBalance={accountSnapshot.balance}
+                positions={accountSnapshot.positions}
+              />
             )}
             {tradeSubTab === 'position' && (
-              <PositionPanel symbol={tradeSymbol} />
+              <PositionPanel
+                symbol={tradeSymbol}
+                positions={accountSnapshot.positions}
+                onRefreshPositions={refreshAccountSnapshot}
+              />
             )}
             {tradeSubTab === 'book' && (
               <OrderBookPanel symbol={tradeSymbol} />

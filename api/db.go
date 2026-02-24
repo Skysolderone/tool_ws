@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/driver/postgres"
@@ -39,17 +42,26 @@ func InitDB() error {
 	sqlDB.SetMaxIdleConns(5)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
-	// 自动迁移表结构
-	if err := autoMigrate(); err != nil {
-		return fmt.Errorf("auto migrate: %w", err)
-	}
-
 	log.Printf("[DB] Connected to PostgreSQL: %s:%d/%s", Cfg.Database.Host, Cfg.Database.Port, Cfg.Database.DBName)
 	return nil
 }
 
-// autoMigrate 自动创建/更新表结构
-func autoMigrate() error {
+// RunMigrations 显式执行数据库迁移（表结构 + 索引）
+func RunMigrations() error {
+	if DB == nil {
+		return nil
+	}
+	if err := autoMigrateSchema(); err != nil {
+		return err
+	}
+	if err := ensureDBIndexes(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// autoMigrateSchema 自动创建/更新表结构
+func autoMigrateSchema() error {
 	return DB.AutoMigrate(
 		&TradeRecord{},
 		&OperationRecord{},
@@ -57,43 +69,91 @@ func autoMigrate() error {
 	)
 }
 
+func ensureDBIndexes() error {
+	if err := createIndexIfMissing(&TradeRecord{}, "Source"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&TradeRecord{}, "Symbol"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&TradeRecord{}, "OrderID"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&TradeRecord{}, "CloseReason"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&TradeRecord{}, "ClosedAt"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&TradeRecord{}, "Status"); err != nil {
+		return err
+	}
+
+	if err := createIndexIfMissing(&OperationRecord{}, "Symbol"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&OperationRecord{}, "Source"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&OperationRecord{}, "Action"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&OperationRecord{}, "Status"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&OperationRecord{}, "RelatedOrderID"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func createIndexIfMissing(model any, field string) error {
+	if DB.Migrator().HasIndex(model, field) {
+		return nil
+	}
+	if err := DB.Migrator().CreateIndex(model, field); err != nil {
+		return fmt.Errorf("create index %T.%s: %w", model, field, err)
+	}
+	return nil
+}
+
 // ========== 数据模型 ==========
 
 // TradeRecord 交易记录
 type TradeRecord struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`
-	Source           string    `gorm:"type:varchar(40);index" json:"source"` // manual / strategy_xxx / hyper_follow
-	Symbol           string    `gorm:"type:varchar(20);index" json:"symbol"`
-	Side             string    `gorm:"type:varchar(10)" json:"side"`         // BUY / SELL
-	PositionSide     string    `gorm:"type:varchar(10)" json:"positionSide"` // LONG / SHORT / BOTH
-	OrderType        string    `gorm:"type:varchar(20)" json:"orderType"`    // MARKET / LIMIT
-	OrderID          int64     `gorm:"index" json:"orderId"`
-	Quantity         string    `gorm:"type:varchar(30)" json:"quantity"`
-	Price            string    `gorm:"type:varchar(30)" json:"price"`         // 成交均价
-	QuoteQuantity    string    `gorm:"type:varchar(30)" json:"quoteQuantity"` // 下单金额 (USDT)
-	Leverage         int       `json:"leverage"`
-	StopLossPrice    string    `gorm:"type:varchar(30)" json:"stopLossPrice,omitempty"`
-	TakeProfitPrice  string    `gorm:"type:varchar(30)" json:"takeProfitPrice,omitempty"`
-	StopLossAlgoID   int64     `json:"stopLossAlgoId,omitempty"`
-	TakeProfitAlgoID int64     `json:"takeProfitAlgoId,omitempty"`
-	RealizedPnl      string    `gorm:"type:varchar(30)" json:"realizedPnl,omitempty"` // 已实现盈亏
-	CloseReason      string    `gorm:"type:varchar(40);index" json:"closeReason,omitempty"`
-	ClosedAt         *time.Time `gorm:"index" json:"closedAt,omitempty"`
-	Status           string    `gorm:"type:varchar(20);index" json:"status"`          // OPEN / CLOSED
-	CreatedAt        time.Time `gorm:"autoCreateTime" json:"createdAt"`
-	UpdatedAt        time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
+	ID               uint       `gorm:"primaryKey" json:"id"`
+	Source           string     `gorm:"type:varchar(40)" json:"source"` // manual / strategy_xxx / hyper_follow
+	Symbol           string     `gorm:"type:varchar(20)" json:"symbol"`
+	Side             string     `gorm:"type:varchar(10)" json:"side"`         // BUY / SELL
+	PositionSide     string     `gorm:"type:varchar(10)" json:"positionSide"` // LONG / SHORT / BOTH
+	OrderType        string     `gorm:"type:varchar(20)" json:"orderType"`    // MARKET / LIMIT
+	OrderID          int64      `json:"orderId"`
+	Quantity         float64    `gorm:"type:numeric(36,18)" json:"quantity"`
+	Price            float64    `gorm:"type:numeric(36,18)" json:"price"`         // 成交均价
+	QuoteQuantity    float64    `gorm:"type:numeric(36,18)" json:"quoteQuantity"` // 下单金额 (USDT)
+	Leverage         int        `json:"leverage"`
+	StopLossPrice    *float64   `gorm:"type:numeric(36,18)" json:"stopLossPrice,omitempty"`
+	TakeProfitPrice  *float64   `gorm:"type:numeric(36,18)" json:"takeProfitPrice,omitempty"`
+	StopLossAlgoID   int64      `json:"stopLossAlgoId,omitempty"`
+	TakeProfitAlgoID int64      `json:"takeProfitAlgoId,omitempty"`
+	RealizedPnl      float64    `gorm:"type:numeric(36,18)" json:"realizedPnl"` // 已实现盈亏
+	CloseReason      string     `gorm:"type:varchar(40)" json:"closeReason,omitempty"`
+	ClosedAt         *time.Time `json:"closedAt,omitempty"`
+	Status           string     `gorm:"type:varchar(20)" json:"status"` // OPEN / CLOSED
+	CreatedAt        time.Time  `gorm:"autoCreateTime" json:"createdAt"`
+	UpdatedAt        time.Time  `gorm:"autoUpdateTime" json:"updatedAt"`
 }
 
 // OperationRecord 操作记录（用于追踪失败下单等事件）
 type OperationRecord struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
-	Symbol         string    `gorm:"type:varchar(20);index" json:"symbol"`
-	Source         string    `gorm:"type:varchar(40);index" json:"source"` // manual / strategy_xxx / unknown
-	Action         string    `gorm:"type:varchar(40);index" json:"action"` // PLACE_ORDER / PLACE_TPSL
-	Status         string    `gorm:"type:varchar(20);index" json:"status"` // FAILED / SUCCESS
+	Symbol         string    `gorm:"type:varchar(20)" json:"symbol"`
+	Source         string    `gorm:"type:varchar(40)" json:"source"` // manual / strategy_xxx / unknown
+	Action         string    `gorm:"type:varchar(40)" json:"action"` // PLACE_ORDER / PLACE_TPSL
+	Status         string    `gorm:"type:varchar(20)" json:"status"` // FAILED / SUCCESS
 	ErrorMessage   string    `gorm:"type:text" json:"errorMessage"`
 	RequestBody    string    `gorm:"type:text" json:"requestBody,omitempty"`
-	RelatedOrderID int64     `gorm:"index" json:"relatedOrderId,omitempty"`
+	RelatedOrderID int64     `json:"relatedOrderId,omitempty"`
 	CreatedAt      time.Time `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt      time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 }
@@ -215,4 +275,20 @@ func GetTradeByOrderID(orderID int64) (*TradeRecord, error) {
 		return nil, err
 	}
 	return &record, nil
+}
+
+func parseNumeric(v string) float64 {
+	n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
+		return 0
+	}
+	return n
+}
+
+func parseNumericPtr(v string) *float64 {
+	n := parseNumeric(v)
+	if n == 0 {
+		return nil
+	}
+	return &n
 }

@@ -1,9 +1,16 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"tools/api"
 
@@ -12,6 +19,7 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "config.json", "配置文件路径")
+	migrateOnly := flag.Bool("migrate-only", false, "仅执行数据库迁移后退出")
 	flag.Parse()
 
 	// 加载配置文件
@@ -24,6 +32,16 @@ func main() {
 	// 初始化数据库
 	if err := api.InitDB(); err != nil {
 		log.Fatalf("Failed to init database: %v", err)
+	}
+	if api.Cfg.Database.AutoMigrate || *migrateOnly {
+		if err := api.RunMigrations(); err != nil {
+			log.Fatalf("Failed to run migrations: %v", err)
+		}
+		log.Printf("[DB] Migrations completed")
+	}
+	if *migrateOnly {
+		log.Printf("[DB] migrate-only finished, exiting")
+		return
 	}
 
 	// 初始化风控
@@ -40,7 +58,7 @@ func main() {
 	if wsPort == 0 {
 		wsPort = 10089
 	}
-	go api.StartWsPriceServer(wsPort)
+	wsServer := api.StartWsPriceServer(wsPort)
 
 	// 从配置读取监听地址
 	host := api.Cfg.Server.Host
@@ -54,7 +72,14 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	log.Printf("[Server] Listening on %s", addr)
 
-	h := server.New(server.WithHostPorts(addr))
+	h := server.New(
+		server.WithHostPorts(addr),
+		server.WithReadTimeout(15*time.Second),
+		server.WithWriteTimeout(20*time.Second),
+		server.WithIdleTimeout(60*time.Second),
+		server.WithKeepAliveTimeout(60*time.Second),
+		server.WithExitWaitTime(20*time.Second),
+	)
 
 	apiGroup := h.Group("/tool")
 	// Token 认证中间件
@@ -113,5 +138,38 @@ func main() {
 		apiGroup.GET("/doji/status", api.HandleDojiStatus)
 	}
 
-	h.Spin()
+	hErrCh := make(chan error, 1)
+	go func() {
+		hErrCh <- h.Run()
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigCh)
+
+	select {
+	case sig := <-sigCh:
+		log.Printf("[Server] Received signal: %s, shutting down...", sig.String())
+	case err := <-hErrCh:
+		if err != nil {
+			log.Printf("[Server] Hertz stopped with error: %v", err)
+		} else {
+			log.Printf("[Server] Hertz stopped")
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if wsServer != nil {
+		if err := wsServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("[WsProxy] Shutdown error: %v", err)
+		}
+	}
+
+	if err := h.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[Server] Shutdown error: %v", err)
+	}
+
+	log.Printf("[Server] Shutdown complete")
 }

@@ -21,9 +21,9 @@ type PriceCache struct {
 
 // PriceData 价格数据
 type PriceData struct {
-	Symbol      string
-	MarkPrice   float64   // 标记价格
-	LastUpdate  time.Time // 最后更新时间
+	Symbol     string
+	MarkPrice  float64   // 标记价格
+	LastUpdate time.Time // 最后更新时间
 }
 
 var priceCache *PriceCache
@@ -82,9 +82,11 @@ func (pc *PriceCache) subscribePrice(symbol string, stopC chan struct{}) {
 		log.Printf("[PriceCache] WebSocket error for %s: %v", symbol, err)
 	}
 
-	doneC, _, err := futures.WsMarkPriceServe(symbol, handler, errHandler)
+	doneC, stopWsC, err := futures.WsMarkPriceServe(symbol, handler, errHandler)
 	if err != nil {
 		log.Printf("[PriceCache] Failed to start WebSocket for %s: %v", symbol, err)
+		// 启动失败时必须回滚订阅状态，避免后续误判为“已订阅”。
+		pc.removeStopChannelOwned(symbol, stopC)
 		return
 	}
 
@@ -92,13 +94,26 @@ func (pc *PriceCache) subscribePrice(symbol string, stopC chan struct{}) {
 	select {
 	case <-stopC:
 		log.Printf("[PriceCache] Stopped subscription for %s", symbol)
+		if stopWsC != nil {
+			func() {
+				defer func() { _ = recover() }()
+				close(stopWsC)
+			}()
+		}
+		pc.removeStopChannelOwned(symbol, stopC)
 	case <-doneC:
 		log.Printf("[PriceCache] WebSocket closed for %s", symbol)
-		// WebSocket 断开，从停止通道中移除
-		pc.stopMu.Lock()
-		delete(pc.stopChannels, symbol)
-		pc.stopMu.Unlock()
+		pc.removeStopChannelOwned(symbol, stopC)
 	}
+}
+
+// removeStopChannelOwned 仅当当前映射值等于 expected 时才删除，避免误删新订阅。
+func (pc *PriceCache) removeStopChannelOwned(symbol string, expected chan struct{}) {
+	pc.stopMu.Lock()
+	if cur, ok := pc.stopChannels[symbol]; ok && cur == expected {
+		delete(pc.stopChannels, symbol)
+	}
+	pc.stopMu.Unlock()
 }
 
 // GetPrice 获取交易对的当前价格

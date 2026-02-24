@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -1025,9 +1026,8 @@ func handleWsBook(w http.ResponseWriter, r *http.Request) {
 	go client.readPumpBook(roomKey)
 }
 
-// StartWsPriceServer 启动 WebSocket 价格转发服务器
-// 在 Hertz 同端口的 /ws/price 路径上监听
-func StartWsPriceServer(port int) {
+// StartWsPriceServer 启动 WebSocket 价格转发服务器并返回 server 句柄
+func StartWsPriceServer(port int) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/price", handleWsPrice)
 	mux.HandleFunc("/ws/book", handleWsBook)
@@ -1039,7 +1039,20 @@ func StartWsPriceServer(port int) {
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	log.Printf("[WsProxy] Price WebSocket server starting on %s", addr)
 
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Printf("[WsProxy] Server error: %v", err)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("[WsProxy] Server error: %v", err)
+		}
+	}()
+
+	return srv
 }

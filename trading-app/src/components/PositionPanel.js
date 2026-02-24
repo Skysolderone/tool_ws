@@ -6,24 +6,30 @@ import {
 import api from '../services/api';
 import { colors, spacing, radius, fontSize } from '../services/theme';
 
-export default function PositionPanel({ symbol }) {
-  const [positions, setPositions] = useState([]);
+export default function PositionPanel({ symbol, positions: externalPositions, onRefreshPositions }) {
+  const [localPositions, setLocalPositions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [reduceModal, setReduceModal] = useState(null);
   const [reducePercent, setReducePercent] = useState('50');
+  const positions = Array.isArray(externalPositions) ? externalPositions : localPositions;
 
   const fetchPositions = useCallback(async () => {
+    if (onRefreshPositions) {
+      await onRefreshPositions();
+      return;
+    }
     try {
       const data = await api.getPositions();
-      setPositions(data.data || []);
+      setLocalPositions(data.data || []);
     } catch (_) {}
-  }, []);
+  }, [onRefreshPositions]);
 
   useEffect(() => {
+    if (onRefreshPositions) return undefined;
     fetchPositions();
     const timer = setInterval(fetchPositions, 5000);
     return () => clearInterval(timer);
-  }, [fetchPositions]);
+  }, [fetchPositions, onRefreshPositions]);
 
   const handleReverse = (pos) => {
     const amt = parseFloat(pos.positionAmt);

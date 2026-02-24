@@ -14,7 +14,7 @@ const TEMPLATES_KEY = '@order_templates';
  * @param {string} symbol
  * @param {number|null} externalMarkPrice - 从 App.js 传入的实时价格
  */
-export default function OrderPanel({ symbol, externalMarkPrice }) {
+export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = null, positions = [] }) {
   const [side, setSide] = useState('BUY');
   const [quoteQty, setQuoteQty] = useState('5');
   const [leverage, setLeverage] = useState('10');
@@ -37,9 +37,6 @@ export default function OrderPanel({ symbol, externalMarkPrice }) {
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [templateName, setTemplateName] = useState('');
 
-  const [walletBalance, setWalletBalance] = useState(null);
-  const [positions, setPositions] = useState([]);
-
   const markPrice = externalMarkPrice;
 
   // 加载模板
@@ -53,29 +50,6 @@ export default function OrderPanel({ symbol, externalMarkPrice }) {
     setTemplates(list);
     await AsyncStorage.setItem(TEMPLATES_KEY, JSON.stringify(list));
   };
-
-  // 定期获取钱包余额 + 当前持仓
-  useEffect(() => {
-    let alive = true;
-    const fetchAccountData = async () => {
-      try {
-        const [balRes, posRes] = await Promise.all([
-          api.getBalance(),
-          api.getPositions(),
-        ]);
-        if (!alive) return;
-        if (balRes.data) {
-          setWalletBalance(parseFloat(balRes.data.crossWalletBalance || balRes.data.balance || '0'));
-        }
-        if (posRes.data) {
-          setPositions(posRes.data);
-        }
-      } catch (_) {}
-    };
-    fetchAccountData();
-    const timer = setInterval(fetchAccountData, 10000);
-    return () => { alive = false; clearInterval(timer); };
-  }, []);
 
   // 实时计算
   const tpslPreview = useMemo(() => {

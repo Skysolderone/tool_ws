@@ -383,3 +383,30 @@ func TestPriceData_TimestampValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestPriceCache_RemoveStopChannelOwned(t *testing.T) {
+	cache := &PriceCache{
+		prices:       make(map[string]*PriceData),
+		stopChannels: make(map[string]chan struct{}),
+	}
+	symbol := "BTCUSDT"
+
+	owned := make(chan struct{})
+	other := make(chan struct{})
+	cache.stopChannels[symbol] = owned
+
+	// 传入非当前持有 channel，不应删除。
+	cache.removeStopChannelOwned(symbol, other)
+	if _, ok := cache.stopChannels[symbol]; !ok {
+		t.Fatalf("channel should remain when expected channel does not match")
+	}
+
+	// 传入当前持有 channel，应删除。
+	cache.removeStopChannelOwned(symbol, owned)
+	if _, ok := cache.stopChannels[symbol]; ok {
+		t.Fatalf("channel should be removed when expected channel matches")
+	}
+
+	close(owned)
+	close(other)
+}

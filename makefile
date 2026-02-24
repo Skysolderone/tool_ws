@@ -1,6 +1,9 @@
 run:
 	go run main.go
 
+migrate:
+	go run main.go -migrate-only
+
 build-proxy:
 	GOOS=linux GOARCH=amd64  go build -o proxy ./cmd/proxy_server
 
