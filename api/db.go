@@ -122,12 +122,12 @@ func createIndexIfMissing(model any, field string) error {
 // TradeRecord 交易记录
 type TradeRecord struct {
 	ID               uint       `gorm:"primaryKey" json:"id"`
-	Source           string     `gorm:"type:varchar(40)" json:"source"` // manual / strategy_xxx / hyper_follow
-	Symbol           string     `gorm:"type:varchar(20)" json:"symbol"`
+	Source           string     `gorm:"type:varchar(40);index" json:"source"` // manual / strategy_xxx / hyper_follow
+	Symbol           string     `gorm:"type:varchar(20);index" json:"symbol"`
 	Side             string     `gorm:"type:varchar(10)" json:"side"`         // BUY / SELL
 	PositionSide     string     `gorm:"type:varchar(10)" json:"positionSide"` // LONG / SHORT / BOTH
 	OrderType        string     `gorm:"type:varchar(20)" json:"orderType"`    // MARKET / LIMIT
-	OrderID          int64      `json:"orderId"`
+	OrderID          int64      `gorm:"index" json:"orderId"`
 	Quantity         float64    `gorm:"type:numeric(36,18)" json:"quantity"`
 	Price            float64    `gorm:"type:numeric(36,18)" json:"price"`         // 成交均价
 	QuoteQuantity    float64    `gorm:"type:numeric(36,18)" json:"quoteQuantity"` // 下单金额 (USDT)
@@ -137,9 +137,9 @@ type TradeRecord struct {
 	StopLossAlgoID   int64      `json:"stopLossAlgoId,omitempty"`
 	TakeProfitAlgoID int64      `json:"takeProfitAlgoId,omitempty"`
 	RealizedPnl      float64    `gorm:"type:numeric(36,18)" json:"realizedPnl"` // 已实现盈亏
-	CloseReason      string     `gorm:"type:varchar(40)" json:"closeReason,omitempty"`
-	ClosedAt         *time.Time `json:"closedAt,omitempty"`
-	Status           string     `gorm:"type:varchar(20)" json:"status"` // OPEN / CLOSED
+	CloseReason      string     `gorm:"type:varchar(40);index" json:"closeReason,omitempty"`
+	ClosedAt         *time.Time `gorm:"index" json:"closedAt,omitempty"`
+	Status           string     `gorm:"type:varchar(20);index" json:"status"` // OPEN / CLOSED
 	CreatedAt        time.Time  `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt        time.Time  `gorm:"autoUpdateTime" json:"updatedAt"`
 }
@@ -147,13 +147,13 @@ type TradeRecord struct {
 // OperationRecord 操作记录（用于追踪失败下单等事件）
 type OperationRecord struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
-	Symbol         string    `gorm:"type:varchar(20)" json:"symbol"`
-	Source         string    `gorm:"type:varchar(40)" json:"source"` // manual / strategy_xxx / unknown
-	Action         string    `gorm:"type:varchar(40)" json:"action"` // PLACE_ORDER / PLACE_TPSL
-	Status         string    `gorm:"type:varchar(20)" json:"status"` // FAILED / SUCCESS
+	Symbol         string    `gorm:"type:varchar(20);index" json:"symbol"`
+	Source         string    `gorm:"type:varchar(40);index" json:"source"` // manual / strategy_xxx / unknown
+	Action         string    `gorm:"type:varchar(40);index" json:"action"` // PLACE_ORDER / PLACE_TPSL
+	Status         string    `gorm:"type:varchar(20);index" json:"status"` // FAILED / SUCCESS
 	ErrorMessage   string    `gorm:"type:text" json:"errorMessage"`
 	RequestBody    string    `gorm:"type:text" json:"requestBody,omitempty"`
-	RelatedOrderID int64     `json:"relatedOrderId,omitempty"`
+	RelatedOrderID int64     `gorm:"index" json:"relatedOrderId,omitempty"`
 	CreatedAt      time.Time `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt      time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 }
