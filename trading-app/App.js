@@ -23,6 +23,9 @@ import LiquidationMonitorPanel from './src/components/LiquidationMonitorPanel';
 import AnalyticsPanel from './src/components/AnalyticsPanel';
 import WhaleAggregatePanel from './src/components/WhaleAggregatePanel';
 import MarketMonitorPanel from './src/components/MarketMonitorPanel';
+import FundingPanel from './src/components/FundingPanel';
+import StrategyLinkPanel from './src/components/StrategyLinkPanel';
+import SupportResistancePanel from './src/components/SupportResistancePanel';
 import { colors, spacing, radius, fontSize } from './src/services/theme';
 import api, { WS_PRICE_BASE, AUTH_TOKEN } from './src/services/api';
 
@@ -44,6 +47,7 @@ const MAIN_TABS = [
 const TRADE_SUB_TABS = [
   { key: 'order', label: '下单' },
   { key: 'position', label: '持仓' },
+  { key: 'sr', label: '支撑阻力' },
   { key: 'book', label: '盘口' },
   { key: 'log', label: '日志' },
 ];
@@ -267,6 +271,9 @@ export default function App() {
             {tradeSubTab === 'position' && (
               <PositionPanel symbol={tradeSymbol} />
             )}
+            {tradeSubTab === 'sr' && (
+              <SupportResistancePanel symbol={tradeSymbol} externalMarkPrice={markPrice} />
+            )}
             {tradeSubTab === 'book' && (
               <OrderBookPanel symbol={tradeSymbol} />
             )}
@@ -283,6 +290,8 @@ export default function App() {
               <Text style={styles.sectionTitle}>策略控制台</Text>
               <SymbolPicker symbol={strategySymbol} onChangeSymbol={setStrategySymbol} />
             </View>
+            <StrategyLinkPanel symbol={strategySymbol} />
+            <FundingPanel symbol={strategySymbol} />
             <SignalPanel symbol={strategySymbol} />
             <DojiPanel symbol={strategySymbol} />
             <AutoScalePanel symbol={strategySymbol} />

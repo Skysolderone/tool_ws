@@ -610,3 +610,20 @@ func HandleUpdateStrategyLinkRules(c context.Context, ctx *app.RequestContext) {
 	UpdateStrategyLinkRules(req.Rules)
 	ctx.JSON(http.StatusOK, utils.H{"message": "rules updated", "ruleCount": len(req.Rules)})
 }
+
+// ========== 支撑/阻力位 ==========
+
+// HandleGetSRLevels GET /api/sr/levels?symbol=ETHUSDT
+func HandleGetSRLevels(c context.Context, ctx *app.RequestContext) {
+	symbol := ctx.Query("symbol")
+	if symbol == "" {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": "symbol is required"})
+		return
+	}
+	result, err := GetSRLevels(c, symbol)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"data": result})
+}
