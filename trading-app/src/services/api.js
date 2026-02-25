@@ -62,6 +62,17 @@ export default {
   getOrders: (symbol) => apiCall('GET', `/orders?symbol=${symbol || ''}`),
   getOrderBook: (symbol, limit = 100) =>
     apiCall('GET', `/orderbook?symbol=${symbol || ''}&limit=${limit}`),
+  getOrderBookWhale: ({
+    symbol,
+    limit = 500,
+    minNotional = 100000,
+    maxRows = 20,
+    side = 'BOTH',
+  }) =>
+    apiCall(
+      'GET',
+      `/orderbook/whale?symbol=${encodeURIComponent(symbol || '')}&limit=${limit}&minNotional=${minNotional}&maxRows=${maxRows}&side=${encodeURIComponent(side)}`,
+    ),
 
   // 撤单
   cancelOrder: (symbol, orderId) =>

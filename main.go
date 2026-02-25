@@ -90,6 +90,7 @@ func main() {
 		apiGroup.POST("/order", api.HandlePlaceOrder)
 		apiGroup.GET("/orders", api.HandleGetOrders)
 		apiGroup.GET("/orderbook", api.HandleGetOrderBook)
+		apiGroup.GET("/orderbook/whale", api.HandleGetOrderBookWhale)
 		apiGroup.DELETE("/order", api.HandleCancelOrder)
 		apiGroup.POST("/leverage", api.HandleChangeLeverage)
 		apiGroup.POST("/reduce", api.HandleReducePosition)
