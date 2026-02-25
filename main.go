@@ -136,6 +136,20 @@ func main() {
 		apiGroup.POST("/doji/start", api.HandleStartDoji)
 		apiGroup.POST("/doji/stop", api.HandleStopDoji)
 		apiGroup.GET("/doji/status", api.HandleDojiStatus)
+
+		// 资金费率监控
+		apiGroup.POST("/funding/start", api.HandleStartFundingMonitor)
+		apiGroup.POST("/funding/stop", api.HandleStopFundingMonitor)
+		apiGroup.GET("/funding/status", api.HandleFundingStatus)
+
+		// 多策略联动
+		apiGroup.POST("/link/start", api.HandleStartStrategyLink)
+		apiGroup.POST("/link/stop", api.HandleStopStrategyLink)
+		apiGroup.GET("/link/status", api.HandleStrategyLinkStatus)
+		apiGroup.POST("/link/rules", api.HandleUpdateStrategyLinkRules)
+
+		// 支撑/阻力位
+		apiGroup.GET("/sr/levels", api.HandleGetSRLevels)
 	}
 
 	hErrCh := make(chan error, 1)

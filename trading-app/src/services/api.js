@@ -130,6 +130,20 @@ export default {
   startDoji: (config) => apiCall('POST', '/doji/start', config),
   stopDoji: (symbol) => apiCall('POST', '/doji/stop', { symbol }),
   dojiStatus: (symbol) => apiCall('GET', `/doji/status?symbol=${symbol}`),
+
+  // 资金费率监控
+  startFundingMonitor: (config) => apiCall('POST', '/funding/start', config),
+  stopFundingMonitor: () => apiCall('POST', '/funding/stop'),
+  fundingStatus: () => apiCall('GET', '/funding/status'),
+
+  // 多策略联动
+  startStrategyLink: (rules) => apiCall('POST', '/link/start', { rules }),
+  stopStrategyLink: () => apiCall('POST', '/link/stop'),
+  strategyLinkStatus: () => apiCall('GET', '/link/status'),
+  updateStrategyLinkRules: (rules) => apiCall('POST', '/link/rules', { rules }),
+
+  // 支撑/阻力位
+  getSRLevels: (symbol) => apiCall('GET', `/sr/levels?symbol=${symbol}`),
 };
 
 export {
