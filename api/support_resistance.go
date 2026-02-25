@@ -25,6 +25,20 @@ type SRLevel struct {
 	Volume     float64  `json:"volume"`     // 该价位累计成交量
 	Distance   float64  `json:"distance"`   // 距当前价百分比（正=上方, 负=下方）
 	TouchCount int      `json:"touchCount"` // 被触及次数
+	ZoneLow    float64  `json:"zoneLow"`
+	ZoneHigh   float64  `json:"zoneHigh"`
+}
+
+// SRZone 强支撑/阻力区间
+type SRZone struct {
+	Lower      float64  `json:"lower"`
+	Upper      float64  `json:"upper"`
+	Mid        float64  `json:"mid"`
+	Type       string   `json:"type"`       // "SUPPORT" / "RESISTANCE"
+	Strength   int      `json:"strength"`   // 1-4 汇合的周期数量
+	Timeframes []string `json:"timeframes"` // 出现在哪些周期
+	TouchCount int      `json:"touchCount"` // 被触及次数
+	Distance   float64  `json:"distance"`   // 区间中点距当前价百分比
 }
 
 // PivotSet 经典 Pivot Points
@@ -40,14 +54,18 @@ type PivotSet struct {
 
 // SRResponse 完整返回
 type SRResponse struct {
-	Symbol         string    `json:"symbol"`
-	CurrentPrice   float64   `json:"currentPrice"`
-	Supports       []SRLevel `json:"supports"`
-	Resistances    []SRLevel `json:"resistances"`
-	PivotPoints    *PivotSet `json:"pivotPoints"`
-	ClosestSupport *SRLevel  `json:"closestSupport"`
-	ClosestResist  *SRLevel  `json:"closestResist"`
-	CalculatedAt   string    `json:"calculatedAt"`
+	Symbol                string    `json:"symbol"`
+	CurrentPrice          float64   `json:"currentPrice"`
+	Supports              []SRLevel `json:"supports"`
+	Resistances           []SRLevel `json:"resistances"`
+	StrongSupportZones    []SRZone  `json:"strongSupportZones"`
+	StrongResistanceZones []SRZone  `json:"strongResistanceZones"`
+	PivotPoints           *PivotSet `json:"pivotPoints"`
+	ClosestSupport        *SRLevel  `json:"closestSupport"`
+	ClosestResist         *SRLevel  `json:"closestResist"`
+	ClosestSupportZone    *SRZone   `json:"closestSupportZone"`
+	ClosestResistZone     *SRZone   `json:"closestResistZone"`
+	CalculatedAt          string    `json:"calculatedAt"`
 }
 
 // swingPoint 内部用的 swing 检测结果
@@ -57,6 +75,7 @@ type swingPoint struct {
 	isHigh    bool // true = swing high (resistance), false = swing low (support)
 	timeframe string
 	index     int // 在 K 线数组中的位置
+	recency   float64
 }
 
 // tfConfig 时间框架配置
@@ -108,8 +127,12 @@ func GetSRLevels(ctx context.Context, symbol string) (*SRResponse, error) {
 		allSwings = append(allSwings, swings...)
 	}
 
-	// 4. 跨周期合并 + 强度评分
-	supports, resistances := mergeAndRankLevels(allSwings, currentPrice, 0.15)
+	// 4. 跨周期合并 + 强度评分（容差按波动率自适应）
+	tolerancePercent := calcAdaptiveTolerancePercent(allKlines, 0.15)
+	log.Printf("[SR] %s adaptive tolerance: %.3f%%", symbol, tolerancePercent)
+	supports, resistances := mergeAndRankLevels(allSwings, currentPrice, tolerancePercent)
+	supportZones := buildStrongZones(supports, currentPrice, "SUPPORT")
+	resistanceZones := buildStrongZones(resistances, currentPrice, "RESISTANCE")
 
 	// 5. 计算经典 Pivot Points（用日线）
 	var pivot *PivotSet
@@ -127,16 +150,29 @@ func GetSRLevels(ctx context.Context, symbol string) (*SRResponse, error) {
 		r := resistances[0]
 		closestResist = &r
 	}
+	var closestSupportZone, closestResistZone *SRZone
+	if len(supportZones) > 0 {
+		z := supportZones[0]
+		closestSupportZone = &z
+	}
+	if len(resistanceZones) > 0 {
+		z := resistanceZones[0]
+		closestResistZone = &z
+	}
 
 	return &SRResponse{
-		Symbol:         symbol,
-		CurrentPrice:   currentPrice,
-		Supports:       supports,
-		Resistances:    resistances,
-		PivotPoints:    pivot,
-		ClosestSupport: closestSupport,
-		ClosestResist:  closestResist,
-		CalculatedAt:   time.Now().Format("2006-01-02 15:04:05"),
+		Symbol:                symbol,
+		CurrentPrice:          currentPrice,
+		Supports:              supports,
+		Resistances:           resistances,
+		StrongSupportZones:    supportZones,
+		StrongResistanceZones: resistanceZones,
+		PivotPoints:           pivot,
+		ClosestSupport:        closestSupport,
+		ClosestResist:         closestResist,
+		ClosestSupportZone:    closestSupportZone,
+		ClosestResistZone:     closestResistZone,
+		CalculatedAt:          time.Now().Format("2006-01-02 15:04:05"),
 	}, nil
 }
 
@@ -226,6 +262,7 @@ func detectSwingLevels(klines []*futures.Kline, period int, timeframe string) []
 				isHigh:    true,
 				timeframe: timeframe,
 				index:     i,
+				recency:   calcSwingRecency(i, n),
 			})
 		}
 		if isSwingLow {
@@ -235,11 +272,114 @@ func detectSwingLevels(klines []*futures.Kline, period int, timeframe string) []
 				isHigh:    false,
 				timeframe: timeframe,
 				index:     i,
+				recency:   calcSwingRecency(i, n),
 			})
 		}
 	}
 
 	return points
+}
+
+// calcSwingRecency 返回 0~1 的新鲜度权重，越靠近最近 K 线越高
+func calcSwingRecency(index, total int) float64 {
+	if total <= 1 {
+		return 1
+	}
+	ratio := float64(index) / float64(total-1)
+	if ratio < 0 {
+		return 0
+	}
+	if ratio > 1 {
+		return 1
+	}
+	return ratio
+}
+
+// calcAdaptiveTolerancePercent 根据多周期 ATR 估算动态聚类容差百分比
+func calcAdaptiveTolerancePercent(allKlines map[string][]*futures.Kline, fallback float64) float64 {
+	type tfWeight struct {
+		weight float64
+	}
+	weights := map[string]tfWeight{
+		"1h": {weight: 0.9},
+		"4h": {weight: 1.0},
+		"1d": {weight: 1.3},
+		"1w": {weight: 0.8},
+	}
+
+	var weightedSum float64
+	var totalWeight float64
+	for tf, cfg := range weights {
+		klines := allKlines[tf]
+		atrPercent := calcATRPercent(klines, 14)
+		if atrPercent <= 0 || math.IsNaN(atrPercent) || math.IsInf(atrPercent, 0) {
+			continue
+		}
+		weightedSum += atrPercent * cfg.weight
+		totalWeight += cfg.weight
+	}
+
+	if totalWeight == 0 {
+		return fallback
+	}
+
+	avgATRPercent := weightedSum / totalWeight
+	// 容差约为 ATR 的 35%，并做上下限约束。
+	tolerancePercent := avgATRPercent * 0.35
+	if tolerancePercent < 0.12 {
+		return 0.12
+	}
+	if tolerancePercent > 0.8 {
+		return 0.8
+	}
+	return tolerancePercent
+}
+
+// calcATRPercent 计算最近 period 根已完成 K 线的 ATR 百分比
+func calcATRPercent(klines []*futures.Kline, period int) float64 {
+	n := len(klines)
+	// 至少需要 period+1 根用于 prev close，且使用倒数第二根作为最后一根已完成K线。
+	if n < period+2 {
+		return 0
+	}
+
+	lastCompleted := n - 2
+	start := lastCompleted - period + 1
+	if start < 1 {
+		start = 1
+	}
+
+	var trSum float64
+	var count int
+	for i := start; i <= lastCompleted; i++ {
+		high, okHigh := parsePositiveFloat(klines[i].High)
+		low, okLow := parsePositiveFloat(klines[i].Low)
+		prevClose, okPrevClose := parsePositiveFloat(klines[i-1].Close)
+		if !okHigh || !okLow || !okPrevClose {
+			continue
+		}
+		tr := math.Max(high-low, math.Max(math.Abs(high-prevClose), math.Abs(low-prevClose)))
+		trSum += tr
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+
+	closePrice, okClose := parsePositiveFloat(klines[lastCompleted].Close)
+	if !okClose {
+		return 0
+	}
+	atr := trSum / float64(count)
+	return atr / closePrice * 100
+}
+
+func parsePositiveFloat(s string) (float64, bool) {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return 0, false
+	}
+	return v, true
 }
 
 // mergeAndRankLevels 跨周期合并去重 + 强度评分
@@ -265,6 +405,14 @@ func mergeAndRankLevels(allSwings []swingPoint, currentPrice, tolerancePercent f
 		isHigh     bool // 多数投票
 		highCount  int
 		lowCount   int
+		recencySum float64
+		minPrice   float64
+		maxPrice   float64
+	}
+
+	type rankedLevel struct {
+		level SRLevel
+		score float64
 	}
 
 	var clusters []cluster
@@ -280,6 +428,9 @@ func mergeAndRankLevels(allSwings []swingPoint, currentPrice, tolerancePercent f
 			volumeSum:  allSwings[i].volume,
 			count:      1,
 			timeframes: map[string]bool{allSwings[i].timeframe: true},
+			recencySum: allSwings[i].recency,
+			minPrice:   allSwings[i].price,
+			maxPrice:   allSwings[i].price,
 		}
 		if allSwings[i].isHigh {
 			c.highCount = 1
@@ -302,6 +453,9 @@ func mergeAndRankLevels(allSwings []swingPoint, currentPrice, tolerancePercent f
 				c.volumeSum += allSwings[j].volume
 				c.count++
 				c.timeframes[allSwings[j].timeframe] = true
+				c.recencySum += allSwings[j].recency
+				c.minPrice = math.Min(c.minPrice, allSwings[j].price)
+				c.maxPrice = math.Max(c.maxPrice, allSwings[j].price)
 				if allSwings[j].isHigh {
 					c.highCount++
 				} else {
@@ -316,7 +470,8 @@ func mergeAndRankLevels(allSwings []swingPoint, currentPrice, tolerancePercent f
 	}
 
 	// 转换为 SRLevel
-	var supports, resistances []SRLevel
+	var supportRanked, resistanceRanked []rankedLevel
+	sideSlack := tolerance
 	for _, c := range clusters {
 		avgPrice := c.priceSum / float64(c.count)
 		dist := (avgPrice - currentPrice) / currentPrice * 100
@@ -332,37 +487,67 @@ func mergeAndRankLevels(allSwings []swingPoint, currentPrice, tolerancePercent f
 
 		level := SRLevel{
 			Price:      math.Round(avgPrice*100) / 100, // 保留2位小数
-			Type:       "SUPPORT",
-			Strength:   len(c.timeframes), // 汇合度 = 出现在几个周期
+			Strength:   len(c.timeframes),              // 汇合度 = 出现在几个周期
 			Timeframes: tfs,
 			Volume:     c.volumeSum,
 			Distance:   math.Round(dist*100) / 100,
 			TouchCount: c.count,
 		}
+		zonePad := tolerance * (0.4 + 0.1*float64(minInt(level.Strength, 4)-1))
+		zoneLow := math.Max(0, c.minPrice-zonePad)
+		zoneHigh := c.maxPrice + zonePad
+		if zoneHigh < zoneLow {
+			zoneLow, zoneHigh = zoneHigh, zoneLow
+		}
+		level.ZoneLow = round2(zoneLow)
+		level.ZoneHigh = round2(zoneHigh)
 
-		if avgPrice >= currentPrice {
+		avgRecency := c.recencySum / float64(c.count)
+		dominance := math.Abs(float64(c.highCount-c.lowCount)) / float64(c.count)
+		touchBonus := math.Min(float64(c.count), 6) / 6.0
+		score := float64(level.Strength)*2.0 + avgRecency + dominance + touchBonus
+
+		if c.isHigh {
+			// 已明显跌破的旧阻力（远离当前价）直接过滤，避免误导。
+			if avgPrice < currentPrice-sideSlack {
+				continue
+			}
 			level.Type = "RESISTANCE"
-			resistances = append(resistances, level)
+			resistanceRanked = append(resistanceRanked, rankedLevel{level: level, score: score})
 		} else {
-			supports = append(supports, level)
+			// 已明显突破的旧支撑（远离当前价）直接过滤，避免误导。
+			if avgPrice > currentPrice+sideSlack {
+				continue
+			}
+			level.Type = "SUPPORT"
+			supportRanked = append(supportRanked, rankedLevel{level: level, score: score})
 		}
 	}
 
-	// 支撑位：按距离近排序（距离为负，绝对值小的在前），强度大的优先
-	sort.Slice(supports, func(i, j int) bool {
-		if supports[i].Strength != supports[j].Strength {
-			return supports[i].Strength > supports[j].Strength
+	// 支撑位：先按综合分数，再按距离近
+	sort.Slice(supportRanked, func(i, j int) bool {
+		if supportRanked[i].score != supportRanked[j].score {
+			return supportRanked[i].score > supportRanked[j].score
 		}
-		return math.Abs(supports[i].Distance) < math.Abs(supports[j].Distance)
+		return math.Abs(supportRanked[i].level.Distance) < math.Abs(supportRanked[j].level.Distance)
 	})
 
-	// 阻力位：按距离近排序（距离为正，值小的在前），强度大的优先
-	sort.Slice(resistances, func(i, j int) bool {
-		if resistances[i].Strength != resistances[j].Strength {
-			return resistances[i].Strength > resistances[j].Strength
+	// 阻力位：先按综合分数，再按距离近
+	sort.Slice(resistanceRanked, func(i, j int) bool {
+		if resistanceRanked[i].score != resistanceRanked[j].score {
+			return resistanceRanked[i].score > resistanceRanked[j].score
 		}
-		return resistances[i].Distance < resistances[j].Distance
+		return math.Abs(resistanceRanked[i].level.Distance) < math.Abs(resistanceRanked[j].level.Distance)
 	})
+
+	supports := make([]SRLevel, 0, len(supportRanked))
+	for _, r := range supportRanked {
+		supports = append(supports, r.level)
+	}
+	resistances := make([]SRLevel, 0, len(resistanceRanked))
+	for _, r := range resistanceRanked {
+		resistances = append(resistances, r.level)
+	}
 
 	// 限制返回数量
 	maxLevels := 8
@@ -374,6 +559,128 @@ func mergeAndRankLevels(allSwings []swingPoint, currentPrice, tolerancePercent f
 	}
 
 	return supports, resistances
+}
+
+func buildStrongZones(levels []SRLevel, currentPrice float64, zoneType string) []SRZone {
+	if len(levels) == 0 {
+		return nil
+	}
+
+	// 强区间优先规则：至少具备跨周期汇合或多次触达。
+	var zones []SRZone
+	for _, lv := range levels {
+		if lv.Strength < 2 && lv.TouchCount < 2 {
+			continue
+		}
+		zones = appendOrMergeZone(zones, levelToZone(lv, currentPrice, zoneType), currentPrice)
+	}
+
+	// 若没有满足“强”规则，退化为最近的前两个区间，避免空数据。
+	if len(zones) == 0 {
+		for i := 0; i < len(levels) && i < 2; i++ {
+			zones = appendOrMergeZone(zones, levelToZone(levels[i], currentPrice, zoneType), currentPrice)
+		}
+	}
+
+	sort.Slice(zones, func(i, j int) bool {
+		if zones[i].Strength != zones[j].Strength {
+			return zones[i].Strength > zones[j].Strength
+		}
+		return math.Abs(zones[i].Distance) < math.Abs(zones[j].Distance)
+	})
+
+	maxZones := 4
+	if len(zones) > maxZones {
+		zones = zones[:maxZones]
+	}
+	return zones
+}
+
+func levelToZone(level SRLevel, currentPrice float64, zoneType string) SRZone {
+	lower := level.ZoneLow
+	upper := level.ZoneHigh
+	if lower <= 0 || upper <= 0 || upper < lower {
+		halfWidth := math.Max(level.Price*0.0008, 0.01)
+		lower = math.Max(0, level.Price-halfWidth)
+		upper = level.Price + halfWidth
+	}
+	mid := (lower + upper) / 2
+	distance := 0.0
+	if currentPrice > 0 {
+		distance = (mid - currentPrice) / currentPrice * 100
+	}
+	return SRZone{
+		Lower:      round2(lower),
+		Upper:      round2(upper),
+		Mid:        round2(mid),
+		Type:       zoneType,
+		Strength:   level.Strength,
+		Timeframes: append([]string(nil), level.Timeframes...),
+		TouchCount: level.TouchCount,
+		Distance:   round2(distance),
+	}
+}
+
+func appendOrMergeZone(zones []SRZone, candidate SRZone, currentPrice float64) []SRZone {
+	nearGap := currentPrice * 0.05 / 100 // 0.05%
+	if nearGap <= 0 {
+		nearGap = candidate.Mid * 0.0005
+	}
+
+	for i := range zones {
+		if zones[i].Type != candidate.Type {
+			continue
+		}
+		if candidate.Lower <= zones[i].Upper+nearGap && candidate.Upper >= zones[i].Lower-nearGap {
+			zones[i].Lower = round2(math.Min(zones[i].Lower, candidate.Lower))
+			zones[i].Upper = round2(math.Max(zones[i].Upper, candidate.Upper))
+			zones[i].Mid = round2((zones[i].Lower + zones[i].Upper) / 2)
+			zones[i].Strength = maxInt(zones[i].Strength, candidate.Strength)
+			zones[i].TouchCount += candidate.TouchCount
+			zones[i].Timeframes = unionTimeframes(zones[i].Timeframes, candidate.Timeframes)
+			if currentPrice > 0 {
+				zones[i].Distance = round2((zones[i].Mid - currentPrice) / currentPrice * 100)
+			}
+			return zones
+		}
+	}
+	return append(zones, candidate)
+}
+
+func unionTimeframes(a, b []string) []string {
+	set := make(map[string]bool, len(a)+len(b))
+	for _, tf := range a {
+		if tf != "" {
+			set[tf] = true
+		}
+	}
+	for _, tf := range b {
+		if tf != "" {
+			set[tf] = true
+		}
+	}
+	out := make([]string, 0, len(set))
+	for tf := range set {
+		out = append(out, tf)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return tfOrder(out[i]) < tfOrder(out[j])
+	})
+	return out
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // calculatePivotPoints 根据日线计算经典 Pivot Points

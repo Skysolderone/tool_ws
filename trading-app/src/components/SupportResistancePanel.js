@@ -32,7 +32,7 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
   // 用 externalMarkPrice 实时更新距离
   const currentPrice = externalMarkPrice || data?.currentPrice || 0;
 
-  // 动态重算距离
+  // 动态重算点位距离（兼容旧展示与回退）
   const supports = useMemo(() => {
     if (!data?.supports || !currentPrice) return data?.supports || [];
     return data.supports.map((lv) => ({
@@ -49,10 +49,52 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
     }));
   }, [data?.resistances, currentPrice]);
 
-  const closestSupport = supports.length > 0 ? supports[0] : null;
-  const closestResist = resistances.length > 0 ? resistances[0] : null;
+  const supportZones = useMemo(() => {
+    const raw = (data?.strongSupportZones?.length ? data.strongSupportZones : supports.map((lv) => ({
+      lower: lv.zoneLow || lv.price,
+      upper: lv.zoneHigh || lv.price,
+      mid: lv.price,
+      type: 'SUPPORT',
+      strength: lv.strength,
+      timeframes: lv.timeframes,
+      touchCount: lv.touchCount,
+    })));
+    return raw.map((z) => {
+      const lower = Number(z.lower) || 0;
+      const upper = Number(z.upper) || 0;
+      const mid = Number(z.mid) || ((lower + upper) / 2);
+      const distance = currentPrice
+        ? Math.round(((mid - currentPrice) / currentPrice) * 10000) / 100
+        : (Number(z.distance) || 0);
+      return { ...z, lower, upper, mid, distance };
+    });
+  }, [data?.strongSupportZones, supports, currentPrice]);
 
-  const renderLevel = (level, isClosest, type) => {
+  const resistanceZones = useMemo(() => {
+    const raw = (data?.strongResistanceZones?.length ? data.strongResistanceZones : resistances.map((lv) => ({
+      lower: lv.zoneLow || lv.price,
+      upper: lv.zoneHigh || lv.price,
+      mid: lv.price,
+      type: 'RESISTANCE',
+      strength: lv.strength,
+      timeframes: lv.timeframes,
+      touchCount: lv.touchCount,
+    })));
+    return raw.map((z) => {
+      const lower = Number(z.lower) || 0;
+      const upper = Number(z.upper) || 0;
+      const mid = Number(z.mid) || ((lower + upper) / 2);
+      const distance = currentPrice
+        ? Math.round(((mid - currentPrice) / currentPrice) * 10000) / 100
+        : (Number(z.distance) || 0);
+      return { ...z, lower, upper, mid, distance };
+    });
+  }, [data?.strongResistanceZones, resistances, currentPrice]);
+
+  const closestSupportZone = supportZones.length > 0 ? supportZones[0] : null;
+  const closestResistZone = resistanceZones.length > 0 ? resistanceZones[0] : null;
+
+  const renderZone = (zone, isClosest, type) => {
     const isResist = type === 'RESISTANCE';
     const bgColor = isClosest
       ? (isResist ? colors.redBg : colors.greenBg)
@@ -60,23 +102,19 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
     const borderColor = isClosest
       ? (isResist ? colors.red : colors.green)
       : 'transparent';
-    const priceColor = isClosest
-      ? (isResist ? colors.redLight : colors.greenLight)
-      : colors.text;
+    const rangeText = `${zone.lower.toFixed(2)} - ${zone.upper.toFixed(2)}`;
 
-    // 强度条宽度
-    const strengthPct = Math.min(level.strength / 4, 1) * 100;
-
+    const strengthPct = Math.min((zone.strength || 1) / 4, 1) * 100;
     return (
-      <View key={level.price} style={[styles.levelRow, { backgroundColor: bgColor, borderLeftColor: borderColor, borderLeftWidth: isClosest ? 3 : 0 }]}>
+      <View key={`${zone.lower}-${zone.upper}-${zone.mid}`} style={[styles.levelRow, { backgroundColor: bgColor, borderLeftColor: borderColor, borderLeftWidth: isClosest ? 3 : 0 }]}>
         <View style={styles.levelMain}>
           <View style={styles.levelPriceRow}>
-            <Text style={[styles.levelPrice, { color: priceColor }]}>
-              {level.price.toFixed(2)}
+            <Text style={[styles.zoneRange, { color: isResist ? colors.redLight : colors.greenLight }]}>
+              {rangeText}
             </Text>
-            <Text style={styles.levelStars}>{STARS[level.strength] || STARS[4]}</Text>
+            <Text style={styles.levelStars}>{STARS[zone.strength] || STARS[4]}</Text>
           </View>
-          {/* 强度条 */}
+          <Text style={styles.zoneMid}>中位 {zone.mid.toFixed(2)}</Text>
           <View style={styles.strengthTrack}>
             <View style={[styles.strengthFill, {
               width: `${strengthPct}%`,
@@ -84,15 +122,15 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
             }]} />
           </View>
           <View style={styles.levelMeta}>
-            <Text style={styles.levelTF}>{level.timeframes?.join(' / ')}</Text>
-            <Text style={styles.levelTouch}>触及 {level.touchCount}x</Text>
+            <Text style={styles.levelTF}>{zone.timeframes?.join(' / ')}</Text>
+            <Text style={styles.levelTouch}>触及 {zone.touchCount}x</Text>
           </View>
         </View>
         <View style={styles.levelRight}>
           <Text style={[styles.levelDist, {
             color: isResist ? colors.redLight : colors.greenLight,
           }]}>
-            {level.distance >= 0 ? '+' : ''}{level.distance.toFixed(2)}%
+            {zone.distance >= 0 ? '+' : ''}{zone.distance.toFixed(2)}%
           </Text>
         </View>
       </View>
@@ -138,46 +176,46 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
       )}
 
       {/* 最近支撑/阻力概览 */}
-      {(closestResist || closestSupport) && (
+      {(closestResistZone || closestSupportZone) && (
         <View style={styles.overviewRow}>
-          {closestResist && (
+          {closestResistZone && (
             <View style={[styles.overviewItem, styles.overviewResist]}>
-              <Text style={styles.overviewLabel}>最近阻力</Text>
+              <Text style={styles.overviewLabel}>最近阻力区间</Text>
               <Text style={[styles.overviewPrice, { color: colors.redLight }]}>
-                {closestResist.price.toFixed(2)}
+                {closestResistZone.lower.toFixed(2)} - {closestResistZone.upper.toFixed(2)}
               </Text>
               <Text style={[styles.overviewDist, { color: colors.redLight }]}>
-                +{Math.abs(closestResist.distance).toFixed(2)}%
+                {closestResistZone.distance >= 0 ? '+' : ''}{closestResistZone.distance.toFixed(2)}%
               </Text>
             </View>
           )}
-          {closestSupport && (
+          {closestSupportZone && (
             <View style={[styles.overviewItem, styles.overviewSupport]}>
-              <Text style={styles.overviewLabel}>最近支撑</Text>
+              <Text style={styles.overviewLabel}>最近支撑区间</Text>
               <Text style={[styles.overviewPrice, { color: colors.greenLight }]}>
-                {closestSupport.price.toFixed(2)}
+                {closestSupportZone.lower.toFixed(2)} - {closestSupportZone.upper.toFixed(2)}
               </Text>
               <Text style={[styles.overviewDist, { color: colors.greenLight }]}>
-                -{Math.abs(closestSupport.distance).toFixed(2)}%
+                {closestSupportZone.distance >= 0 ? '+' : ''}{closestSupportZone.distance.toFixed(2)}%
               </Text>
             </View>
           )}
         </View>
       )}
 
-      {/* 阻力位列表 */}
-      {resistances.length > 0 && (
+      {/* 强阻力区间 */}
+      {resistanceZones.length > 0 && (
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.red }]}>阻力位</Text>
-          {resistances.slice(0, 5).map((lv, idx) => renderLevel(lv, idx === 0, 'RESISTANCE'))}
+          <Text style={[styles.sectionTitle, { color: colors.red }]}>强阻力区间</Text>
+          {resistanceZones.slice(0, 4).map((z, idx) => renderZone(z, idx === 0, 'RESISTANCE'))}
         </View>
       )}
 
-      {/* 支撑位列表 */}
-      {supports.length > 0 && (
+      {/* 强支撑区间 */}
+      {supportZones.length > 0 && (
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.green }]}>支撑位</Text>
-          {supports.slice(0, 5).map((lv, idx) => renderLevel(lv, idx === 0, 'SUPPORT'))}
+          <Text style={[styles.sectionTitle, { color: colors.green }]}>强支撑区间</Text>
+          {supportZones.slice(0, 4).map((z, idx) => renderZone(z, idx === 0, 'SUPPORT'))}
         </View>
       )}
 
@@ -341,6 +379,17 @@ const styles = StyleSheet.create({
   levelPrice: {
     fontSize: fontSize.md,
     fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  zoneRange: {
+    fontSize: fontSize.md,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  zoneMid: {
+    marginTop: 2,
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
     fontVariant: ['tabular-nums'],
   },
   levelStars: {
