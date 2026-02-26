@@ -1,17 +1,25 @@
 {
   "cli": {
-    "version": ">= 16.0.0"
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
   },
   "build": {
+    "base": {
+      "node": "20.19.4"
+    },
     "preview": {
+      "extends": "base",
       "android": {
-        "buildType": "apk"
+        "buildType": "apk",
+        "image": "latest"
       },
       "distribution": "internal"
     },
     "production": {
+      "extends": "base",
       "android": {
-        "buildType": "apk"
+        "buildType": "apk",
+        "image": "latest"
       }
     }
   }
