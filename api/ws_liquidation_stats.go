@@ -61,6 +61,7 @@ type liquidationStatsPayload struct {
 	Timezone      string `json:"timezone"`
 	StartedAt     int64  `json:"startedAt"`
 	LastEventTime int64  `json:"lastEventTime"`
+	EventCount    uint64 `json:"eventCount"`
 	Stats         struct {
 		Daily []liquidationBucketStat `json:"daily"`
 		H4    []liquidationBucketStat `json:"h4"`
@@ -547,6 +548,7 @@ func (s *liquidationStatsStore) snapshot(now time.Time) liquidationStatsPayload 
 		Timezone:      "UTC",
 		StartedAt:     s.startedAt,
 		LastEventTime: s.lastEventTime,
+		EventCount:    s.eventCount,
 	}
 
 	dayCurrent := utcDayStart(now).UnixMilli()

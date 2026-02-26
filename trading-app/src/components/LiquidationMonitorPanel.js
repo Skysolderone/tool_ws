@@ -27,6 +27,7 @@ const EMPTY_LIQ_STATS = Object.freeze({
   updatedAt: 0,
   startedAt: 0,
   lastEventTime: 0,
+  eventCount: 0,
   topSymbols: { h1: [], h4: [], day: [] },
 });
 
@@ -35,6 +36,18 @@ const EMPTY_HISTORY = Object.freeze({
   h4: [],
   h1: [],
 });
+
+const LIQ_PANEL_CACHE = {
+  stats: EMPTY_LIQ_STATS,
+  history: EMPTY_HISTORY,
+  historyTab: 'h1',
+  alertThreshold: DEFAULT_ALERT_THRESHOLD,
+  alertInput: String(DEFAULT_ALERT_THRESHOLD / 1e6),
+  alertEnabled: true,
+  spikeDetected: null,
+  lastUpdatedAt: 0,
+  lastAlertAt: 0,
+};
 
 function toNumber(value) {
   const n = Number(value);
@@ -125,8 +138,8 @@ function RatioLabel({ buyValue, sellValue }) {
   const sellPct = (100 - parseFloat(buyPct)).toFixed(1);
   return (
     <View style={ratioStyles.labelRow}>
-      <Text style={ratioStyles.buyLabel}>多 {buyPct}%</Text>
-      <Text style={ratioStyles.sellLabel}>空 {sellPct}%</Text>
+      <Text style={ratioStyles.buyLabel}>BUY {buyPct}%</Text>
+      <Text style={ratioStyles.sellLabel}>SELL {sellPct}%</Text>
     </View>
   );
 }
@@ -197,11 +210,11 @@ function TrendBarChart({ data, maxBars = 24 }) {
       <View style={chartStyles.legend}>
         <View style={chartStyles.legendItem}>
           <View style={[chartStyles.legendDot, { backgroundColor: colors.green }]} />
-          <Text style={chartStyles.legendText}>多头主导</Text>
+          <Text style={chartStyles.legendText}>BUY主导</Text>
         </View>
         <View style={chartStyles.legendItem}>
           <View style={[chartStyles.legendDot, { backgroundColor: colors.red }]} />
-          <Text style={chartStyles.legendText}>空头主导</Text>
+          <Text style={chartStyles.legendText}>SELL主导</Text>
         </View>
         <View style={chartStyles.legendItem}>
           <View style={[chartStyles.legendDot, { backgroundColor: colors.gold }]} />
@@ -279,32 +292,53 @@ const chartStyles = StyleSheet.create({
 
 // ========== 主组件 ==========
 export default function LiquidationMonitorPanel({ onHasNew }) {
-  const [wsConnected, setWsConnected] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [stats, setStats] = useState(EMPTY_LIQ_STATS);
+  const cachedStats = LIQ_PANEL_CACHE.stats || EMPTY_LIQ_STATS;
 
-  const [history, setHistory] = useState(EMPTY_HISTORY);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [loading, setLoading] = useState(() => !(toNumber(cachedStats.updatedAt) > 0 || toNumber(cachedStats.eventCount) > 0));
+  const [error, setError] = useState('');
+  const [stats, setStats] = useState(cachedStats);
+
+  const [history, setHistory] = useState(LIQ_PANEL_CACHE.history || EMPTY_HISTORY);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
-  const [historyTab, setHistoryTab] = useState('h1');
+  const [historyTab, setHistoryTab] = useState(LIQ_PANEL_CACHE.historyTab || 'h1');
   const [nowTs, setNowTs] = useState(Date.now());
 
   // 预警阈值
-  const [alertThreshold, setAlertThreshold] = useState(DEFAULT_ALERT_THRESHOLD);
-  const [alertInput, setAlertInput] = useState(String(DEFAULT_ALERT_THRESHOLD / 1e6));
-  const [alertEnabled, setAlertEnabled] = useState(true);
-  const lastAlertRef = useRef(0);
+  const [alertThreshold, setAlertThreshold] = useState(LIQ_PANEL_CACHE.alertThreshold || DEFAULT_ALERT_THRESHOLD);
+  const [alertInput, setAlertInput] = useState(LIQ_PANEL_CACHE.alertInput || String(DEFAULT_ALERT_THRESHOLD / 1e6));
+  const [alertEnabled, setAlertEnabled] = useState(
+    typeof LIQ_PANEL_CACHE.alertEnabled === 'boolean' ? LIQ_PANEL_CACHE.alertEnabled : true
+  );
+  const lastAlertRef = useRef(LIQ_PANEL_CACHE.lastAlertAt || 0);
 
   // 突增检测
-  const [spikeDetected, setSpikeDetected] = useState(null); // { bucket, ratio }
+  const [spikeDetected, setSpikeDetected] = useState(LIQ_PANEL_CACHE.spikeDetected || null); // { bucket, ratio }
 
   const wsRef = useRef(null);
   const pingTimerRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const mountedRef = useRef(false);
   const closedByUserRef = useRef(false);
-  const lastUpdatedRef = useRef(0);
+  const lastUpdatedRef = useRef(Math.max(LIQ_PANEL_CACHE.lastUpdatedAt || 0, toNumber(cachedStats.updatedAt)));
+  const onHasNewRef = useRef(onHasNew);
+
+  useEffect(() => {
+    onHasNewRef.current = onHasNew;
+  }, [onHasNew]);
+
+  useEffect(() => {
+    LIQ_PANEL_CACHE.stats = stats;
+    LIQ_PANEL_CACHE.history = history;
+    LIQ_PANEL_CACHE.historyTab = historyTab;
+    LIQ_PANEL_CACHE.alertThreshold = alertThreshold;
+    LIQ_PANEL_CACHE.alertInput = alertInput;
+    LIQ_PANEL_CACHE.alertEnabled = alertEnabled;
+    LIQ_PANEL_CACHE.spikeDetected = spikeDetected;
+    LIQ_PANEL_CACHE.lastUpdatedAt = Math.max(lastUpdatedRef.current, toNumber(stats.updatedAt));
+    LIQ_PANEL_CACHE.lastAlertAt = lastAlertRef.current;
+  }, [stats, history, historyTab, alertThreshold, alertInput, alertEnabled, spikeDetected]);
 
   const clearWsTimers = useCallback(() => {
     if (pingTimerRef.current) {
@@ -407,7 +441,7 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
       if (msg.channel === 'liquidationStats') {
         const nextUpdated = toNumber(msg.t || Date.now());
         if (nextUpdated > lastUpdatedRef.current) {
-          onHasNew?.(true);
+          onHasNewRef.current?.(true);
           lastUpdatedRef.current = nextUpdated;
         }
         const nextStats = msg.stats || {};
@@ -420,6 +454,7 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
           updatedAt: nextUpdated,
           startedAt: toNumber(msg.startedAt || 0),
           lastEventTime: toNumber(msg.lastEventTime || 0),
+          eventCount: toNumber(msg.eventCount || 0),
           topSymbols: {
             h1: Array.isArray(topSymbols.h1) ? topSymbols.h1 : [],
             h4: Array.isArray(topSymbols.h4) ? topSymbols.h4 : [],
@@ -447,7 +482,7 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
       if (!mountedRef.current || closedByUserRef.current) return;
       reconnectTimerRef.current = setTimeout(() => { connectWs(); }, WS_RECONNECT_MS);
     };
-  }, [clearWsTimers, onHasNew, requestSnapshot, sendWs, detectSpike, checkThresholdAlert]);
+  }, [clearWsTimers, requestSnapshot, sendWs, detectSpike, checkThresholdAlert]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -468,6 +503,8 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
       clearInterval(nowTimer);
       clearWsTimers();
       if (wsRef.current) { try { wsRef.current.close(); } catch (_) {} wsRef.current = null; }
+      LIQ_PANEL_CACHE.lastUpdatedAt = lastUpdatedRef.current;
+      LIQ_PANEL_CACHE.lastAlertAt = lastAlertRef.current;
     };
   }, [clearWsTimers, connectWs, fetchHistory, requestSnapshot]);
 
@@ -495,7 +532,7 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
     const rows = [
       { label: '1H', mode: 'h1', data: latestStats.h1 },
       { label: '4H', mode: 'h4', data: latestStats.h4 },
-      { label: '1D', mode: 'day', data: latestStats.day },
+      { label: '1D(UTC)', mode: 'day', data: latestStats.day },
     ];
     rows.sort((a, b) => toNumber(b.data?.totalNotional) - toNumber(a.data?.totalNotional));
     return rows[0] || { label: '1H', mode: 'h1', data: null };
@@ -524,7 +561,7 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
       </View>
 
       <Text style={styles.hintText}>
-        WS: {wsConnected ? '已连接' : '重连中'} | 更新: {fmtLocalTime(stats.updatedAt)}
+        WS: {wsConnected ? '已连接' : '重连中'} | 更新: {fmtLocalTime(stats.updatedAt)} | 累计: {toNumber(stats.eventCount).toLocaleString('en-US')} 笔
       </Text>
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
@@ -560,11 +597,11 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
 
           {/* ========== 三栏概览 ========== */}
           <View style={styles.summaryRow}>
-            {[
-              { label: '1H', data: latestStats.h1, mode: 'h1' },
-              { label: '4H', data: latestStats.h4, mode: 'h4' },
-              { label: '1D', data: latestStats.day, mode: 'day' },
-            ].map((item) => (
+              {[
+                { label: '1H', data: latestStats.h1, mode: 'h1' },
+                { label: '4H', data: latestStats.h4, mode: 'h4' },
+                { label: '1D(UTC)', data: latestStats.day, mode: 'day' },
+              ].map((item) => (
               <View key={item.label} style={styles.summaryItem}>
                 <Text style={styles.summaryTitle}>{item.label}</Text>
                 <Text style={styles.summaryRange}>{fmtUtcBucketStart(item.data?.startTime, item.mode)}</Text>
@@ -643,10 +680,13 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
           </View>
 
           {/* ========== 历史数据 ========== */}
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>历史数据</Text>
-            <Text style={styles.sectionCount}>{historyRows.length} 条</Text>
-          </View>
+	          <View style={styles.sectionHeader}>
+	            <Text style={styles.sectionTitle}>历史数据</Text>
+	            <Text style={styles.sectionCount}>{historyRows.length} 条</Text>
+	          </View>
+	          <Text style={styles.hintText}>
+	            说明: BUY=空头被强平，SELL=多头被强平；1D 为 UTC 自然日统计（非滚动24H）
+	          </Text>
 
           <View style={styles.histTabRow}>
             {[
