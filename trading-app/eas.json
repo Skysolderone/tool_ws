@@ -10,16 +10,14 @@
     "preview": {
       "extends": "base",
       "android": {
-        "buildType": "apk",
-        "image": "latest"
+        "buildType": "apk"
       },
       "distribution": "internal"
     },
     "production": {
       "extends": "base",
       "android": {
-        "buildType": "apk",
-        "image": "latest"
+        "buildType": "apk"
       }
     }
   }

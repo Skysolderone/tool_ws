@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ScrollView, Text, StyleSheet, View, TouchableOpacity,
-  TextInput, Alert,
+  TextInput, Alert, Modal,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
@@ -416,13 +416,16 @@ export default function App() {
                 ))}
               </>
             )}
-            {monitorSubTab === 'liquidation' && liqPanelMounted && (
-              <LiquidationMonitorPanel onHasNew={handleLiqHasNew} />
-            )}
             {monitorSubTab === 'market' && marketPanelMounted && (
               <MarketMonitorPanel onHasNew={handleMarketHasNew} />
             )}
           </>
+        )}
+
+        {liqPanelMounted && (
+          <View style={activeTab === 'monitor' && monitorSubTab === 'liquidation' ? undefined : styles.hidden}>
+            <LiquidationMonitorPanel onHasNew={handleLiqHasNew} />
+          </View>
         )}
 
         {/* ==================== 资讯 Tab ==================== */}
@@ -449,11 +452,6 @@ export default function App() {
           {watchAddresses.map((item) => (
             <HyperMonitorPanel key={item.address} address={item.address} onHasNew={handleHyperHasNew} withLiquidationTab={false} />
           ))}
-        </View>
-      )}
-      {liqPanelMounted && !(activeTab === 'monitor' && monitorSubTab === 'liquidation') && (
-        <View style={styles.hidden}>
-          <LiquidationMonitorPanel onHasNew={handleLiqHasNew} />
         </View>
       )}
       {marketPanelMounted && !(activeTab === 'monitor' && monitorSubTab === 'market') && (
@@ -499,6 +497,9 @@ function DashboardContent({ tradeSymbol }) {
   const [positions, setPositions] = useState([]);
   const [riskStatus, setRiskStatus] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [reduceModal, setReduceModal] = useState(null);
+  const [reducePercent, setReducePercent] = useState('50');
 
   const fetchAll = useCallback(async () => {
     try {
@@ -547,6 +548,86 @@ function DashboardContent({ tradeSymbol }) {
     }
   }, [fetchAll]);
 
+  const handleReduce = useCallback(async () => {
+    if (!reduceModal) return;
+    const pct = parseFloat(reducePercent);
+    if (!pct || pct <= 0 || pct > 100) {
+      Alert.alert('提示', '请输入 1-100 的百分比');
+      return;
+    }
+    setActionLoading(true);
+    try {
+      await api.reducePosition({
+        symbol: reduceModal.symbol,
+        positionSide: reduceModal.positionSide || '',
+        percent: pct,
+      });
+      Alert.alert('成功', `减仓 ${pct}% 成功`);
+      setReduceModal(null);
+      fetchAll();
+    } catch (e) {
+      Alert.alert('减仓失败', e.message);
+    } finally {
+      setActionLoading(false);
+    }
+  }, [reduceModal, reducePercent, fetchAll]);
+
+  const handleClose = useCallback((pos) => {
+    const amt = parseFloat(pos.positionAmt || '0');
+    const direction = amt > 0 ? '多' : '空';
+    Alert.alert(
+      '确认平仓',
+      `${pos.symbol} ${direction} ${Math.abs(amt)} 个\n将全部市价平仓`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '确认平仓',
+          style: 'destructive',
+          onPress: async () => {
+            setActionLoading(true);
+            try {
+              await api.closePosition({
+                symbol: pos.symbol,
+                positionSide: pos.positionSide || '',
+              });
+              Alert.alert('成功', '平仓成功');
+              fetchAll();
+            } catch (e) {
+              Alert.alert('平仓失败', e.message);
+            } finally {
+              setActionLoading(false);
+            }
+          },
+        },
+      ],
+    );
+  }, [fetchAll]);
+
+  const showPositionActions = useCallback((pos) => {
+    if (actionLoading) return;
+    const amt = parseFloat(pos.positionAmt || '0');
+    const sideText = amt > 0 ? '多' : '空';
+    Alert.alert(
+      `${pos.symbol} ${sideText} 持仓`,
+      '请选择操作',
+      [
+        {
+          text: '减仓',
+          onPress: () => {
+            setReducePercent('50');
+            setReduceModal(pos);
+          },
+        },
+        {
+          text: '平仓',
+          style: 'destructive',
+          onPress: () => handleClose(pos),
+        },
+        { text: '取消', style: 'cancel' },
+      ],
+    );
+  }, [actionLoading, handleClose]);
+
   return (
     <>
       {/* 账户总览卡 */}
@@ -589,20 +670,29 @@ function DashboardContent({ tradeSymbol }) {
             const pnl = parseFloat(pos.unRealizedProfit || '0');
             const isLong = amt > 0;
             return (
-              <View key={pos.symbol + pos.positionSide} style={[styles.dashPosItem, { borderLeftColor: isLong ? colors.green : colors.red }]}>
-                <View style={styles.dashPosLeft}>
-                  <Text style={styles.dashPosSymbol}>{pos.symbol}</Text>
-                  <View style={[styles.dashPosSide, { backgroundColor: isLong ? colors.greenBg : colors.redBg }]}>
-                    <Text style={{ fontSize: 10, fontWeight: '700', color: isLong ? colors.greenLight : colors.redLight }}>
-                      {isLong ? 'LONG' : 'SHORT'}
-                    </Text>
+              <TouchableOpacity
+                key={pos.symbol + pos.positionSide}
+                style={[styles.dashPosItem, { borderLeftColor: isLong ? colors.green : colors.red }]}
+                onPress={() => showPositionActions(pos)}
+                activeOpacity={0.78}
+                disabled={actionLoading}
+              >
+                <View style={styles.dashPosMainRow}>
+                  <View style={styles.dashPosLeft}>
+                    <Text style={styles.dashPosSymbol}>{pos.symbol}</Text>
+                    <View style={[styles.dashPosSide, { backgroundColor: isLong ? colors.greenBg : colors.redBg }]}>
+                      <Text style={{ fontSize: 10, fontWeight: '700', color: isLong ? colors.greenLight : colors.redLight }}>
+                        {isLong ? 'LONG' : 'SHORT'}
+                      </Text>
+                    </View>
+                    <Text style={styles.dashPosLev}>{pos.leverage}x</Text>
                   </View>
-                  <Text style={styles.dashPosLev}>{pos.leverage}x</Text>
+                  <Text style={[styles.dashPosPnl, { color: pnl >= 0 ? colors.greenLight : colors.redLight }]}>
+                    {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} U
+                  </Text>
                 </View>
-                <Text style={[styles.dashPosPnl, { color: pnl >= 0 ? colors.greenLight : colors.redLight }]}>
-                  {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} U
-                </Text>
-              </View>
+                <Text style={styles.dashPosHint}>点击查看操作</Text>
+              </TouchableOpacity>
             );
           })
         )}
@@ -638,6 +728,49 @@ function DashboardContent({ tradeSymbol }) {
 
       {/* 数据分析 */}
       <AnalyticsPanel sentimentSymbol={tradeSymbol || 'BTCUSDT'} />
+
+      <Modal visible={!!reduceModal} animationType="fade" transparent>
+        <View style={styles.dashModalOverlay}>
+          <View style={styles.dashModal}>
+            <Text style={styles.dashModalTitle}>减仓 {reduceModal?.symbol}</Text>
+            <Text style={styles.dashModalSub}>
+              当前: {reduceModal ? Math.abs(parseFloat(reduceModal.positionAmt || '0')) : 0} 个
+            </Text>
+            <View style={styles.dashPctRow}>
+              {['25', '50', '75', '100'].map((pct) => (
+                <TouchableOpacity
+                  key={pct}
+                  style={[styles.dashPctChip, reducePercent === pct && styles.dashPctChipActive]}
+                  onPress={() => setReducePercent(pct)}
+                >
+                  <Text style={[styles.dashPctChipText, reducePercent === pct && styles.dashPctChipTextActive]}>
+                    {pct}%
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={styles.dashCustomInput}>
+              <Text style={styles.dashCustomLabel}>自定义比例 (%)</Text>
+              <TextInput
+                style={styles.dashInput}
+                value={reducePercent}
+                onChangeText={setReducePercent}
+                keyboardType="decimal-pad"
+                placeholder="1-100"
+                placeholderTextColor={colors.textMuted}
+              />
+            </View>
+            <View style={styles.dashModalActions}>
+              <TouchableOpacity style={styles.dashCancelBtn} onPress={() => setReduceModal(null)}>
+                <Text style={styles.dashCancelText}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.dashConfirmBtn} onPress={handleReduce} disabled={actionLoading}>
+                <Text style={styles.dashConfirmText}>确认减仓 {reducePercent}%</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -896,14 +1029,16 @@ const styles = StyleSheet.create({
     fontSize: fontSize.sm,
   },
   dashPosItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     backgroundColor: colors.surface,
     borderRadius: radius.md,
     borderLeftWidth: 3,
     padding: spacing.md,
     marginBottom: spacing.xs,
+  },
+  dashPosMainRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   dashPosLeft: {
     flexDirection: 'row',
@@ -929,6 +1064,115 @@ const styles = StyleSheet.create({
     fontSize: fontSize.md,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
+  },
+  dashPosHint: {
+    marginTop: spacing.xs,
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+  },
+  dashModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
+  },
+  dashModal: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: colors.card,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    padding: spacing.lg,
+  },
+  dashModalTitle: {
+    color: colors.white,
+    fontSize: fontSize.lg,
+    fontWeight: '700',
+  },
+  dashModalSub: {
+    marginTop: spacing.xs,
+    color: colors.textMuted,
+    fontSize: fontSize.sm,
+  },
+  dashPctRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  dashPctChip: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+  },
+  dashPctChipActive: {
+    borderColor: colors.gold,
+    backgroundColor: colors.goldBg,
+  },
+  dashPctChipText: {
+    color: colors.textMuted,
+    fontSize: fontSize.sm,
+    fontWeight: '600',
+  },
+  dashPctChipTextActive: {
+    color: colors.goldLight,
+    fontWeight: '700',
+  },
+  dashCustomInput: {
+    marginTop: spacing.md,
+    gap: spacing.xs,
+  },
+  dashCustomLabel: {
+    color: colors.textSecondary,
+    fontSize: fontSize.xs,
+  },
+  dashInput: {
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surface,
+    color: colors.text,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    fontSize: fontSize.sm,
+  },
+  dashModalActions: {
+    marginTop: spacing.lg,
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  dashCancelBtn: {
+    flex: 1,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+  },
+  dashCancelText: {
+    color: colors.textMuted,
+    fontWeight: '600',
+    fontSize: fontSize.sm,
+  },
+  dashConfirmBtn: {
+    flex: 1.6,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.gold,
+    backgroundColor: colors.goldBg,
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+  },
+  dashConfirmText: {
+    color: colors.goldLight,
+    fontWeight: '700',
+    fontSize: fontSize.sm,
   },
   riskRow: {
     flexDirection: 'row',
