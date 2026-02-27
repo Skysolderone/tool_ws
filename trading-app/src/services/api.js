@@ -10,6 +10,8 @@ const WS_BIG_TRADE_BASE = 'wss://wws741.top/ws/big-trade';
 const WS_NEWS_BASE = 'wss://wws741.top/ws/news';
 const WS_HYPER_MONITOR_BASE = 'wss://wws741.top/ws/hyper-monitor';
 const WS_LIQUIDATION_BASE = 'wss://wws741.top/ws/liquidation-stats';
+const WS_MARKET_SPIKE_BASE = 'wss://wws741.top/ws/market-spike';
+const WS_MARKET_RANGE_BASE = 'wss://wws741.top/ws/market-range';
 
 async function apiCall(method, path, body = null) {
   const options = {
@@ -165,5 +167,7 @@ export {
   WS_NEWS_BASE,
   WS_HYPER_MONITOR_BASE,
   WS_LIQUIDATION_BASE,
+  WS_MARKET_SPIKE_BASE,
+  WS_MARKET_RANGE_BASE,
   AUTH_TOKEN,
 };

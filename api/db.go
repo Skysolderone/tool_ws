@@ -191,6 +191,15 @@ func SaveFailedOperation(action, source, symbol string, req any, relatedOrderID 
 	if opErr == nil {
 		return
 	}
+	_ = saveOperation(action, source, symbol, req, relatedOrderID, "FAILED", opErr.Error())
+}
+
+// SaveSuccessOperation 保存成功操作记录
+func SaveSuccessOperation(action, source, symbol string, req any, relatedOrderID int64) {
+	_ = saveOperation(action, source, symbol, req, relatedOrderID, "SUCCESS", "")
+}
+
+func saveOperation(action, source, symbol string, req any, relatedOrderID int64, status, errMsg string) error {
 	if source == "" {
 		source = "unknown"
 	}
@@ -209,14 +218,16 @@ func SaveFailedOperation(action, source, symbol string, req any, relatedOrderID 
 		Symbol:         symbol,
 		Source:         source,
 		Action:         action,
-		Status:         "FAILED",
-		ErrorMessage:   opErr.Error(),
+		Status:         status,
+		ErrorMessage:   errMsg,
 		RequestBody:    reqBody,
 		RelatedOrderID: relatedOrderID,
 	}
 	if err := SaveOperationRecord(record); err != nil {
 		log.Printf("[DB] Failed to save operation record: %v", err)
+		return err
 	}
+	return nil
 }
 
 // UpdateTradeRecord 更新交易记录

@@ -14,6 +14,8 @@ const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 const ACTION_LABELS = {
   PLACE_ORDER: '下单',
   PLACE_TPSL: '挂止盈止损',
+  REDUCE_POSITION: '减仓',
+  CLOSE_POSITION: '平仓',
 };
 const SOURCE_LABELS = {
   manual: '手动',
@@ -61,7 +63,7 @@ export default function TradeLogPanel({ symbol }) {
   const fetchTrades = useCallback(async () => {
     const [tradeRes, opRes] = await Promise.allSettled([
       api.getTrades(symbol, 200),
-      api.getOperations(symbol, 'FAILED', 200),
+      api.getOperations(symbol, '', 200),
     ]);
 
     if (tradeRes.status === 'fulfilled') {
@@ -363,17 +365,18 @@ export default function TradeLogPanel({ symbol }) {
         <View style={styles.operationSection}>
           <View style={styles.detailHeader}>
             <Text style={styles.detailTitle}>{selectedDate.replace(/-/g, '/')} 操作记录</Text>
-            <Text style={styles.opHint}>仅失败</Text>
+            <Text style={styles.opHint}>成功+失败</Text>
           </View>
 
           {selectedOperations.length === 0 ? (
-            <Text style={styles.empty}>当天无失败操作</Text>
+            <Text style={styles.empty}>当天无操作记录</Text>
           ) : (
             selectedOperations.map((item, idx) => {
               const date = new Date(item.createdAt);
               const timeStr = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
               const action = ACTION_LABELS[item.action] || item.action || '未知操作';
               const source = SOURCE_LABELS[item.source] || item.source || '未知来源';
+              const isSuccess = item.status === 'SUCCESS';
 
               return (
                 <View key={item.id || `${item.createdAt}-${idx}`} style={styles.opItem}>
@@ -383,10 +386,15 @@ export default function TradeLogPanel({ symbol }) {
                       <View style={styles.opBadge}>
                         <Text style={styles.opBadgeText}>{source}</Text>
                       </View>
+                      <View style={[styles.opBadge, { backgroundColor: isSuccess ? colors.greenBg : colors.redBg }]}>
+                        <Text style={[styles.opBadgeText, { color: isSuccess ? colors.greenLight : colors.redLight }]}>
+                          {isSuccess ? '成功' : '失败'}
+                        </Text>
+                      </View>
                     </View>
                     <Text style={styles.tradeTime}>{timeStr}</Text>
                   </View>
-                  <Text style={styles.opError}>{item.errorMessage || '-'}</Text>
+                  <Text style={styles.opError}>{item.errorMessage || (isSuccess ? '执行成功' : '-')}</Text>
                 </View>
               );
             })

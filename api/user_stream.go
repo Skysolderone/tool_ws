@@ -5,6 +5,7 @@ import (
 	"log"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -139,12 +140,126 @@ func handleOrderUpdate(update futures.WsOrderTradeUpdate) {
 		return
 	}
 
-	// 2. 如果是平仓单（reduceOnly / 止盈止损触发），找到对应的 OPEN 记录
+	// 3. 对减仓/平仓成交单，补一条已平仓记录，保证“当天减仓收益”可见
+	if shouldCreateCloseTradeRecord(update) {
+		if err := createCloseTradeRecordFromUpdate(update); err != nil {
+			log.Printf("[UserStream] Failed to create close trade record: %v", err)
+		}
+		return
+	}
+
+	// 4. 兼容旧数据：如果是平仓单（reduceOnly / 止盈止损触发），找到对应的 OPEN 记录
 	if realizedPnl != "" && realizedPnl != "0" && realizedPnl != "0.00000000" {
 		pnl := parseNumeric(realizedPnl)
 		if pnl != 0 {
 			updateOpenTradeWithPnl(update)
 		}
+	}
+}
+
+func shouldCreateCloseTradeRecord(update futures.WsOrderTradeUpdate) bool {
+	if update.ID == 0 || strings.TrimSpace(update.Symbol) == "" {
+		return false
+	}
+	if update.Status != futures.OrderStatusTypeFilled {
+		return false
+	}
+	if update.IsReduceOnly || update.IsClosingPosition {
+		return true
+	}
+	pnl := parseNumeric(update.RealizedPnL)
+	return pnl != 0
+}
+
+func createCloseTradeRecordFromUpdate(update futures.WsOrderTradeUpdate) error {
+	// 防重：同 orderId 仅保留一条记录
+	if existing, err := GetTradeByOrderID(update.ID); err == nil && existing != nil {
+		return nil
+	}
+
+	qty := parseNumeric(update.AccumulatedFilledQty)
+	if qty <= 0 {
+		qty = parseNumeric(update.LastFilledQty)
+	}
+	if qty <= 0 {
+		qty = parseNumeric(update.OriginalQty)
+	}
+
+	price := parseNumeric(update.AveragePrice)
+	if price <= 0 {
+		price = parseNumeric(update.LastFilledPrice)
+	}
+	if price <= 0 {
+		price = parseNumeric(update.OriginalPrice)
+	}
+
+	positionSide := strings.TrimSpace(string(update.PositionSide))
+	if positionSide == "" {
+		positionSide = string(futures.PositionSideTypeBoth)
+	}
+
+	closeReason := "reduce_position"
+	if update.IsClosingPosition {
+		closeReason = "position_closed"
+	} else if !update.IsReduceOnly {
+		closeReason = "order_realized"
+	}
+
+	now := time.Now().UTC()
+	if update.TradeTime > 0 {
+		now = time.UnixMilli(update.TradeTime).UTC()
+	}
+
+	pnl := parseNumeric(update.RealizedPnL)
+	record := &TradeRecord{
+		Source:        "manual",
+		Symbol:        strings.ToUpper(strings.TrimSpace(update.Symbol)),
+		Side:          string(update.Side),
+		PositionSide:  positionSide,
+		OrderType:     string(update.Type),
+		OrderID:       update.ID,
+		Quantity:      qty,
+		Price:         price,
+		QuoteQuantity: qty * price,
+		RealizedPnl:   pnl,
+		CloseReason:   closeReason,
+		ClosedAt:      &now,
+		Status:        "CLOSED",
+	}
+
+	if err := SaveTradeRecord(record); err != nil {
+		return err
+	}
+
+	// 如果本次是全平信号，补齐最近一笔 OPEN 记录状态，避免一直显示“持仓”
+	if update.IsClosingPosition {
+		markLatestOpenTradeClosed(record.Symbol, record.PositionSide, now)
+	}
+
+	if pnl != 0 {
+		AddDailyPnl(pnl)
+	}
+	log.Printf("[UserStream] Created close trade record: orderId=%d, symbol=%s, pnl=%.8f", update.ID, record.Symbol, pnl)
+	return nil
+}
+
+func markLatestOpenTradeClosed(symbol, positionSide string, closedAt time.Time) {
+	if DB == nil || symbol == "" {
+		return
+	}
+	var record TradeRecord
+	q := DB.Where("symbol = ? AND status = ?", symbol, "OPEN").Order("created_at DESC")
+	if positionSide != "" && positionSide != string(futures.PositionSideTypeBoth) {
+		q = q.Where("position_side = ?", positionSide)
+	}
+	if err := q.First(&record).Error; err != nil {
+		return
+	}
+	record.Status = "CLOSED"
+	record.CloseReason = "position_closed"
+	record.ClosedAt = &closedAt
+	if err := UpdateTradeRecord(&record); err != nil {
+		log.Printf("[UserStream] Failed to close latest OPEN trade %d: %v", record.ID, err)
 	}
 }
 

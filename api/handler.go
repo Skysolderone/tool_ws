@@ -234,13 +234,20 @@ func HandleChangeLeverage(c context.Context, ctx *app.RequestContext) {
 func HandleReducePosition(c context.Context, ctx *app.RequestContext) {
 	var req ReducePositionReq
 	if err := ctx.BindAndValidate(&req); err != nil {
+		SaveFailedOperation("REDUCE_POSITION", "manual", req.Symbol, req, 0, err)
 		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
 		return
 	}
 	resp, err := ReducePositionViaWs(c, req)
 	if err != nil {
+		SaveFailedOperation("REDUCE_POSITION", "manual", req.Symbol, req, 0, err)
 		ctx.JSON(http.StatusInternalServerError, utils.H{"error": err.Error()})
 		return
+	}
+	if resp != nil {
+		SaveSuccessOperation("REDUCE_POSITION", "manual", req.Symbol, req, resp.OrderID)
+	} else {
+		SaveSuccessOperation("REDUCE_POSITION", "manual", req.Symbol, req, 0)
 	}
 	ctx.JSON(http.StatusOK, utils.H{"data": resp})
 }
@@ -250,13 +257,20 @@ func HandleReducePosition(c context.Context, ctx *app.RequestContext) {
 func HandleClosePosition(c context.Context, ctx *app.RequestContext) {
 	var req ClosePositionReq
 	if err := ctx.BindAndValidate(&req); err != nil {
+		SaveFailedOperation("CLOSE_POSITION", "manual", req.Symbol, req, 0, err)
 		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
 		return
 	}
 	resp, err := ClosePositionViaWs(c, req)
 	if err != nil {
+		SaveFailedOperation("CLOSE_POSITION", "manual", req.Symbol, req, 0, err)
 		ctx.JSON(http.StatusInternalServerError, utils.H{"error": err.Error()})
 		return
+	}
+	if resp != nil {
+		SaveSuccessOperation("CLOSE_POSITION", "manual", req.Symbol, req, resp.OrderID)
+	} else {
+		SaveSuccessOperation("CLOSE_POSITION", "manual", req.Symbol, req, 0)
 	}
 	ctx.JSON(http.StatusOK, utils.H{"data": resp})
 }
