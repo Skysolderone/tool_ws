@@ -6,11 +6,19 @@ import { colors, spacing, radius, fontSize } from '../services/theme';
 import api from '../services/api';
 
 const STARS = ['', '★', '★★', '★★★', '★★★★'];
+const SR_TF_OPTIONS = [
+  { key: 'all', label: '全部' },
+  { key: '1h', label: '1H' },
+  { key: '4h', label: '4H' },
+  { key: '1d', label: '1D' },
+  { key: '1w', label: '1W' },
+];
 
 export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [showPivot, setShowPivot] = useState(false);
+  const [selectedTf, setSelectedTf] = useState('all');
   const timerRef = useRef(null);
 
   const fetchLevels = useCallback(async () => {
@@ -91,8 +99,24 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
     });
   }, [data?.strongResistanceZones, resistances, currentPrice]);
 
-  const closestSupportZone = supportZones.length > 0 ? supportZones[0] : null;
-  const closestResistZone = resistanceZones.length > 0 ? resistanceZones[0] : null;
+  const matchTf = useCallback((zone) => {
+    if (selectedTf === 'all') return true;
+    const tfs = Array.isArray(zone?.timeframes) ? zone.timeframes : [];
+    return tfs.some((tf) => String(tf).toLowerCase() === selectedTf);
+  }, [selectedTf]);
+
+  const filteredSupportZones = useMemo(
+    () => supportZones.filter((z) => matchTf(z)),
+    [supportZones, matchTf],
+  );
+  const filteredResistanceZones = useMemo(
+    () => resistanceZones.filter((z) => matchTf(z)),
+    [resistanceZones, matchTf],
+  );
+
+  const closestSupportZone = filteredSupportZones.length > 0 ? filteredSupportZones[0] : null;
+  const closestResistZone = filteredResistanceZones.length > 0 ? filteredResistanceZones[0] : null;
+  const hasFilteredZones = filteredSupportZones.length > 0 || filteredResistanceZones.length > 0;
 
   const renderZone = (zone, isClosest, type) => {
     const isResist = type === 'RESISTANCE';
@@ -175,6 +199,20 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
         </View>
       )}
 
+      <View style={styles.tfRow}>
+        {SR_TF_OPTIONS.map((opt) => (
+          <TouchableOpacity
+            key={opt.key}
+            style={[styles.tfChip, selectedTf === opt.key && styles.tfChipActive]}
+            onPress={() => setSelectedTf(opt.key)}
+          >
+            <Text style={[styles.tfChipText, selectedTf === opt.key && styles.tfChipTextActive]}>
+              {opt.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       {/* 最近支撑/阻力概览 */}
       {(closestResistZone || closestSupportZone) && (
         <View style={styles.overviewRow}>
@@ -204,23 +242,26 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
       )}
 
       {/* 强阻力区间 */}
-      {resistanceZones.length > 0 && (
+      {filteredResistanceZones.length > 0 && (
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.red }]}>强阻力区间</Text>
-          {resistanceZones.slice(0, 4).map((z, idx) => renderZone(z, idx === 0, 'RESISTANCE'))}
+          {filteredResistanceZones.slice(0, 4).map((z, idx) => renderZone(z, idx === 0, 'RESISTANCE'))}
         </View>
       )}
 
       {/* 强支撑区间 */}
-      {supportZones.length > 0 && (
+      {filteredSupportZones.length > 0 && (
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.green }]}>强支撑区间</Text>
-          {supportZones.slice(0, 4).map((z, idx) => renderZone(z, idx === 0, 'SUPPORT'))}
+          {filteredSupportZones.slice(0, 4).map((z, idx) => renderZone(z, idx === 0, 'SUPPORT'))}
         </View>
       )}
 
       {!data && !loading && (
         <Text style={styles.emptyText}>暂无数据，点击刷新</Text>
+      )}
+      {data && !loading && !hasFilteredZones && (
+        <Text style={styles.emptyText}>该时间区间暂无支撑/阻力数据</Text>
       )}
 
       {/* Pivot Points */}
@@ -309,6 +350,33 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: colors.gold,
     fontVariant: ['tabular-nums'],
+  },
+  tfRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  tfChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  tfChipActive: {
+    backgroundColor: colors.goldBg,
+    borderColor: colors.gold,
+  },
+  tfChipText: {
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+    fontWeight: '600',
+  },
+  tfChipTextActive: {
+    color: colors.goldLight,
+    fontWeight: '700',
   },
 
   // 概览卡

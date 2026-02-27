@@ -9,12 +9,19 @@ import {
   Vibration,
   View,
 } from 'react-native';
-import { AUTH_TOKEN, WS_BIG_TRADE_BASE, WS_PRICE_BASE } from '../services/api';
+import {
+  AUTH_TOKEN,
+  WS_BIG_TRADE_BASE,
+  WS_MARKET_RANGE_BASE,
+  WS_MARKET_SPIKE_BASE,
+} from '../services/api';
 import { colors, fontSize, radius, spacing } from '../services/theme';
 
 const RECONNECT_MS = 3000;
 const DEFAULT_SYMBOL = 'BTCUSDT';
 const DEFAULT_THRESHOLD = 100000;
+const DEFAULT_SPIKE_THRESHOLD_PCT = 1.5;
+const DEFAULT_SPIKE_WINDOW_SEC = 30;
 
 function toNum(v) {
   const n = Number(v);
@@ -35,6 +42,11 @@ function fmtTime(ms) {
   return new Date(t).toLocaleTimeString('zh-CN', { hour12: false });
 }
 
+function fmtPct(v) {
+  const n = toNum(v);
+  return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
+}
+
 export default function MarketMonitorPanel({ onHasNew }) {
   const [symbolInput, setSymbolInput] = useState(DEFAULT_SYMBOL);
   const [thresholdInput, setThresholdInput] = useState(String(DEFAULT_THRESHOLD));
@@ -49,15 +61,30 @@ export default function MarketMonitorPanel({ onHasNew }) {
   const [alertUpperInput, setAlertUpperInput] = useState('');
   const [alerts, setAlerts] = useState([]);
   const [alertLogs, setAlertLogs] = useState([]);
+  const [alertWsConnected, setAlertWsConnected] = useState(false);
+  const [alertWsError, setAlertWsError] = useState('');
+  const [spikeSymbolInput, setSpikeSymbolInput] = useState(DEFAULT_SYMBOL);
+  const [spikeThresholdInput, setSpikeThresholdInput] = useState(String(DEFAULT_SPIKE_THRESHOLD_PCT));
+  const [spikeWindowInput, setSpikeWindowInput] = useState(String(DEFAULT_SPIKE_WINDOW_SEC));
+  const [spikeRules, setSpikeRules] = useState([]);
+  const [spikeLogs, setSpikeLogs] = useState([]);
+  const [spikeWsConnected, setSpikeWsConnected] = useState(false);
+  const [spikeWsError, setSpikeWsError] = useState('');
 
   const bigWsRef = useRef(null);
   const bigReconnectRef = useRef(null);
+  const alertWsRef = useRef(null);
+  const alertReconnectRef = useRef(null);
+  const alertSnapshotTimerRef = useRef(null);
+  const spikeWsRef = useRef(null);
+  const spikeReconnectRef = useRef(null);
+  const spikeSnapshotTimerRef = useRef(null);
   const mountedRef = useRef(false);
-  const alertRulesRef = useRef([]);
+  const onHasNewRef = useRef(onHasNew);
 
   useEffect(() => {
-    alertRulesRef.current = alerts;
-  }, [alerts]);
+    onHasNewRef.current = onHasNew;
+  }, [onHasNew]);
 
   const applyBigConfig = useCallback(() => {
     const sym = symbolInput.trim().toUpperCase();
@@ -84,6 +111,26 @@ export default function MarketMonitorPanel({ onHasNew }) {
       if (bigWsRef.current) {
         try { bigWsRef.current.close(); } catch (_) {}
         bigWsRef.current = null;
+      }
+      if (alertReconnectRef.current) {
+        clearTimeout(alertReconnectRef.current);
+      }
+      if (alertSnapshotTimerRef.current) {
+        clearInterval(alertSnapshotTimerRef.current);
+      }
+      if (alertWsRef.current) {
+        try { alertWsRef.current.close(); } catch (_) {}
+        alertWsRef.current = null;
+      }
+      if (spikeReconnectRef.current) {
+        clearTimeout(spikeReconnectRef.current);
+      }
+      if (spikeSnapshotTimerRef.current) {
+        clearInterval(spikeSnapshotTimerRef.current);
+      }
+      if (spikeWsRef.current) {
+        try { spikeWsRef.current.close(); } catch (_) {}
+        spikeWsRef.current = null;
       }
     };
   }, []);
@@ -119,7 +166,7 @@ export default function MarketMonitorPanel({ onHasNew }) {
           notional: toNum(msg.n),
           time: toNum(msg.t || Date.now()),
         };
-        onHasNew?.(true);
+        onHasNewRef.current?.(true);
         setBigEvents((prev) => [evt, ...prev].slice(0, 150));
       };
 
@@ -148,7 +195,7 @@ export default function MarketMonitorPanel({ onHasNew }) {
         bigWsRef.current = null;
       }
     };
-  }, [symbol, threshold, onHasNew]);
+  }, [symbol, threshold]);
 
   const bigSummary = useMemo(() => {
     const recent = bigEvents.slice(0, 80);
@@ -169,102 +216,199 @@ export default function MarketMonitorPanel({ onHasNew }) {
     };
   }, [bigEvents]);
 
-  const processAlertPrice = useCallback((sym, price, ts) => {
-    const now = ts || Date.now();
-    const triggered = [];
-
-    const next = alertRulesRef.current.map((rule) => {
-      if (!rule.enabled || rule.symbol !== sym) return rule;
-      const inside = price >= rule.lower && price <= rule.upper;
-
-      if (rule.lastInside == null) {
-        return { ...rule, lastPrice: price, lastInside: inside };
-      }
-
-      let lastTriggerAt = rule.lastTriggerAt || 0;
-      if (rule.lastInside === true && inside === false && now - lastTriggerAt > 10000) {
-        const direction = price > rule.upper ? '上破' : '下破';
-        triggered.push({
-          id: `${rule.id}-${now}`,
-          symbol: rule.symbol,
-          direction,
-          lower: rule.lower,
-          upper: rule.upper,
-          price,
-          time: now,
-        });
-        lastTriggerAt = now;
-      }
-      return {
-        ...rule,
-        lastPrice: price,
-        lastInside: inside,
-        lastTriggerAt,
-      };
-    });
-
-    alertRulesRef.current = next;
-    setAlerts(next);
-
-    if (triggered.length > 0) {
-      onHasNew?.(true);
-      Vibration.vibrate(180);
-      setAlertLogs((prev) => [...triggered, ...prev].slice(0, 60));
-      const first = triggered[0];
-      Alert.alert(
-        '价格预警触发',
-        `${first.symbol} ${first.direction}\n区间 ${first.lower} - ${first.upper}\n当前 ${first.price.toFixed(4)}`,
-      );
+  const sendAlertWs = useCallback((payload) => {
+    const ws = alertWsRef.current;
+    if (!ws || ws.readyState !== 1) return false;
+    try {
+      ws.send(JSON.stringify(payload));
+      return true;
+    } catch (_) {
+      return false;
     }
-  }, [onHasNew]);
-
-  const alertSymbols = useMemo(() => {
-    const set = new Set();
-    alerts.forEach((a) => {
-      if (a.enabled && a.symbol) set.add(a.symbol);
-    });
-    return [...set];
-  }, [alerts]);
+  }, []);
 
   useEffect(() => {
+    if (!mountedRef.current) return undefined;
     let stopped = false;
-    const sockets = new Map();
-    const reconnectTimers = new Map();
 
-    const open = (sym) => {
+    const connect = () => {
       if (stopped) return;
-      const ws = new WebSocket(`${WS_PRICE_BASE}?symbol=${encodeURIComponent(sym)}&token=${AUTH_TOKEN}`);
-      sockets.set(sym, ws);
+      const ws = new WebSocket(`${WS_MARKET_RANGE_BASE}?token=${AUTH_TOKEN}`);
+      alertWsRef.current = ws;
+
+      ws.onopen = () => {
+        setAlertWsConnected(true);
+        setAlertWsError('');
+        sendAlertWs({ action: 'snapshot' });
+        if (alertSnapshotTimerRef.current) clearInterval(alertSnapshotTimerRef.current);
+        alertSnapshotTimerRef.current = setInterval(() => {
+          sendAlertWs({ action: 'snapshot' });
+        }, 30000);
+      };
 
       ws.onmessage = (evt) => {
-        let data;
+        let msg;
         try {
-          data = JSON.parse(evt.data);
+          msg = JSON.parse(evt.data);
         } catch (_) {
           return;
         }
-        const p = toNum(data.p);
-        if (!p) return;
-        processAlertPrice(String(data.s || sym).toUpperCase(), p, toNum(data.t || Date.now()));
+        if (!msg || msg.channel !== 'marketRange') return;
+        if (msg.type === 'snapshot') {
+          setAlerts(Array.isArray(msg.rules) ? msg.rules : []);
+          return;
+        }
+        if (msg.type === 'event' && msg.event) {
+          const event = msg.event;
+          onHasNewRef.current?.(true);
+          Vibration.vibrate(180);
+          setAlertLogs((prev) => [event, ...prev].slice(0, 60));
+          setAlerts((prev) => prev.map((r) => (
+            r.id === event.ruleId
+              ? { ...r, lastPrice: toNum(event.price), lastInside: false, lastTriggerAt: toNum(event.time) }
+              : r
+          )));
+          Alert.alert(
+            '价格预警触发',
+            `${event.symbol} ${event.direction}\n区间 ${event.lower} - ${event.upper}\n当前 ${toNum(event.price).toFixed(4)}`,
+          );
+          return;
+        }
+        if (msg.type === 'error') {
+          setAlertWsError(msg.error || '区间预警服务异常');
+        }
+      };
+
+      ws.onerror = () => {
+        setAlertWsConnected(false);
+        setAlertWsError('后端区间预警连接异常');
       };
 
       ws.onclose = () => {
-        if (stopped) return;
-        const timer = setTimeout(() => open(sym), RECONNECT_MS);
-        reconnectTimers.set(sym, timer);
+        setAlertWsConnected(false);
+        if (alertSnapshotTimerRef.current) {
+          clearInterval(alertSnapshotTimerRef.current);
+          alertSnapshotTimerRef.current = null;
+        }
+        if (stopped || !mountedRef.current) return;
+        alertReconnectRef.current = setTimeout(connect, RECONNECT_MS);
       };
     };
 
-    alertSymbols.forEach((sym) => open(sym));
-
+    connect();
     return () => {
       stopped = true;
-      reconnectTimers.forEach((timer) => clearTimeout(timer));
-      sockets.forEach((ws) => {
-        try { ws.close(); } catch (_) {}
-      });
+      if (alertReconnectRef.current) {
+        clearTimeout(alertReconnectRef.current);
+        alertReconnectRef.current = null;
+      }
+      if (alertSnapshotTimerRef.current) {
+        clearInterval(alertSnapshotTimerRef.current);
+        alertSnapshotTimerRef.current = null;
+      }
+      if (alertWsRef.current) {
+        try { alertWsRef.current.close(); } catch (_) {}
+        alertWsRef.current = null;
+      }
     };
-  }, [alertSymbols, processAlertPrice]);
+  }, [sendAlertWs]);
+
+  const sendSpikeWs = useCallback((payload) => {
+    const ws = spikeWsRef.current;
+    if (!ws || ws.readyState !== 1) return false;
+    try {
+      ws.send(JSON.stringify(payload));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!mountedRef.current) return undefined;
+    let stopped = false;
+
+    const connect = () => {
+      if (stopped) return;
+      const ws = new WebSocket(`${WS_MARKET_SPIKE_BASE}?token=${AUTH_TOKEN}`);
+      spikeWsRef.current = ws;
+
+      ws.onopen = () => {
+        setSpikeWsConnected(true);
+        setSpikeWsError('');
+        sendSpikeWs({ action: 'snapshot' });
+        if (spikeSnapshotTimerRef.current) clearInterval(spikeSnapshotTimerRef.current);
+        spikeSnapshotTimerRef.current = setInterval(() => {
+          sendSpikeWs({ action: 'snapshot' });
+        }, 30000);
+      };
+
+      ws.onmessage = (evt) => {
+        let msg;
+        try {
+          msg = JSON.parse(evt.data);
+        } catch (_) {
+          return;
+        }
+        if (!msg || msg.channel !== 'marketSpike') return;
+        if (msg.type === 'snapshot') {
+          setSpikeRules(Array.isArray(msg.rules) ? msg.rules : []);
+          return;
+        }
+        if (msg.type === 'event' && msg.event) {
+          const event = msg.event;
+          onHasNewRef.current?.(true);
+          Vibration.vibrate(220);
+          setSpikeLogs((prev) => [event, ...prev].slice(0, 80));
+          setSpikeRules((prev) => prev.map((r) => (
+            r.id === event.ruleId
+              ? { ...r, lastPrice: toNum(event.price), lastMovePct: toNum(event.movePct), lastTriggerAt: toNum(event.time) }
+              : r
+          )));
+          Alert.alert(
+            '突发波动预警',
+            `${event.symbol} ${event.direction} ${fmtPct(event.movePct)}\n窗口 ${event.windowSec}s 阈值 ${event.thresholdPct}%\n基准 ${toNum(event.basePrice).toFixed(4)} 当前 ${toNum(event.price).toFixed(4)}`,
+          );
+          return;
+        }
+        if (msg.type === 'error') {
+          setSpikeWsError(msg.error || '突发预警服务异常');
+        }
+      };
+
+      ws.onerror = () => {
+        setSpikeWsConnected(false);
+        setSpikeWsError('后端突发监控连接异常');
+      };
+
+      ws.onclose = () => {
+        setSpikeWsConnected(false);
+        if (spikeSnapshotTimerRef.current) {
+          clearInterval(spikeSnapshotTimerRef.current);
+          spikeSnapshotTimerRef.current = null;
+        }
+        if (stopped || !mountedRef.current) return;
+        spikeReconnectRef.current = setTimeout(connect, RECONNECT_MS);
+      };
+    };
+
+    connect();
+    return () => {
+      stopped = true;
+      if (spikeReconnectRef.current) {
+        clearTimeout(spikeReconnectRef.current);
+        spikeReconnectRef.current = null;
+      }
+      if (spikeSnapshotTimerRef.current) {
+        clearInterval(spikeSnapshotTimerRef.current);
+        spikeSnapshotTimerRef.current = null;
+      }
+      if (spikeWsRef.current) {
+        try { spikeWsRef.current.close(); } catch (_) {}
+        spikeWsRef.current = null;
+      }
+    };
+  }, [sendSpikeWs]);
 
   const addAlert = useCallback(() => {
     const symbolUpper = alertSymbolInput.trim().toUpperCase();
@@ -278,31 +422,76 @@ export default function MarketMonitorPanel({ onHasNew }) {
       Alert.alert('参数错误', '请填写有效区间，且下限 < 上限');
       return;
     }
-
-    const item = {
-      id: `${symbolUpper}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    const ok = sendAlertWs({
+      action: 'addRule',
       symbol: symbolUpper,
       lower,
       upper,
+      cooldownSec: 10,
       enabled: true,
-      lastPrice: 0,
-      lastInside: null,
-      lastTriggerAt: 0,
-      createdAt: Date.now(),
-    };
-    setAlerts((prev) => [item, ...prev].slice(0, 20));
+    });
+    if (!ok) {
+      Alert.alert('连接异常', '后端区间预警未连接，请稍后重试');
+      return;
+    }
     setAlertSymbolInput(symbolUpper);
     setAlertLowerInput('');
     setAlertUpperInput('');
-  }, [alertLowerInput, alertSymbolInput, alertUpperInput]);
+  }, [alertLowerInput, alertSymbolInput, alertUpperInput, sendAlertWs]);
+
+  const addSpikeRule = useCallback(() => {
+    const symbolUpper = spikeSymbolInput.trim().toUpperCase();
+    const thresholdPct = toNum(spikeThresholdInput);
+    const windowSec = toNum(spikeWindowInput);
+    if (!symbolUpper) {
+      Alert.alert('参数错误', '请输入预警交易对');
+      return;
+    }
+    if (!Number.isFinite(thresholdPct) || thresholdPct <= 0 || thresholdPct > 30) {
+      Alert.alert('参数错误', '阈值请填写 0~30 的百分比');
+      return;
+    }
+    if (!Number.isFinite(windowSec) || windowSec < 5 || windowSec > 3600) {
+      Alert.alert('参数错误', '窗口请填写 5~3600 秒');
+      return;
+    }
+    const ok = sendSpikeWs({
+      action: 'addRule',
+      symbol: symbolUpper,
+      thresholdPct,
+      windowSec: Math.round(windowSec),
+      cooldownSec: 15,
+      enabled: true,
+    });
+    if (!ok) {
+      Alert.alert('连接异常', '后端突发监控未连接，请稍后重试');
+      return;
+    }
+  }, [sendSpikeWs, spikeSymbolInput, spikeThresholdInput, spikeWindowInput]);
+
+  const toggleSpikeRule = useCallback((id) => {
+    if (!sendSpikeWs({ action: 'toggleRule', id })) {
+      Alert.alert('连接异常', '后端突发监控未连接，请稍后重试');
+    }
+  }, [sendSpikeWs]);
+
+  const removeSpikeRule = useCallback((id) => {
+    if (!sendSpikeWs({ action: 'removeRule', id })) {
+      Alert.alert('连接异常', '后端突发监控未连接，请稍后重试');
+    }
+  }, [sendSpikeWs]);
 
   const toggleAlert = useCallback((id) => {
-    setAlerts((prev) => prev.map((x) => (x.id === id ? { ...x, enabled: !x.enabled } : x)));
-  }, []);
+    if (!sendAlertWs({ action: 'toggleRule', id })) {
+      Alert.alert('连接异常', '后端区间预警未连接，请稍后重试');
+    }
+  }, [sendAlertWs]);
 
   const removeAlert = useCallback((id) => {
-    setAlerts((prev) => prev.filter((x) => x.id !== id));
-  }, []);
+    if (!sendAlertWs({ action: 'removeRule', id })) {
+      Alert.alert('连接异常', '后端区间预警未连接，请稍后重试');
+    }
+  }, [sendAlertWs]);
 
   return (
     <View style={styles.card}>
@@ -394,7 +583,10 @@ export default function MarketMonitorPanel({ onHasNew }) {
             <Text style={styles.applyText}>添加</Text>
           </TouchableOpacity>
         </View>
-        <Text style={styles.hint}>突破区间触发提醒，可同时监控多个币种。</Text>
+        <Text style={styles.hint}>
+          后端监控: {alertWsConnected ? '在线' : '重连中'} | 突破区间触发提醒，可同时监控多个币种。
+        </Text>
+        {alertWsError ? <Text style={styles.errorText}>{alertWsError}</Text> : null}
         {alerts.length === 0 ? (
           <View style={styles.emptyBox}><Text style={styles.emptyText}>暂无预警规则</Text></View>
         ) : (
@@ -428,6 +620,81 @@ export default function MarketMonitorPanel({ onHasNew }) {
             alertLogs.slice(0, 20).map((log) => (
               <Text key={log.id} style={styles.logText}>
                 {fmtTime(log.time)} {log.symbol} {log.direction} {log.lower}-{log.upper} 当前 {log.price.toFixed(4)}
+              </Text>
+            ))
+          )}
+        </View>
+      </View>
+
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>突发波动预警（拉升/下跌）</Text>
+        <View style={styles.inputRow}>
+          <TextInput
+            style={[styles.input, { flex: 1.1 }]}
+            value={spikeSymbolInput}
+            onChangeText={(v) => setSpikeSymbolInput(v.toUpperCase())}
+            placeholder="BTCUSDT"
+            placeholderTextColor={colors.textMuted}
+            autoCapitalize="characters"
+            autoCorrect={false}
+          />
+          <TextInput
+            style={styles.input}
+            value={spikeThresholdInput}
+            onChangeText={(v) => setSpikeThresholdInput(v.replace(/[^0-9.]/g, ''))}
+            placeholder="阈值%"
+            placeholderTextColor={colors.textMuted}
+          />
+          <TextInput
+            style={styles.input}
+            value={spikeWindowInput}
+            onChangeText={(v) => setSpikeWindowInput(v.replace(/[^0-9]/g, ''))}
+            placeholder="窗口秒"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="number-pad"
+          />
+          <TouchableOpacity style={styles.applyBtn} onPress={addSpikeRule}>
+            <Text style={styles.applyText}>添加</Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.hint}>
+          后端监控: {spikeWsConnected ? '在线' : '重连中'} | 在指定秒数窗口内涨跌幅超过阈值时触发预警。
+        </Text>
+        {spikeWsError ? <Text style={styles.errorText}>{spikeWsError}</Text> : null}
+        {spikeRules.length === 0 ? (
+          <View style={styles.emptyBox}><Text style={styles.emptyText}>暂无突发预警规则</Text></View>
+        ) : (
+          spikeRules.map((rule) => (
+            <View key={rule.id} style={styles.rowCard}>
+              <View style={styles.rowTop}>
+                <Text style={styles.rowTitle}>{rule.symbol}</Text>
+                <Text style={styles.rowSub}>
+                  最新价: {rule.lastPrice ? rule.lastPrice.toFixed(4) : '--'} | 窗口变动: {fmtPct(rule.lastMovePct)}
+                </Text>
+              </View>
+              <Text style={styles.rowSub}>条件: {rule.windowSec}s 内 {rule.thresholdPct}% 以上波动</Text>
+              <View style={styles.opsRow}>
+                <TouchableOpacity
+                  style={[styles.smallBtn, rule.enabled ? styles.enableBtn : styles.disableBtn]}
+                  onPress={() => toggleSpikeRule(rule.id)}
+                >
+                  <Text style={styles.smallBtnText}>{rule.enabled ? '已开启' : '已关闭'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.smallBtn, styles.removeBtn]} onPress={() => removeSpikeRule(rule.id)}>
+                  <Text style={styles.smallBtnText}>删除</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))
+        )}
+        <View style={styles.logWrap}>
+          <Text style={styles.logTitle}>突发触发记录</Text>
+          {spikeLogs.length === 0 ? (
+            <Text style={styles.emptyText}>暂无触发</Text>
+          ) : (
+            spikeLogs.slice(0, 20).map((log) => (
+              <Text key={log.id} style={styles.logText}>
+                {fmtTime(log.time)} {log.symbol} {log.direction} {fmtPct(log.movePct)} | {log.windowSec}s 阈值 {log.thresholdPct}%
               </Text>
             ))
           )}
@@ -606,4 +873,3 @@ const styles = StyleSheet.create({
     marginBottom: 3,
   },
 });
-
