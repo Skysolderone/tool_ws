@@ -29,9 +29,9 @@ const C = {
 };
 
 const FILTERS = [
-  { key: 'ALL', label: 'ALL' },
-  { key: 'LONG', label: 'LONG' },
-  { key: 'SHORT', label: 'SHORT' },
+  { key: 'ALL', label: '全部' },
+  { key: 'LONG', label: '做多' },
+  { key: 'SHORT', label: '做空' },
 ];
 
 const AUTO_REFRESH_MS = 45000;
@@ -81,8 +81,8 @@ export default function RecommendPanel({ onNavigateToTrade }) {
     sentiment?.bias === 'bullish' ? C.long :
     sentiment?.bias === 'bearish' ? C.short : C.neon;
   const sentimentTag =
-    sentiment?.bias === 'bullish' ? 'BULLISH' :
-    sentiment?.bias === 'bearish' ? 'BEARISH' : 'NEUTRAL';
+    sentiment?.bias === 'bullish' ? '看涨' :
+    sentiment?.bias === 'bearish' ? '看跌' : '中性';
 
   return (
     <View style={s.root}>
@@ -99,8 +99,8 @@ export default function RecommendPanel({ onNavigateToTrade }) {
           <View style={s.headerLeft}>
             <Text style={s.headerIcon}>{'{ }'}</Text>
             <View>
-              <Text style={s.headerTitle}>AI SIGNAL SCANNER</Text>
-              <Text style={s.headerSub}>Multi-Timeframe Analysis Engine</Text>
+              <Text style={s.headerTitle}>AI 信号扫描</Text>
+              <Text style={s.headerSub}>多时间框架分析引擎</Text>
             </View>
           </View>
         </View>
@@ -108,7 +108,7 @@ export default function RecommendPanel({ onNavigateToTrade }) {
         {/* 市场情绪仪表盘 */}
         <View style={s.sentPanel}>
           <View style={s.sentTopRow}>
-            <Text style={s.sentLabel}>MARKET SENTIMENT</Text>
+            <Text style={s.sentLabel}>市场情绪</Text>
             <View style={[s.sentTagWrap, { borderColor: sentimentColor }]}>
               <View style={[s.sentDot, { backgroundColor: sentimentColor, shadowColor: sentimentColor }]} />
               <Text style={[s.sentTag, { color: sentimentColor }]}>{sentimentTag}</Text>
@@ -117,7 +117,7 @@ export default function RecommendPanel({ onNavigateToTrade }) {
           {sentiment && (
             <View style={s.sentGrid}>
               <View style={s.sentCell}>
-                <Text style={s.sentCellLabel}>FUNDING</Text>
+                <Text style={s.sentCellLabel}>资金费率</Text>
                 <Text style={[s.sentCellVal, {
                   color: sentiment.fundingRate > 0 ? C.short : sentiment.fundingRate < 0 ? C.long : C.text,
                 }]}>
@@ -126,12 +126,12 @@ export default function RecommendPanel({ onNavigateToTrade }) {
               </View>
               <View style={s.sentDivider} />
               <View style={s.sentCell}>
-                <Text style={s.sentCellLabel}>L/S RATIO</Text>
+                <Text style={s.sentCellLabel}>多空比</Text>
                 <Text style={s.sentCellVal}>{sentiment.longShort?.toFixed(2) || '--'}</Text>
               </View>
               <View style={s.sentDivider} />
               <View style={s.sentCell}>
-                <Text style={s.sentCellLabel}>LIQ 1H</Text>
+                <Text style={s.sentCellLabel}>1H爆仓</Text>
                 <Text style={s.sentCellVal}>${(sentiment.liqTotal / 1e6).toFixed(1)}M</Text>
               </View>
             </View>
@@ -153,7 +153,7 @@ export default function RecommendPanel({ onNavigateToTrade }) {
           ))}
           <View style={s.filterCountWrap}>
             <Text style={s.filterCount}>{filteredItems.length}</Text>
-            <Text style={s.filterCountLabel}>SIGNALS</Text>
+            <Text style={s.filterCountLabel}>个信号</Text>
           </View>
         </View>
 
@@ -161,25 +161,25 @@ export default function RecommendPanel({ onNavigateToTrade }) {
         {loading && !data && (
           <View style={s.loadingBox}>
             <ActivityIndicator color={C.neon} size="large" />
-            <Text style={s.loadingText}>SCANNING 24 PAIRS{scanDots}</Text>
-            <Text style={s.loadingHint}>Analyzing 1D / 4H / 1H timeframes</Text>
+            <Text style={s.loadingText}>扫描 24 个交易对{scanDots}</Text>
+            <Text style={s.loadingHint}>分析 1D / 4H / 1H 时间框架</Text>
           </View>
         )}
         {error && !data && (
           <View style={s.loadingBox}>
             <Text style={s.errorIcon}>⚠</Text>
-            <Text style={s.errorText}>CONNECTION ERROR</Text>
+            <Text style={s.errorText}>连接失败</Text>
             <Text style={s.errorDetail}>{error}</Text>
             <TouchableOpacity style={s.retryBtn} onPress={() => fetchData(true)}>
-              <Text style={s.retryText}>RETRY</Text>
+              <Text style={s.retryText}>重试</Text>
             </TouchableOpacity>
           </View>
         )}
         {filteredItems.length === 0 && data && !loading && (
           <View style={s.loadingBox}>
             <Text style={s.emptyIcon}>◇</Text>
-            <Text style={s.emptyText}>NO SIGNALS DETECTED</Text>
-            <Text style={s.loadingHint}>All assets in neutral zone</Text>
+            <Text style={s.emptyText}>暂无信号</Text>
+            <Text style={s.loadingHint}>所有资产处于中性区间</Text>
           </View>
         )}
 
@@ -189,7 +189,7 @@ export default function RecommendPanel({ onNavigateToTrade }) {
           const sc = isLong ? C.long : C.short;
           const scBg = isLong ? C.longBg : C.shortBg;
           const conf = item.confidence;
-          const levelTag = conf >= 60 ? 'STRONG' : conf >= 35 ? 'MODERATE' : 'WEAK';
+          const levelTag = conf >= 60 ? '强' : conf >= 35 ? '中' : '弱';
           const levelColor = conf >= 60 ? sc : conf >= 35 ? C.neon : C.textDim;
 
           return (
@@ -205,7 +205,7 @@ export default function RecommendPanel({ onNavigateToTrade }) {
                 <View style={s.cardRight}>
                   <View style={[s.dirBadge, { backgroundColor: scBg, borderColor: sc + '55' }]}>
                     <Text style={[s.dirArrow, { color: sc }]}>{isLong ? '▲' : '▼'}</Text>
-                    <Text style={[s.dirText, { color: sc }]}>{item.direction}</Text>
+                    <Text style={[s.dirText, { color: sc }]}>{item.direction === 'LONG' ? '做多' : '做空'}</Text>
                   </View>
                   <View style={[s.confRing, { borderColor: sc }]}>
                     <Text style={[s.confVal, { color: sc }]}>{conf}</Text>
@@ -256,17 +256,17 @@ export default function RecommendPanel({ onNavigateToTrade }) {
 
               <View style={s.priceMatrix}>
                 <View style={s.priceCell}>
-                  <Text style={s.priceCellLabel}>ENTRY</Text>
+                  <Text style={s.priceCellLabel}>入场价</Text>
                   <Text style={s.priceCellVal}>${formatPrice(item.entry)}</Text>
                 </View>
                 <View style={[s.priceDivider, { backgroundColor: C.short + '44' }]} />
                 <View style={s.priceCell}>
-                  <Text style={[s.priceCellLabel, { color: C.short }]}>STOP LOSS</Text>
+                  <Text style={[s.priceCellLabel, { color: C.short }]}>止损</Text>
                   <Text style={[s.priceCellVal, { color: C.short }]}>${formatPrice(item.stopLoss)}</Text>
                 </View>
                 <View style={[s.priceDivider, { backgroundColor: C.long + '44' }]} />
                 <View style={s.priceCell}>
-                  <Text style={[s.priceCellLabel, { color: C.long }]}>TAKE PROFIT</Text>
+                  <Text style={[s.priceCellLabel, { color: C.long }]}>止盈</Text>
                   <Text style={[s.priceCellVal, { color: C.long }]}>${formatPrice(item.takeProfit)}</Text>
                 </View>
               </View>
@@ -276,7 +276,7 @@ export default function RecommendPanel({ onNavigateToTrade }) {
                 onPress={() => onNavigateToTrade?.(item.symbol, item)}
                 activeOpacity={0.7}
               >
-                <Text style={[s.execBtnText, { color: sc }]}>EXECUTE TRADE  ›</Text>
+                <Text style={[s.execBtnText, { color: sc }]}>执行交易  ›</Text>
               </TouchableOpacity>
             </View>
           );
@@ -286,9 +286,9 @@ export default function RecommendPanel({ onNavigateToTrade }) {
           <View style={s.footerRow}>
             <View style={s.footerDot} />
             <Text style={s.footerText}>
-              Last scan: {data.scannedAt ? new Date(data.scannedAt).toLocaleTimeString() : '--'}
+              扫描时间: {data.scannedAt ? new Date(data.scannedAt).toLocaleTimeString() : '--'}
             </Text>
-            <Text style={s.footerText}>  |  Auto-refresh: {AUTO_REFRESH_MS / 1000}s</Text>
+            <Text style={s.footerText}>  |  自动刷新: {AUTO_REFRESH_MS / 1000}秒</Text>
           </View>
         )}
       </View>

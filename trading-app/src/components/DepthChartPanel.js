@@ -41,8 +41,9 @@ export default function DepthChartPanel({ symbol }) {
     return () => clearInterval(timer);
   }, [fetchData]);
 
-  const bids = data?.data?.bids || data?.bids || [];
-  const asks = data?.data?.asks || data?.asks || [];
+  // 后端 BookMsg: bids → "b", asks → "a", BookLevel: price → "p", qty → "q"
+  const bids = data?.data?.b || data?.data?.bids || data?.b || data?.bids || [];
+  const asks = data?.data?.a || data?.data?.asks || data?.a || data?.asks || [];
 
   // 计算累计量和最大值用于条形比例
   let cumBids = [];
@@ -51,15 +52,15 @@ export default function DepthChartPanel({ symbol }) {
   let cumA = 0;
 
   bids.forEach((b) => {
-    const qty = parseFloat(b.quantity || b[1] || 0);
+    const qty = parseFloat(b.q || b.quantity || b[1] || 0);
     cumB += qty;
-    cumBids.push({ price: parseFloat(b.price || b[0] || 0), qty, cum: cumB });
+    cumBids.push({ price: parseFloat(b.p || b.price || b[0] || 0), qty, cum: cumB });
   });
 
   asks.forEach((a) => {
-    const qty = parseFloat(a.quantity || a[1] || 0);
+    const qty = parseFloat(a.q || a.quantity || a[1] || 0);
     cumA += qty;
-    cumAsks.push({ price: parseFloat(a.price || a[0] || 0), qty, cum: cumA });
+    cumAsks.push({ price: parseFloat(a.p || a.price || a[0] || 0), qty, cum: cumA });
   });
 
   const maxCum = Math.max(cumB, cumA, 1);

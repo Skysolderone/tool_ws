@@ -43,34 +43,37 @@ export default function EquityCurvePanel() {
     fetchData();
   }, [fetchData]);
 
-  const entries = data?.entries || data?.data || [];
-  const summary = data?.summary || {};
+  // 后端返回: { data: { overall: {metrics}, buckets: [{ key, metrics }] } }
+  const raw = data?.data || data || {};
+  const buckets = raw.buckets || raw.entries || [];
+  const overall = raw.overall || raw.summary || {};
+
+  // 将 buckets 转为 entries: 每个 bucket 有 key(日期) 和 metrics
+  const entries = buckets.map((b) => ({
+    date: b.key || b.date || b.period || '--',
+    pnl: b.metrics?.netPnl ?? b.pnl ?? 0,
+    trades: b.metrics?.totalTrades ?? b.trades ?? 0,
+    wins: b.metrics?.wins ?? 0,
+    losses: b.metrics?.losses ?? 0,
+    winRate: b.metrics?.winRate ?? 0,
+  }));
+
+  // 计算累计 PnL
+  let cumPnl = 0;
+  entries.forEach((e) => { cumPnl += e.pnl; e.cumPnl = cumPnl; });
 
   // 计算统计
-  const profitDays = entries.filter((e) => (e.pnl || 0) > 0).length;
-  const lossDays = entries.filter((e) => (e.pnl || 0) < 0).length;
-  const maxProfit = entries.reduce((m, e) => Math.max(m, e.pnl || 0), 0);
-  const maxLoss = entries.reduce((m, e) => Math.min(m, e.pnl || 0), 0);
+  const profitDays = entries.filter((e) => e.pnl > 0).length;
+  const lossDays = entries.filter((e) => e.pnl < 0).length;
+  const maxProfit = entries.reduce((m, e) => Math.max(m, e.pnl), 0);
+  const maxLoss = entries.reduce((m, e) => Math.min(m, e.pnl), 0);
 
-  // 计算最大回撤
-  let peak = 0;
-  let maxDrawdown = 0;
-  entries.forEach((e) => {
-    const bal = e.balance || e.equity || 0;
-    if (bal > peak) peak = bal;
-    if (peak > 0) {
-      const dd = (peak - bal) / peak * 100;
-      if (dd > maxDrawdown) maxDrawdown = dd;
-    }
-  });
-
-  const currentBalance = entries.length > 0
-    ? (entries[entries.length - 1].balance || entries[entries.length - 1].equity || 0)
-    : (summary.balance || 0);
-
-  const totalPnl = summary.totalPnl || entries.reduce((s, e) => s + (e.pnl || 0), 0);
-  const totalPnlPct = summary.totalPnlPct || (currentBalance > 0 && entries.length > 0
-    ? (totalPnl / (currentBalance - totalPnl)) * 100 : 0);
+  // 从 overall metrics 获取统计
+  const totalPnl = overall.netPnl ?? entries.reduce((s, e) => s + e.pnl, 0);
+  const totalTrades = overall.totalTrades ?? entries.reduce((s, e) => s + e.trades, 0);
+  const winRate = overall.winRate ?? 0;
+  const maxDrawdownPct = overall.maxDrawdownPct ?? 0;
+  const profitFactor = overall.profitFactor ?? 0;
 
   return (
     <View style={styles.panel}>
@@ -104,19 +107,19 @@ export default function EquityCurvePanel() {
           {/* 概览卡片 */}
           <View style={styles.overviewRow}>
             <View style={styles.overviewCard}>
-              <Text style={styles.overviewLabel}>当前余额</Text>
-              <Text style={styles.overviewValue}>{fmtNum(currentBalance)}</Text>
+              <Text style={styles.overviewLabel}>总收益</Text>
+              <Text style={[styles.overviewValue, totalPnl >= 0 ? styles.profitText : styles.lossText]}>
+                {fmtUSD(totalPnl)}
+              </Text>
             </View>
             <View style={styles.overviewCard}>
-              <Text style={styles.overviewLabel}>总收益率</Text>
-              <Text style={[styles.overviewValue, totalPnlPct >= 0 ? styles.profitText : styles.lossText]}>
-                {fmtPct(totalPnlPct)}
-              </Text>
+              <Text style={styles.overviewLabel}>胜率</Text>
+              <Text style={styles.overviewValue}>{fmtNum(winRate)}%</Text>
             </View>
             <View style={styles.overviewCard}>
               <Text style={styles.overviewLabel}>最大回撤</Text>
               <Text style={[styles.overviewValue, styles.lossText]}>
-                {maxDrawdown > 0 ? '-' + maxDrawdown.toFixed(2) + '%' : '0%'}
+                {maxDrawdownPct > 0 ? '-' + fmtNum(maxDrawdownPct) + '%' : '0%'}
               </Text>
             </View>
           </View>
@@ -124,9 +127,9 @@ export default function EquityCurvePanel() {
           {/* 每日净值列表 */}
           <View style={styles.tableHeader}>
             <Text style={[styles.hCell, { flex: 1.2 }]}>日期</Text>
-            <Text style={[styles.hCell, { flex: 1, textAlign: 'right' }]}>余额</Text>
+            <Text style={[styles.hCell, { flex: 0.6, textAlign: 'right' }]}>笔数</Text>
             <Text style={[styles.hCell, { flex: 1, textAlign: 'right' }]}>日收益</Text>
-            <Text style={[styles.hCell, { flex: 1, textAlign: 'right' }]}>累计%</Text>
+            <Text style={[styles.hCell, { flex: 1, textAlign: 'right' }]}>累计</Text>
           </View>
 
           {entries.length === 0 && (
@@ -135,19 +138,17 @@ export default function EquityCurvePanel() {
 
           <ScrollView style={styles.listScroll} nestedScrollEnabled>
             {[...entries].reverse().map((entry, i) => {
-              const pnl = entry.pnl || 0;
-              const cumPct = entry.cumPnlPct || entry.totalPnlPct || 0;
-              const date = entry.date || entry.period || '--';
-              const bal = entry.balance || entry.equity || 0;
+              const pnl = entry.pnl;
+              const cumPnl = entry.cumPnl;
               return (
                 <View key={i} style={[styles.row, i % 2 === 0 && styles.rowAlt]}>
-                  <Text style={[styles.cell, { flex: 1.2 }]}>{date}</Text>
-                  <Text style={[styles.cell, { flex: 1, textAlign: 'right' }]}>{fmtNum(bal)}</Text>
+                  <Text style={[styles.cell, { flex: 1.2 }]}>{entry.date}</Text>
+                  <Text style={[styles.cell, { flex: 0.6, textAlign: 'right' }]}>{entry.trades}</Text>
                   <Text style={[styles.cell, { flex: 1, textAlign: 'right' }, pnl >= 0 ? styles.profitText : styles.lossText]}>
                     {fmtUSD(pnl)}
                   </Text>
-                  <Text style={[styles.cell, { flex: 1, textAlign: 'right' }, cumPct >= 0 ? styles.profitText : styles.lossText]}>
-                    {fmtPct(cumPct)}
+                  <Text style={[styles.cell, { flex: 1, textAlign: 'right' }, cumPnl >= 0 ? styles.profitText : styles.lossText]}>
+                    {fmtUSD(cumPnl)}
                   </Text>
                 </View>
               );

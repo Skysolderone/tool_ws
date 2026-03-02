@@ -69,8 +69,8 @@ export default function AIAnalysisPanel({ onNavigateToTrade }) {
         <View style={s.headerLeft}>
           <Text style={s.headerIcon}>◈</Text>
           <View>
-            <Text style={s.headerTitle}>POSITION ANALYSIS</Text>
-            <Text style={s.headerSub}>AI-Powered Portfolio Advisor</Text>
+            <Text style={s.headerTitle}>持仓分析</Text>
+            <Text style={s.headerSub}>AI 多时间框架智能分析</Text>
           </View>
         </View>
         <TouchableOpacity
@@ -80,7 +80,7 @@ export default function AIAnalysisPanel({ onNavigateToTrade }) {
         >
           <View style={s.scanBtnInner}>
             <Text style={s.scanBtnIcon}>{analyzeLoading ? '◉' : '⟳'}</Text>
-            <Text style={s.scanBtnText}>{analyzeLoading ? 'SCANNING' : 'REFRESH'}</Text>
+            <Text style={s.scanBtnText}>{analyzeLoading ? '分析中' : '刷新'}</Text>
           </View>
         </TouchableOpacity>
       </View>
@@ -89,25 +89,25 @@ export default function AIAnalysisPanel({ onNavigateToTrade }) {
       {analyzeLoading && !analyzeData && (
         <View style={s.loadingBox}>
           <ActivityIndicator color={C.neon} size="large" />
-          <Text style={s.loadingText}>ANALYZING POSITIONS{scanDots}</Text>
-          <Text style={s.loadingHint}>Scanning multi-timeframe signals for holdings</Text>
+          <Text style={s.loadingText}>正在分析持仓{scanDots}</Text>
+          <Text style={s.loadingHint}>扫描多时间框架信号中</Text>
         </View>
       )}
       {analyzeError && !analyzeData && (
         <View style={s.loadingBox}>
           <Text style={s.errorIcon}>⚠</Text>
-          <Text style={s.errorText}>CONNECTION ERROR</Text>
+          <Text style={s.errorText}>连接失败</Text>
           <Text style={s.errorDetail}>{analyzeError}</Text>
           <TouchableOpacity style={s.retryBtn} onPress={() => fetchAnalysis(true)}>
-            <Text style={s.retryText}>RETRY</Text>
+            <Text style={s.retryText}>重试</Text>
           </TouchableOpacity>
         </View>
       )}
       {items.length === 0 && analyzeData && !analyzeLoading && (
         <View style={s.loadingBox}>
           <Text style={s.emptyIcon}>◇</Text>
-          <Text style={s.emptyText}>NO OPEN POSITIONS</Text>
-          <Text style={s.loadingHint}>Open positions will appear here with AI analysis</Text>
+          <Text style={s.emptyText}>暂无持仓</Text>
+          <Text style={s.loadingHint}>开仓后将自动显示 AI 分析</Text>
         </View>
       )}
 
@@ -115,12 +115,12 @@ export default function AIAnalysisPanel({ onNavigateToTrade }) {
       {items.length > 0 && (
         <View style={s.analysisSummary}>
           <View style={s.summaryCell}>
-            <Text style={s.summaryCellLabel}>POSITIONS</Text>
+            <Text style={s.summaryCellLabel}>持仓数</Text>
             <Text style={s.summaryCellVal}>{items.length}</Text>
           </View>
           <View style={s.dividerLine} />
           <View style={s.summaryCell}>
-            <Text style={s.summaryCellLabel}>TOTAL PnL</Text>
+            <Text style={s.summaryCellLabel}>总盈亏</Text>
             <Text style={[s.summaryCellVal, {
               color: items.reduce((a, b) => a + b.unrealizedPnl, 0) >= 0 ? C.long : C.short,
             }]}>
@@ -129,7 +129,7 @@ export default function AIAnalysisPanel({ onNavigateToTrade }) {
           </View>
           <View style={s.dividerLine} />
           <View style={s.summaryCell}>
-            <Text style={s.summaryCellLabel}>ALERTS</Text>
+            <Text style={s.summaryCellLabel}>警告</Text>
             <Text style={[s.summaryCellVal, {
               color: items.filter(i => ['close', 'stop_loss'].includes(i.advice)).length > 0 ? C.short : C.neon,
             }]}>
@@ -156,7 +156,7 @@ export default function AIAnalysisPanel({ onNavigateToTrade }) {
                 <Text style={s.cardSymbol}>{item.symbol}</Text>
                 <View style={[s.dirBadge, { backgroundColor: isLong ? C.longBg : C.shortBg, borderColor: sc + '55' }]}>
                   <Text style={[s.dirArrow, { color: sc }]}>{isLong ? '▲' : '▼'}</Text>
-                  <Text style={[s.dirText, { color: sc }]}>{item.side}</Text>
+                  <Text style={[s.dirText, { color: sc }]}>{item.side === 'LONG' ? '做多' : '做空'}</Text>
                 </View>
               </View>
               <View style={{ alignItems: 'flex-end' }}>
@@ -172,19 +172,19 @@ export default function AIAnalysisPanel({ onNavigateToTrade }) {
             {/* 持仓信息 */}
             <View style={s.posInfoRow}>
               <View style={s.posInfoCell}>
-                <Text style={s.posInfoLabel}>ENTRY</Text>
+                <Text style={s.posInfoLabel}>开仓价</Text>
                 <Text style={s.posInfoVal}>${formatPrice(item.entryPrice)}</Text>
               </View>
               <View style={s.posInfoCell}>
-                <Text style={s.posInfoLabel}>MARK</Text>
+                <Text style={s.posInfoLabel}>标记价</Text>
                 <Text style={s.posInfoVal}>${formatPrice(item.markPrice)}</Text>
               </View>
               <View style={s.posInfoCell}>
-                <Text style={s.posInfoLabel}>SIZE</Text>
+                <Text style={s.posInfoLabel}>数量</Text>
                 <Text style={s.posInfoVal}>{Math.abs(item.amount)}</Text>
               </View>
               <View style={s.posInfoCell}>
-                <Text style={s.posInfoLabel}>LEV</Text>
+                <Text style={s.posInfoLabel}>杠杆</Text>
                 <Text style={s.posInfoVal}>{item.leverage}x</Text>
               </View>
             </View>
@@ -225,7 +225,7 @@ export default function AIAnalysisPanel({ onNavigateToTrade }) {
                       {sig.direction && (
                         <Text style={[s.tfAlignTag, {
                           color: aligned ? C.long : C.short,
-                        }]}>{aligned ? 'ALIGN' : 'OPPOSE'}</Text>
+                        }]}>{aligned ? '一致' : '相反'}</Text>
                       )}
                     </View>
                   );
@@ -243,17 +243,26 @@ export default function AIAnalysisPanel({ onNavigateToTrade }) {
               ))}
             </View>
 
-            {/* 止损止盈 */}
+            {/* 止损止盈（基于AI推荐方向） */}
             {item.stopLoss > 0 && item.takeProfit > 0 && (
-              <View style={s.priceMatrix}>
-                <View style={s.priceCell}>
-                  <Text style={[s.priceCellLabel, { color: C.short }]}>STOP LOSS</Text>
-                  <Text style={[s.priceCellVal, { color: C.short }]}>${formatPrice(item.stopLoss)}</Text>
-                </View>
-                <View style={[s.priceDivider, { backgroundColor: C.cardBorder }]} />
-                <View style={s.priceCell}>
-                  <Text style={[s.priceCellLabel, { color: C.long }]}>TAKE PROFIT</Text>
-                  <Text style={[s.priceCellVal, { color: C.long }]}>${formatPrice(item.takeProfit)}</Text>
+              <View style={s.priceMatrixWrap}>
+                {item.direction && item.direction !== item.side && (
+                  <View style={[s.aiDirTag, { backgroundColor: item.direction === 'LONG' ? C.longBg : C.shortBg, borderColor: (item.direction === 'LONG' ? C.long : C.short) + '55' }]}>
+                    <Text style={[s.aiDirText, { color: item.direction === 'LONG' ? C.long : C.short }]}>
+                      AI {item.direction === 'LONG' ? '▲ 看多' : '▼ 看空'}
+                    </Text>
+                  </View>
+                )}
+                <View style={s.priceMatrix}>
+                  <View style={s.priceCell}>
+                    <Text style={[s.priceCellLabel, { color: C.short }]}>止损</Text>
+                    <Text style={[s.priceCellVal, { color: C.short }]}>${formatPrice(item.stopLoss)}</Text>
+                  </View>
+                  <View style={[s.priceDivider, { backgroundColor: C.cardBorder }]} />
+                  <View style={s.priceCell}>
+                    <Text style={[s.priceCellLabel, { color: C.long }]}>止盈</Text>
+                    <Text style={[s.priceCellVal, { color: C.long }]}>${formatPrice(item.takeProfit)}</Text>
+                  </View>
                 </View>
               </View>
             )}
@@ -262,13 +271,13 @@ export default function AIAnalysisPanel({ onNavigateToTrade }) {
             <TouchableOpacity
               style={[s.execBtn, { borderColor: C.neon, shadowColor: C.neon }]}
               onPress={() => onNavigateToTrade?.(item.symbol, {
-                direction: item.side,
+                direction: item.direction || item.side,
                 stopLoss: item.stopLoss,
                 takeProfit: item.takeProfit,
               })}
               activeOpacity={0.7}
             >
-              <Text style={[s.execBtnText, { color: C.neon }]}>MANAGE POSITION  ›</Text>
+              <Text style={[s.execBtnText, { color: C.neon }]}>管理持仓  ›</Text>
             </TouchableOpacity>
           </View>
         );
@@ -278,9 +287,9 @@ export default function AIAnalysisPanel({ onNavigateToTrade }) {
         <View style={s.footerRow}>
           <View style={s.footerDot} />
           <Text style={s.footerText}>
-            Analyzed: {analyzeData.analyzedAt ? new Date(analyzeData.analyzedAt).toLocaleTimeString() : '--'}
+            分析时间: {analyzeData.analyzedAt ? new Date(analyzeData.analyzedAt).toLocaleTimeString() : '--'}
           </Text>
-          <Text style={s.footerText}>  |  Auto-refresh: 60s</Text>
+          <Text style={s.footerText}>  |  自动刷新: 60秒</Text>
         </View>
       )}
     </View>
@@ -299,17 +308,17 @@ function formatPrice(price) {
 function getAdviceStyle(advice) {
   switch (advice) {
     case 'add':
-      return { icon: '⊕', tag: 'ADD POSITION', border: C.long, bg: C.longBg };
+      return { icon: '⊕', tag: '建议加仓', border: C.long, bg: C.longBg };
     case 'take_profit':
-      return { icon: '◎', tag: 'TAKE PROFIT', border: C.warn, bg: C.warnBg };
+      return { icon: '◎', tag: '建议止盈', border: C.warn, bg: C.warnBg };
     case 'reduce':
-      return { icon: '⊖', tag: 'REDUCE', border: C.warn, bg: C.warnBg };
+      return { icon: '⊖', tag: '建议减仓', border: C.warn, bg: C.warnBg };
     case 'stop_loss':
-      return { icon: '⛔', tag: 'STOP LOSS', border: C.short, bg: C.shortBg };
+      return { icon: '⛔', tag: '建议止损', border: C.short, bg: C.shortBg };
     case 'close':
-      return { icon: '✕', tag: 'CLOSE NOW', border: C.short, bg: C.shortBg };
+      return { icon: '✕', tag: '建议平仓', border: C.short, bg: C.shortBg };
     default:
-      return { icon: '◆', tag: 'HOLD', border: C.neon, bg: C.neonBg };
+      return { icon: '◆', tag: '继续持有', border: C.neon, bg: C.neonBg };
   }
 }
 
@@ -458,6 +467,9 @@ const s = StyleSheet.create({
   reasonText: { color: C.textDim, fontSize: 11, flex: 1, fontFamily: 'monospace', lineHeight: 16 },
 
   // 价格矩阵
+  priceMatrixWrap: { gap: spacing.xs },
+  aiDirTag: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.sm, paddingVertical: 3, borderRadius: radius.xs, borderWidth: 1 },
+  aiDirText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.5, fontFamily: 'monospace' },
   priceMatrix: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.surface, borderRadius: radius.sm, padding: spacing.sm, borderWidth: 1, borderColor: C.cardBorder },
   priceCell: { flex: 1, alignItems: 'center' },
   priceCellLabel: { fontSize: 7, fontWeight: '700', color: C.textDim, letterSpacing: 1, fontFamily: 'monospace', marginBottom: 3 },
