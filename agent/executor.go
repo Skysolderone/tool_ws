@@ -27,23 +27,81 @@ const (
 )
 
 func executeActionItems(ctx context.Context, items []ActionItem) *ExecutionResult {
+	policy := buildExecPolicy()
 	res := &ExecutionResult{
 		Requested: len(items),
 		Results:   make([]ActionExecution, 0, len(items)),
 	}
 
-	for _, item := range items {
-		action := strings.ToLower(strings.TrimSpace(item.Action))
-		symbol := strings.ToUpper(strings.TrimSpace(item.Symbol))
-		if symbol == "" || symbol == "N/A" {
-			res.Skipped++
+	if !policy.enableExecution {
+		for _, item := range items {
 			res.Results = append(res.Results, ActionExecution{
 				Action:  item.Action,
 				Symbol:  item.Symbol,
 				Status:  "skipped",
-				Message: "invalid symbol",
+				Message: "agent execution disabled by config",
 			})
+			res.Skipped++
+		}
+		return res
+	}
+
+	for i, item := range items {
+		if policy.maxActions > 0 && i >= policy.maxActions {
+			out := ActionExecution{
+				Action:  item.Action,
+				Symbol:  item.Symbol,
+				Status:  "skipped",
+				Message: fmt.Sprintf("exceeds max_actions_per_request=%d", policy.maxActions),
+			}
+			api.SaveFailedOperation("AGENT_GUARD", "agent", strings.ToUpper(strings.TrimSpace(item.Symbol)), item, 0, fmt.Errorf("%s", out.Message))
+			res.Results = append(res.Results, out)
+			countExecutionResult(res, out)
 			continue
+		}
+
+		action := strings.ToLower(strings.TrimSpace(item.Action))
+		symbol := strings.ToUpper(strings.TrimSpace(item.Symbol))
+
+		if action != "wait" && (symbol == "" || symbol == "N/A" || symbol == "ALL" || symbol == "GENERAL") {
+			out := ActionExecution{
+				Action:  item.Action,
+				Symbol:  item.Symbol,
+				Status:  "skipped",
+				Message: "invalid symbol",
+			}
+			api.SaveFailedOperation("AGENT_GUARD", "agent", symbol, item, 0, fmt.Errorf("%s", out.Message))
+			res.Results = append(res.Results, out)
+			countExecutionResult(res, out)
+			continue
+		}
+
+		if err := policy.validate(action, symbol); err != nil {
+			out := ActionExecution{
+				Action:  item.Action,
+				Symbol:  symbol,
+				Status:  "skipped",
+				Message: "blocked by policy: " + err.Error(),
+			}
+			api.SaveFailedOperation("AGENT_GUARD", "agent", symbol, item, 0, err)
+			res.Results = append(res.Results, out)
+			countExecutionResult(res, out)
+			continue
+		}
+
+		if actionNeedsRiskCheck(action) {
+			if err := api.CheckRisk(); err != nil {
+				out := ActionExecution{
+					Action:  item.Action,
+					Symbol:  symbol,
+					Status:  "skipped",
+					Message: "blocked by risk control: " + err.Error(),
+				}
+				api.SaveFailedOperation("AGENT_RISK_BLOCK", "agent", symbol, item, 0, err)
+				res.Results = append(res.Results, out)
+				countExecutionResult(res, out)
+				continue
+			}
 		}
 
 		switch action {
@@ -87,6 +145,7 @@ func executeActionItems(ctx context.Context, items []ActionItem) *ExecutionResul
 				Status:  "skipped",
 				Message: "unsupported action, currently executable: open/add/close/reduce/set_sl/set_tp",
 			}
+			api.SaveFailedOperation("AGENT_GUARD", "agent", symbol, item, 0, fmt.Errorf("%s", out.Message))
 			res.Results = append(res.Results, out)
 			countExecutionResult(res, out)
 		}
@@ -505,4 +564,58 @@ func normalizePositionSide(raw string, amt float64) string {
 		}
 		return "LONG"
 	}
+}
+
+type execPolicy struct {
+	enableExecution bool
+	maxActions      int
+	allowedActions  map[string]struct{}
+	allowedSymbols  map[string]struct{}
+}
+
+func buildExecPolicy() execPolicy {
+	cfg := api.ResolveAgentExecutionPolicy()
+	p := execPolicy{
+		enableExecution: cfg.EnableExecution,
+		maxActions:      cfg.MaxActionsPerRequest,
+		allowedActions:  make(map[string]struct{}),
+		allowedSymbols:  make(map[string]struct{}),
+	}
+
+	for _, a := range cfg.AllowedActions {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if a == "" {
+			continue
+		}
+		p.allowedActions[a] = struct{}{}
+	}
+
+	for _, s := range cfg.AllowedSymbols {
+		s = strings.ToUpper(strings.TrimSpace(s))
+		if s == "" {
+			continue
+		}
+		p.allowedSymbols[s] = struct{}{}
+	}
+
+	return p
+}
+
+func (p execPolicy) validate(action, symbol string) error {
+	if action == "wait" {
+		return nil
+	}
+	if _, ok := p.allowedActions[action]; !ok {
+		return fmt.Errorf("action %s not allowed", action)
+	}
+	if len(p.allowedSymbols) > 0 {
+		if _, ok := p.allowedSymbols[symbol]; !ok {
+			return fmt.Errorf("symbol %s not allowed", symbol)
+		}
+	}
+	return nil
+}
+
+func actionNeedsRiskCheck(action string) bool {
+	return action == "open" || action == "add"
 }

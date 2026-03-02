@@ -23,6 +23,15 @@ type LLMConfig struct {
 	Temperature float64 `json:"temperature"`
 }
 
+// AgentConfig Agent 执行治理配置。
+type AgentConfig struct {
+	ExecutionProfile     string   `json:"execution_profile"`       // conservative|aggressive|custom
+	EnableExecution      bool     `json:"enable_execution"`        // 是否允许执行动作
+	MaxActionsPerRequest int      `json:"max_actions_per_request"` // 单次最多执行多少条建议
+	AllowedActions       []string `json:"allowed_actions"`         // 允许执行的动作白名单
+	AllowedSymbols       []string `json:"allowed_symbols"`         // 允许执行的交易对白名单，空=不限制
+}
+
 // Config 应用配置
 type Config struct {
 	Server          ServerConfig          `json:"server"`
@@ -31,6 +40,7 @@ type Config struct {
 	Database        DatabaseConfig        `json:"database"`
 	Auth            AuthConfig            `json:"auth"`
 	LLM             LLMConfig             `json:"llm"`
+	Agent           AgentConfig           `json:"agent"`
 	Risk            RiskConfig            `json:"risk"`
 	PortfolioRisk   PortfolioRiskConfig   `json:"portfolioRisk"`
 	Notify          NotifyConfig          `json:"notify"`
@@ -95,6 +105,12 @@ func LoadConfig(configPath string) error {
 	Cfg = Config{
 		Database: DatabaseConfig{
 			AutoMigrate: true,
+		},
+		Agent: AgentConfig{
+			ExecutionProfile:     "custom",
+			EnableExecution:      true,
+			MaxActionsPerRequest: 5,
+			AllowedActions:       []string{"open", "add", "close", "reduce", "set_sl", "set_tp"},
 		},
 	}
 

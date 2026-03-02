@@ -1,6 +1,8 @@
 package api
 
-import "time"
+import (
+	"time"
+)
 
 // AgentAnalysisLog Agent 分析请求/结果日志。
 type AgentAnalysisLog struct {
@@ -27,4 +29,30 @@ func SaveAgentAnalysisLog(record *AgentAnalysisLog) error {
 		record.Status = "SUCCESS"
 	}
 	return DB.Create(record).Error
+}
+
+// GetAgentAnalysisLogs 查询 Agent 分析日志（按创建时间倒序）。
+func GetAgentAnalysisLogs(limit int, status string, execute *bool) ([]AgentAnalysisLog, error) {
+	if DB == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	var records []AgentAnalysisLog
+	q := DB.Order("created_at DESC").Limit(limit)
+	if status != "" {
+		q = q.Where("status = ?", status)
+	}
+	if execute != nil {
+		q = q.Where("execute = ?", *execute)
+	}
+	if err := q.Find(&records).Error; err != nil {
+		return nil, err
+	}
+	return records, nil
 }

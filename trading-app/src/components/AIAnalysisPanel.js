@@ -31,6 +31,9 @@ export default function AIAnalysisPanel() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [policy, setPolicy] = useState(null);
+  const [policyError, setPolicyError] = useState(null);
+  const [policyLoading, setPolicyLoading] = useState(true);
   const [selectedActions, setSelectedActions] = useState({});
 
   const actionItems = data?.action_items || [];
@@ -44,6 +47,28 @@ export default function AIAnalysisPanel() {
     setSelectedActions(next);
   }, [actionItems]);
 
+  useEffect(() => {
+    let active = true;
+    const loadPolicy = async () => {
+      setPolicyLoading(true);
+      try {
+        const res = await api.getAgentPolicy();
+        if (!active) return;
+        setPolicy(res.data || res);
+        setPolicyError(null);
+      } catch (e) {
+        if (!active) return;
+        setPolicyError(e.message);
+      } finally {
+        if (active) setPolicyLoading(false);
+      }
+    };
+    loadPolicy();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const actionStats = useMemo(() => {
     const total = actionItems.length;
     const high = actionItems.filter((x) => x.priority === 'high').length;
@@ -55,6 +80,7 @@ export default function AIAnalysisPanel() {
     [actionItems, selectedActions],
   );
   const selectedCount = selectedActionItems.length;
+  const executionEnabled = !!policy?.enable_execution;
 
   const runAgent = async ({ execute, items = [] }) => {
     setLoading(true);
@@ -81,6 +107,14 @@ export default function AIAnalysisPanel() {
   };
 
   const onExecutePress = () => {
+    if (policyLoading) {
+      Alert.alert('策略加载中', '执行策略尚在加载，请稍后重试。');
+      return;
+    }
+    if (!executionEnabled) {
+      Alert.alert('执行已禁用', '当前策略不允许自动执行，请仅查看建议。');
+      return;
+    }
     if (!actionItems.length) {
       Alert.alert('无可执行建议', '请先点击“开始AI分析”获取建议。');
       return;
@@ -129,12 +163,37 @@ export default function AIAnalysisPanel() {
       <View style={s.headerCard}>
         <Text style={s.title}>Agent 智能分析</Text>
         <Text style={s.subtitle}>点击按钮后才会触发分析，不再自动轮询</Text>
+        <View style={s.policyCard}>
+          <Text style={s.policyTitle}>执行策略</Text>
+          {policyLoading && <Text style={s.policyText}>加载中...</Text>}
+          {!policyLoading && !!policyError && (
+            <Text style={[s.policyText, { color: C.danger }]}>策略读取失败: {policyError}</Text>
+          )}
+          {!policyLoading && !policyError && !!policy && (
+            <>
+              <Text style={s.policyText}>模板: {policy.profile || 'custom'}</Text>
+              {!!policy.description && <Text style={s.policyText}>说明: {policy.description}</Text>}
+              <Text style={s.policyText}>执行开关: {executionEnabled ? '开启' : '关闭'}</Text>
+              <Text style={s.policyText}>单次上限: {policy.max_actions_per_request || 0}</Text>
+              <Text style={s.policyText}>
+                动作白名单: {(policy.allowed_actions || []).join(', ') || '-'}
+              </Text>
+              <Text style={s.policyText}>
+                币种白名单: {(policy.allowed_symbols || []).join(', ') || '不限制'}
+              </Text>
+            </>
+          )}
+        </View>
         <View style={s.btnRow}>
           <TouchableOpacity style={s.primaryBtn} onPress={onAnalyzePress} disabled={loading}>
             <Text style={s.primaryBtnText}>{loading ? '分析中...' : '开始AI分析'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={s.dangerBtn} onPress={onExecutePress} disabled={loading}>
-            <Text style={s.dangerBtnText}>执行建议下单</Text>
+          <TouchableOpacity
+            style={[s.dangerBtn, (!executionEnabled || policyLoading) ? s.btnDisabled : null]}
+            onPress={onExecutePress}
+            disabled={loading || policyLoading || !executionEnabled}
+          >
+            <Text style={s.dangerBtnText}>{executionEnabled ? '执行建议下单' : '执行已禁用'}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -255,6 +314,23 @@ const s = StyleSheet.create({
     color: C.textDim,
     fontSize: fontSize.sm,
   },
+  policyCard: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    gap: 4,
+    backgroundColor: C.bg,
+  },
+  policyTitle: {
+    color: C.text,
+    fontSize: fontSize.sm,
+    fontWeight: '800',
+  },
+  policyText: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+  },
   btnRow: {
     flexDirection: 'row',
     gap: spacing.sm,
@@ -289,6 +365,9 @@ const s = StyleSheet.create({
     color: C.danger,
     fontWeight: '900',
     fontSize: fontSize.sm,
+  },
+  btnDisabled: {
+    opacity: 0.45,
   },
   card: {
     backgroundColor: C.card,
