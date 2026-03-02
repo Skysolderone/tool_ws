@@ -20,7 +20,10 @@ type SlippageRecord struct {
 	SlippageBps   float64 `gorm:"type:numeric(18,6)" json:"slippageBps"`    // 滑点 basis points
 	Side          string  `gorm:"type:varchar(10)" json:"side"`             // BUY / SELL
 	Quantity      float64 `gorm:"type:numeric(36,18)" json:"quantity"`
-	Source        string  `gorm:"type:varchar(40);index" json:"source"` // scalp / manual / tpsl 等
+	Source         string  `gorm:"type:varchar(40);index" json:"source"` // scalp / manual / tpsl 等
+	ArrivalPrice   float64 `gorm:"type:numeric(36,18)" json:"arrivalPrice"`   // 下单瞬间标记价
+	LatencyMs      int64   `json:"latencyMs"`                                 // 下单到成交毫秒数
+	StrategySource string  `gorm:"type:varchar(40);index" json:"strategySource"` // 策略来源归因
 }
 
 // SlippageStats 滑点统计摘要

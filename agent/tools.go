@@ -76,3 +76,7 @@ func collectJournalData(days int) (any, error) {
 func collectSentimentData() any {
 	return api.GetMarketSentiment()
 }
+
+func collectBalanceData(ctx context.Context) (any, error) {
+	return api.GetBalance(ctx)
+}

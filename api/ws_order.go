@@ -17,8 +17,11 @@ import (
 // 如果设置了 stopLossPrice + riskReward，主单成交后自动挂止盈止损单
 // 返回 *PlaceOrderResult 包含主单和可选的止盈止损单
 func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult, error) {
+	orderStartTime := time.Now()
+
 	recordFailure := func(action string, opErr error, relatedOrderID int64) {
 		SaveFailedOperation(action, req.Source, req.Symbol, req, relatedOrderID, opErr)
+		RecordOrderMetric(false, time.Since(orderStartTime).Milliseconds())
 	}
 	fail := func(action string, opErr error) (*PlaceOrderResult, error) {
 		recordFailure(action, opErr, 0)
@@ -145,7 +148,7 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 
 	result := &PlaceOrderResult{Order: mainOrder}
 
-	// 异步记录滑点（市价单才有意义，限价单 intendedPrice 即为挂单价格）
+	// 异步记录执行质量（滑点 + 延迟 + 策略归因）
 	go func() {
 		avgPriceStr := mainOrder.AvgPrice
 		if avgPriceStr == "" || avgPriceStr == "0" {
@@ -156,8 +159,8 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 			return
 		}
 		// 下单时的市场价（标记价格缓存）
-		intendedPrice, priceErr := GetPriceCache().GetPrice(req.Symbol)
-		if priceErr != nil || intendedPrice == 0 {
+		arrivalPrice, priceErr := GetPriceCache().GetPrice(req.Symbol)
+		if priceErr != nil || arrivalPrice == 0 {
 			return
 		}
 		qty, _ := strconv.ParseFloat(mainOrder.OrigQuantity, 64)
@@ -166,7 +169,9 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 		if source == "" {
 			source = "manual"
 		}
-		RecordSlippage(req.Symbol, orderIDStr, string(req.Side), source, intendedPrice, executedPrice, qty)
+		latencyMs := time.Since(orderStartTime).Milliseconds()
+		RecordExecutionQuality(req.Symbol, orderIDStr, string(req.Side), source, arrivalPrice, executedPrice, qty, latencyMs)
+		RecordOrderMetric(true, latencyMs)
 	}()
 
 	// 主单成交后注册本地止盈止损监控

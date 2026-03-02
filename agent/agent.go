@@ -117,6 +117,7 @@ func collectData(ctx context.Context, req AnalysisRequest) (string, error) {
 	}
 
 	data := map[string]any{}
+	var warnings []string
 	symbols := req.Symbols
 
 	switch mode {
@@ -126,7 +127,10 @@ func collectData(ctx context.Context, req AnalysisRequest) (string, error) {
 	}
 
 	if mode == "full" || mode == "positions" {
-		if positions, err := collectPositionsData(ctx, symbols); err == nil && positions != nil {
+		positions, err := collectPositionsData(ctx, symbols)
+		if err != nil {
+			warnings = append(warnings, "持仓数据获取失败: "+err.Error())
+		} else if positions != nil {
 			data["positions"] = positions
 		}
 	}
@@ -134,17 +138,35 @@ func collectData(ctx context.Context, req AnalysisRequest) (string, error) {
 	if mode == "full" || mode == "signals" {
 		if signals := collectSignalsData(symbols); signals != nil {
 			data["signals"] = signals
+		} else {
+			warnings = append(warnings, "推荐信号缓存为空（可能引擎尚未就绪）")
 		}
 	}
 
 	if mode == "full" || mode == "journal" {
-		if journal, err := collectJournalData(30); err == nil && journal != nil {
+		journal, err := collectJournalData(30)
+		if err != nil {
+			warnings = append(warnings, "交易日志获取失败: "+err.Error())
+		} else if journal != nil {
 			data["journal"] = journal
 		}
 	}
 
 	if mode == "full" || mode == "sentiment" {
 		data["sentiment"] = collectSentimentData()
+	}
+
+	// 加入账户余额
+	if mode == "full" || mode == "positions" {
+		if balance, err := collectBalanceData(ctx); err != nil {
+			warnings = append(warnings, "账户余额获取失败: "+err.Error())
+		} else if balance != nil {
+			data["balance"] = balance
+		}
+	}
+
+	if len(warnings) > 0 {
+		data["_warnings"] = warnings
 	}
 
 	b, err := json.MarshalIndent(data, "", "  ")

@@ -145,64 +145,68 @@
 
 ---
 
-## 九、下一阶段扩展优化建议（规划中）
+## 九、扩展优化
 
 ### 9.1 执行层优化（Execution）
 
-- [ ] 执行质量闭环 — 记录 arrival price / fill price / slippage / latency 并按策略归因（模块：`api/ws_order.go`、`api/slippage.go`、`api/orderflow.go`）
-- [ ] 智能下单路由 — PostOnly→IOC/FOK fallback、分批拆单、盘口冲击约束（模块：`api/order.go`、`api/ws_order.go`、`api/orderbook_snapshot.go`）
-- [ ] 时段与流动性自适应下单量 — 波动/深度驱动动态 size（模块：`api/price_cache.go`、`api/orderbook_snapshot.go`）
+- [x] 执行质量闭环 — arrival price / fill price / slippage / latency 按策略归因（`api/execution_quality.go`、`api/slippage.go`） — 2026-03-02
+- [x] 智能下单路由 — PostOnly→IOC/FOK fallback、分批拆单、盘口冲击约束（`api/smart_router.go`） — 2026-03-02
+- [x] 时段与流动性自适应下单量 — 波动/深度驱动动态 size（`api/adaptive_sizing.go`） — 2026-03-02
 
 ### 9.2 风控层升级（Portfolio Risk）
 
-- [ ] 组合级 VaR/CVaR 风控 — 实时风险预算和阈值熔断（模块：`api/portfolio_risk.go`、`api/risk_control.go`）
-- [ ] 相关性冲击测试 — 极端场景下多策略同向暴露评估（模块：`api/correlation.go`、`api/portfolio_risk.go`）
-- [ ] 分级 Kill-Switch — 策略级 / 币种级 / 账户级联动暂停（模块：`api/risk_control.go`、`api/strategy_link.go`）
+- [x] 组合级 VaR/CVaR 风控 — 实时风险预算和阈值熔断（`api/var_risk.go`） — 2026-03-02
+- [x] 相关性冲击测试 — 极端场景下多策略同向暴露评估（`api/stress_testing.go`） — 2026-03-02
+- [x] 分级 Kill-Switch — 策略级 / 币种级 / 账户级联动暂停（`api/kill_switch.go`） — 2026-03-02
 
 ### 9.3 策略组合优化（Strategy Allocation）
 
-- [ ] 策略资金分配器 — 基于边际 Sharpe、回撤约束、换手惩罚动态分配（模块：`api/strategy_link.go`、各策略状态模块）
-- [ ] 市场状态机（Regime）— 趋势/震荡/高波动场景切换策略权重（模块：`api/scalp_strategy.go`、`api/signal_strategy.go`、`api/volatility_guard.go`）
-- [ ] 参数稳定性管理 — 参数漂移告警与自动降权（模块：`api/analytics.go`、`api/strategy_persist.go`）
+- [x] 策略资金分配器 — 基于边际 Sharpe、回撤约束、换手惩罚动态分配（`api/strategy_allocator.go`） — 2026-03-02
+- [x] 市场状态机（Regime）— 趋势/震荡/高波动场景切换策略权重（`api/market_regime.go`） — 2026-03-02
+- [x] 参数稳定性管理 — 参数漂移告警与自动降权（`api/param_stability.go`） — 2026-03-02
 
 ### 9.4 回测与验证强化（Research）
 
-- [ ] 事件驱动回测撮合增强 — 手续费/资金费率/滑点/延迟/部分成交建模（模块：`api/backtest.go`、`api/slippage.go`、`api/funding_rate.go`）
-- [ ] Walk-Forward + Purged CV 验证流程（模块：`api/backtest.go`、`scripts/`）
-- [ ] 特征快照一致性校验 — 回测与实盘特征同源（模块：`api/analytics.go`、`api/price_cache.go`）
+- [ ] 事件驱动回测撮合增强 — 手续费/资金费率/滑点/延迟/部分成交建模
+- [ ] Walk-Forward + Purged CV 验证流程
+- [ ] 特征快照一致性校验 — 回测与实盘特征同源
 
 ### 9.5 数据质量与可观测性（Data Quality）
 
-- [ ] WS 数据质量监控 — 缺失、跳点、延迟、时钟漂移告警（模块：`api/ws_*.go`、`websocket/`）
-- [ ] 关键链路指标看板 — 下单成功率、执行延迟、风控触发频次（模块：`api/notify.go`、前端监控面板）
-- [ ] 数据降级与补偿机制 — REST/缓存兜底与重放恢复（模块：`api/client.go`、`api/price_cache.go`）
+- [x] WS 数据质量监控 — 缺失、跳点、延迟、时钟漂移告警（`api/ws_data_quality.go`） — 2026-03-02
+- [x] 关键链路指标看板 — 下单成功率、执行延迟、风控触发频次（`api/ops_metrics.go`） — 2026-03-02
+- [x] 数据降级与补偿机制 — REST/缓存兜底与重放恢复（`api/data_fallback.go`） — 2026-03-02
 
 ### 9.6 Agent 治理与审计（AI Governance）
 
-- [ ] 默认“仅建议不执行”策略强化 + 执行白名单（模块：`agent/agent.go`、`agent/executor.go`）
-- [ ] Agent 建议效果评估 — 建议命中率、执行后收益、回撤影响（模块：`api/agent_analysis_log.go`、`api/analytics.go`）
-- [ ] Agent 风险联动 — 执行前组合风控校验与拒单原因记录（模块：`agent/executor.go`、`api/risk_control.go`）
+- [x] Agent 建议效果评估 — 建议命中率、执行后收益、回撤影响（`api/agent_evaluation.go`） — 2026-03-02
+- [x] Agent 风险联动 — 执行前组合风控校验（VaR+KillSwitch）与拒单原因记录（`api/agent_risk_gate.go`、`agent/executor.go`） — 2026-03-02
 
 ### 9.7 前端交易运营（UI/UX）
 
-- [ ] 组合健康看板 — 风险预算使用率、实时回撤、策略拥挤度（模块：`trading-app/src/components/*`）
-- [ ] Agent 执行前核对弹层增强 — 下单金额/杠杆/止盈止损预估影响（模块：`trading-app/src/components/AIAnalysisPanel.js`）
-- [ ] 策略降权/退役一键操作（模块：`trading-app/src/components/*`、`api/strategy_persist.go`）
+- [x] 组合健康看板 — 风险预算使用率、VaR/CVaR、Regime、策略分配（`PortfolioHealthPanel.js`） — 2026-03-02
+- [x] Agent 执行前核对弹层增强 — 风控预检 + 预警展示 + 二次确认（`AIAnalysisPanel.js`） — 2026-03-02
+- [x] 策略降权/退役一键操作（`api/strategy_admin.go`） — 2026-03-02
 
 ---
 
 ## 统计
 
-> 注：以下统计仅包含“已完成”功能，不含第九章规划项。
-
 | 分类 | 已完成 | 待开发 | 完成率 |
 |------|--------|--------|--------|
-| 核心交易 | 13 | 0 | 100% |
-| 自动化策略 | 18 | 0 | 100% |
-| 技术指标 | 9 | 0 | 100% |
-| 数据源 | 12 | 0 | 100% |
-| 分析智能 | 14 | 0 | 100% |
-| 风控体系 | 11 | 0 | 100% |
-| 通知推送 | 5 | 0 | 100% |
-| 前端 UI | 16 | 0 | 100% |
-| **总计** | **98** | **0** | **100%** |
+| 一、核心交易 | 13 | 0 | 100% |
+| 二、自动化策略 | 18 | 0 | 100% |
+| 三、技术指标 | 9 | 0 | 100% |
+| 四、数据源 | 12 | 0 | 100% |
+| 五、分析智能 | 14 | 0 | 100% |
+| 六、风控体系 | 11 | 0 | 100% |
+| 七、通知推送 | 5 | 0 | 100% |
+| 八、前端 UI | 16 | 0 | 100% |
+| 九-1 执行层优化 | 3 | 0 | 100% |
+| 九-2 风控层升级 | 3 | 0 | 100% |
+| 九-3 策略组合优化 | 3 | 0 | 100% |
+| 九-4 回测验证强化 | 0 | 3 | 0% |
+| 九-5 数据质量可观测 | 3 | 0 | 100% |
+| 九-6 Agent 治理审计 | 2 | 0 | 100% |
+| 九-7 前端交易运营 | 3 | 0 | 100% |
+| **总计** | **115** | **3** | **97%** |

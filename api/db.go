@@ -71,6 +71,9 @@ func autoMigrateSchema() error {
 		&SlippageRecord{},
 		&SlippageRecord{}, // 滑点记录（新增表，不影响已有数据）
 		&AgentAnalysisLog{},
+		&VarSnapshot{},
+		&StrategyAllocation{},
+		&AgentEvaluationRecord{},
 	)
 }
 

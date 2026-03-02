@@ -193,6 +193,21 @@ export default {
 
   // 组合风控
   getPortfolioRisk: () => apiCall('GET', '/risk/portfolio'),
+
+  // 第九章新增 API
+  getVarStatus: () => apiCall('GET', '/risk/var'),
+  getKillSwitchStatus: () => apiCall('GET', '/risk/kill-switch'),
+  runStressTest: (scenarios) => apiCall('POST', '/risk/stress-test', { scenarios }),
+  getOpsMetrics: () => apiCall('GET', '/ops/metrics'),
+  getDataQuality: () => apiCall('GET', '/data-quality'),
+  getExecutionQuality: (source, days) => apiCall('GET', `/execution/quality?source=${source || ''}&days=${days || 30}`),
+  getAllocationStatus: () => apiCall('GET', '/allocator/status'),
+  getRegimeStatus: () => apiCall('GET', '/regime/status'),
+  getParamStability: () => apiCall('GET', '/param-stability/status'),
+  getAgentEvaluation: (days) => apiCall('GET', `/agent/evaluation?days=${days || 30}`),
+  agentRiskCheck: (data) => apiCall('POST', '/agent/risk-check', data),
+  strategyAdmin: (data) => apiCall('POST', '/strategy/admin', data),
+  getFallbackStatus: () => apiCall('GET', '/data-fallback/status'),
 };
 
 export {

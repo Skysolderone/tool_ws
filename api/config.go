@@ -45,6 +45,7 @@ type Config struct {
 	PortfolioRisk   PortfolioRiskConfig   `json:"portfolioRisk"`
 	Notify          NotifyConfig          `json:"notify"`
 	VolatilityGuard VolatilityGuardConfig `json:"volatilityGuard"`
+	VarRisk         VarRiskConfig         `json:"varRisk"`
 	Testnet         bool                  `json:"testnet"`
 	DryRun          bool                  `json:"dryRun"` // 模拟交易模式，不实际下单
 }

@@ -22,8 +22,10 @@ const (
 	defaultOpenUSDT = 5.0
 	defaultOpenLev  = 5
 	defaultAddUSDT  = 3.0
-	defaultTPPct    = 0.01
-	defaultSLPct    = 0.01
+	// 基础止损/止盈百分比（1x 杠杆），实际值 = base / leverage，下限 0.3%
+	baseSLPct = 0.05
+	baseTPPct = 0.05
+	minSLTPPct = 0.003
 )
 
 func executeActionItems(ctx context.Context, items []ActionItem) *ExecutionResult {
@@ -239,6 +241,22 @@ func executeOpen(ctx context.Context, symbol string, item ActionItem) ActionExec
 	quote := parseQuoteUSDT(item.Detail, defaultOpenUSDT)
 	lev := parseLeverage(item.Detail, defaultOpenLev)
 
+	// Agent 风控联动：执行前预检
+	gate := api.AgentRiskGate(symbol, side, quote, lev)
+	if !gate.Allowed {
+		msg := "blocked by risk gate"
+		if len(gate.Reasons) > 0 {
+			msg = "risk gate: " + gate.Reasons[0]
+		}
+		api.SaveFailedOperation("AGENT_RISK_GATE", "agent", symbol, item, 0, fmt.Errorf("%s", msg))
+		return ActionExecution{
+			Action:  item.Action,
+			Symbol:  symbol,
+			Status:  "skipped",
+			Message: msg,
+		}
+	}
+
 	resp, err := api.PlaceOrderViaWs(ctx, api.PlaceOrderReq{
 		Source:        "agent",
 		Symbol:        symbol,
@@ -340,10 +358,11 @@ func executeSetSL(ctx context.Context, symbol string, item ActionItem) ActionExe
 
 	triggerPrice := parseTriggerPrice(item.Detail)
 	if triggerPrice <= 0 {
+		slPct := dynamicSLTPPct(pos.Leverage, baseSLPct)
 		if pos.Amount > 0 {
-			triggerPrice = pos.MarkPrice * (1 - defaultSLPct)
+			triggerPrice = pos.MarkPrice * (1 - slPct)
 		} else {
-			triggerPrice = pos.MarkPrice * (1 + defaultSLPct)
+			triggerPrice = pos.MarkPrice * (1 + slPct)
 		}
 	}
 
@@ -395,10 +414,11 @@ func executeSetTP(ctx context.Context, symbol string, item ActionItem) ActionExe
 
 	triggerPrice := parseTriggerPrice(item.Detail)
 	if triggerPrice <= 0 {
+		tpPct := dynamicSLTPPct(pos.Leverage, baseTPPct)
 		if pos.Amount > 0 {
-			triggerPrice = pos.MarkPrice * (1 + defaultTPPct)
+			triggerPrice = pos.MarkPrice * (1 + tpPct)
 		} else {
-			triggerPrice = pos.MarkPrice * (1 - defaultTPPct)
+			triggerPrice = pos.MarkPrice * (1 - tpPct)
 		}
 	}
 
@@ -502,12 +522,14 @@ func formatDecimal(v float64) string {
 	return s
 }
 
+var longRe = regexp.MustCompile(`(?i)\b(?:long|buy)\b|做多|看多|开多|多头`)
+var shortRe = regexp.MustCompile(`(?i)\b(?:short|sell)\b|做空|看空|开空|空头`)
+
 func inferDirection(detail string) (side, posSide string, ok bool) {
-	t := strings.ToLower(detail)
-	if strings.Contains(t, "long") || strings.Contains(t, "buy") || strings.Contains(t, "做多") || strings.Contains(t, "看多") || strings.Contains(t, "多") {
+	if longRe.MatchString(detail) {
 		return "BUY", "LONG", true
 	}
-	if strings.Contains(t, "short") || strings.Contains(t, "sell") || strings.Contains(t, "做空") || strings.Contains(t, "看空") || strings.Contains(t, "空") {
+	if shortRe.MatchString(detail) {
 		return "SELL", "SHORT", true
 	}
 	return "", "", false
@@ -618,4 +640,18 @@ func (p execPolicy) validate(action, symbol string) error {
 
 func actionNeedsRiskCheck(action string) bool {
 	return action == "open" || action == "add"
+}
+
+// dynamicSLTPPct 根据杠杆倍数动态计算止损/止盈百分比。
+// 杠杆越高，百分比越小，下限 minSLTPPct（0.3%）。
+func dynamicSLTPPct(leverage int, basePct float64) float64 {
+	lev := leverage
+	if lev <= 0 {
+		lev = 1
+	}
+	pct := basePct / float64(lev)
+	if pct < minSLTPPct {
+		pct = minSLTPPct
+	}
+	return pct
 }

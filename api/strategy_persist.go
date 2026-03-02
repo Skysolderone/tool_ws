@@ -15,6 +15,7 @@ type StrategyState struct {
 	Status       string     `gorm:"type:varchar(20);index" json:"status"`                              // ACTIVE / STOPPED
 	StartedAt    time.Time  `json:"startedAt"`
 	StoppedAt    *time.Time `json:"stoppedAt,omitempty"`
+	Demoted      bool       `json:"demoted"`
 	CreatedAt    time.Time  `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt    time.Time  `gorm:"autoUpdateTime" json:"updatedAt"`
 }

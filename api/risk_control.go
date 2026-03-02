@@ -51,8 +51,14 @@ func InitRiskControl(config RiskConfig) {
 	}
 }
 
-// CheckRisk 下单前检查风控
+// CheckRisk 下单前检查风控（含 Kill-Switch）
 func CheckRisk() error {
+	// Kill-Switch 检查（账户级）
+	if err := CheckKillSwitch("", ""); err != nil {
+		RecordRiskTrigger("kill_switch")
+		return err
+	}
+
 	risk.mu.RLock()
 	defer risk.mu.RUnlock()
 
@@ -66,6 +72,7 @@ func CheckRisk() error {
 	}
 
 	if risk.locked {
+		RecordRiskTrigger("daily_loss")
 		return fmt.Errorf("风控锁定: %s，禁止下单至明日", risk.lockReason)
 	}
 

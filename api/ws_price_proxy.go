@@ -228,6 +228,12 @@ func (h *priceHub) startBinanceStream(room *symbolRoom) {
 			}
 			room.mu.Unlock()
 
+			// 记录数据质量指标 + 降级恢复
+			if price, parseErr := strconv.ParseFloat(event.Price, 64); parseErr == nil {
+				RecordTick(event.Symbol, price, event.Time)
+			}
+			RecordWsData(event.Symbol)
+
 			msg, _ := json.Marshal(PriceMsg{
 				Symbol: event.Symbol,
 				Price:  event.Price,

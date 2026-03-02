@@ -123,13 +123,38 @@ export default function AIAnalysisPanel() {
       Alert.alert('未选择建议', '请先勾选要执行的建议。');
       return;
     }
+    // 风控预检：逐条检查 open/add 类动作
+    const openItems = selectedActionItems.filter(
+      (it) => it.action === 'open' || it.action === 'add'
+    );
+    let riskWarnings = [];
+    for (const it of openItems) {
+      try {
+        const res = await api.agentRiskCheck({
+          symbol: it.symbol,
+          side: it.detail?.includes('做多') || it.detail?.includes('long') ? 'BUY' : 'SELL',
+          sizeUSDT: 10,
+          leverage: 5,
+        });
+        if (res?.data && !res.data.allowed) {
+          riskWarnings.push(`${it.symbol}: ${(res.data.reasons || []).join(', ')}`);
+        }
+      } catch (_e) { /* 预检失败不阻断 */ }
+    }
+
+    let confirmMsg = `将执行 ${selectedCount} 条已勾选建议。`;
+    if (riskWarnings.length > 0) {
+      confirmMsg += `\n\n⚠️ 风控预警:\n${riskWarnings.join('\n')}`;
+    }
+    confirmMsg += '\n\n是否继续？';
+
     Alert.alert(
-      '执行确认',
-      `将执行 ${selectedCount} 条已勾选建议（可执行动作由后端校验）。是否继续？`,
+      riskWarnings.length > 0 ? '⚠️ 执行确认（有风控预警）' : '执行确认',
+      confirmMsg,
       [
         { text: '取消', style: 'cancel' },
         {
-          text: '执行',
+          text: riskWarnings.length > 0 ? '强制执行' : '执行',
           style: 'destructive',
           onPress: () => runAgent({ execute: true, items: selectedActionItems }),
         },

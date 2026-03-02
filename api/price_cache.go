@@ -40,6 +40,18 @@ func GetPriceCache() *PriceCache {
 	return priceCache
 }
 
+// UpdatePrice 手动更新价格（用于 REST 降级回填）
+func (pc *PriceCache) UpdatePrice(symbol string, price float64) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if pd, ok := pc.prices[symbol]; ok {
+		pd.MarkPrice = price
+		pd.LastUpdate = time.Now()
+	} else {
+		pc.prices[symbol] = &PriceData{Symbol: symbol, MarkPrice: price, LastUpdate: time.Now()}
+	}
+}
+
 // Subscribe 订阅交易对价格（如果尚未订阅）
 func (pc *PriceCache) Subscribe(symbol string) error {
 	pc.stopMu.Lock()

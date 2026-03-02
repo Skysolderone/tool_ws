@@ -60,6 +60,15 @@ func main() {
 	// 启动异常波动守卫（如果配置启用）
 	api.StartVolatilityGuard(api.Cfg.VolatilityGuard)
 
+	// 初始化 Kill-Switch、数据质量监控、运营指标、VaR 风控、数据降级
+	api.InitKillSwitch()
+	api.InitDataQualityTracker()
+	api.InitOpsMetrics()
+	api.InitVarRisk(api.Cfg.VarRisk)
+	api.InitDataFallback(api.FallbackConfig{})
+	api.StartRegimeDetector("BTCUSDT", 60)
+	api.StartAgentEvaluator(30)
+
 	// 初始化 WebSocket 订单客户端（异步，不阻塞启动）
 	go api.InitWsClient()
 
@@ -230,6 +239,51 @@ func main() {
 
 		// Analytics 相关
 		apiGroup.GET("/analytics/correlation", api.HandleGetAnalyticsCorrelation)
+
+		// 执行质量
+		apiGroup.GET("/execution/quality", api.HandleGetExecutionQuality)
+
+		// Kill-Switch
+		apiGroup.POST("/risk/kill-switch", api.HandleKillSwitch)
+		apiGroup.GET("/risk/kill-switch", api.HandleGetKillSwitchStatus)
+
+		// 数据质量
+		apiGroup.GET("/data-quality", api.HandleGetDataQuality)
+
+		// 运营指标
+		apiGroup.GET("/ops/metrics", api.HandleGetOpsMetrics)
+
+		// VaR 风控
+		apiGroup.GET("/risk/var", api.HandleGetVarStatus)
+
+		// 冲击测试
+		apiGroup.POST("/risk/stress-test", api.HandleRunStressTest)
+
+		// 数据降级
+		apiGroup.GET("/data-fallback/status", api.HandleGetFallbackStatus)
+
+		// 资金分配器
+		apiGroup.POST("/allocator/start", api.HandleStartAllocator)
+		apiGroup.POST("/allocator/stop", api.HandleStopAllocator)
+		apiGroup.GET("/allocator/status", api.HandleGetAllocation)
+
+		// 市场状态
+		apiGroup.GET("/regime/status", api.HandleGetRegime)
+
+		// 参数稳定性
+		apiGroup.GET("/param-stability/status", api.HandleGetParamStability)
+
+		// 自适应下单量
+		apiGroup.GET("/adaptive-size", api.HandleGetAdaptiveSize)
+
+		// Agent 建议评估
+		apiGroup.GET("/agent/evaluation", api.HandleGetAgentEval)
+
+		// Agent 风控预检
+		apiGroup.POST("/agent/risk-check", api.HandleAgentRiskCheck)
+
+		// 策略管理
+		apiGroup.POST("/strategy/admin", api.HandleStrategyAdmin)
 	}
 
 	hErrCh := make(chan error, 1)
