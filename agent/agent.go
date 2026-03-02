@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -212,6 +213,34 @@ func parseSymbolsQuery(raw string) []string {
 		res = append(res, s)
 	}
 	return res
+}
+
+// HandleLogs GET /tool/agent/logs?limit=50&status=SUCCESS|FAILED&execute=true|false
+func HandleLogs(c context.Context, ctx *app.RequestContext) {
+	limit, _ := strconv.Atoi(strings.TrimSpace(ctx.DefaultQuery("limit", "50")))
+	status := strings.ToUpper(strings.TrimSpace(ctx.DefaultQuery("status", "")))
+
+	var executePtr *bool
+	exeRaw := strings.TrimSpace(ctx.DefaultQuery("execute", ""))
+	if exeRaw != "" {
+		v := exeRaw == "1" || strings.EqualFold(exeRaw, "true")
+		if exeRaw == "0" || strings.EqualFold(exeRaw, "false") || v {
+			executePtr = &v
+		}
+	}
+
+	records, err := api.GetAgentAnalysisLogs(limit, status, executePtr)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, hertzutils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, hertzutils.H{"data": records})
+}
+
+// HandlePolicy GET /tool/agent/policy
+func HandlePolicy(c context.Context, ctx *app.RequestContext) {
+	_ = c
+	ctx.JSON(http.StatusOK, hertzutils.H{"data": api.ResolveAgentExecutionPolicy()})
 }
 
 func saveAnalyzeLog(req AnalysisRequest, output *AnalysisOutput, exec *ExecutionResult, runErr error, duration time.Duration) {

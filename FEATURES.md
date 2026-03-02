@@ -88,6 +88,7 @@
 - [x] 持仓 AI 分析 (6种建议: hold/add/reduce/tp/sl/close) — 2026-03-01
 - [x] LLM Agent 综合分析接口 (/tool/agent/analyze, 支持 full/positions/signals/journal/sentiment) — 2026-03-02
 - [x] Agent 分析请求/响应/执行结果落库 (agent_analysis_logs) — 2026-03-02
+- [x] Agent 执行策略模板 (/tool/agent/policy, conservative/aggressive/custom) — 2026-03-02
 - [x] 回测系统 — 历史K线回放验证策略 — 2026-03-02
 - [x] 权益曲线可视化 — 实时 PnL 曲线 + 回撤区间 — 2026-03-02
 - [x] 滑点统计分析 — 实际成交价 vs 下单价偏差 — 2026-03-02
@@ -135,6 +136,7 @@
 - [x] 新闻面板 (WebView 本地渲染) — 2026-02-17
 - [x] 推荐交易面板 (一键开仓) — 2026-02-24
 - [x] Agent 分析面板 (手动触发分析 + 勾选建议后确认执行) — 2026-03-02
+- [x] Agent 执行策略展示与禁用态控制 (执行开关/白名单可视化) — 2026-03-02
 - [x] 全市场大额成交聚合面板 — 2026-02-25
 - [x] 市场告警规则配置面板 — 2026-02-27
 - [x] 权益曲线图 — 可视化净值走势 + 收益分布 — 2026-03-02
@@ -143,7 +145,55 @@
 
 ---
 
+## 九、下一阶段扩展优化建议（规划中）
+
+### 9.1 执行层优化（Execution）
+
+- [ ] 执行质量闭环 — 记录 arrival price / fill price / slippage / latency 并按策略归因（模块：`api/ws_order.go`、`api/slippage.go`、`api/orderflow.go`）
+- [ ] 智能下单路由 — PostOnly→IOC/FOK fallback、分批拆单、盘口冲击约束（模块：`api/order.go`、`api/ws_order.go`、`api/orderbook_snapshot.go`）
+- [ ] 时段与流动性自适应下单量 — 波动/深度驱动动态 size（模块：`api/price_cache.go`、`api/orderbook_snapshot.go`）
+
+### 9.2 风控层升级（Portfolio Risk）
+
+- [ ] 组合级 VaR/CVaR 风控 — 实时风险预算和阈值熔断（模块：`api/portfolio_risk.go`、`api/risk_control.go`）
+- [ ] 相关性冲击测试 — 极端场景下多策略同向暴露评估（模块：`api/correlation.go`、`api/portfolio_risk.go`）
+- [ ] 分级 Kill-Switch — 策略级 / 币种级 / 账户级联动暂停（模块：`api/risk_control.go`、`api/strategy_link.go`）
+
+### 9.3 策略组合优化（Strategy Allocation）
+
+- [ ] 策略资金分配器 — 基于边际 Sharpe、回撤约束、换手惩罚动态分配（模块：`api/strategy_link.go`、各策略状态模块）
+- [ ] 市场状态机（Regime）— 趋势/震荡/高波动场景切换策略权重（模块：`api/scalp_strategy.go`、`api/signal_strategy.go`、`api/volatility_guard.go`）
+- [ ] 参数稳定性管理 — 参数漂移告警与自动降权（模块：`api/analytics.go`、`api/strategy_persist.go`）
+
+### 9.4 回测与验证强化（Research）
+
+- [ ] 事件驱动回测撮合增强 — 手续费/资金费率/滑点/延迟/部分成交建模（模块：`api/backtest.go`、`api/slippage.go`、`api/funding_rate.go`）
+- [ ] Walk-Forward + Purged CV 验证流程（模块：`api/backtest.go`、`scripts/`）
+- [ ] 特征快照一致性校验 — 回测与实盘特征同源（模块：`api/analytics.go`、`api/price_cache.go`）
+
+### 9.5 数据质量与可观测性（Data Quality）
+
+- [ ] WS 数据质量监控 — 缺失、跳点、延迟、时钟漂移告警（模块：`api/ws_*.go`、`websocket/`）
+- [ ] 关键链路指标看板 — 下单成功率、执行延迟、风控触发频次（模块：`api/notify.go`、前端监控面板）
+- [ ] 数据降级与补偿机制 — REST/缓存兜底与重放恢复（模块：`api/client.go`、`api/price_cache.go`）
+
+### 9.6 Agent 治理与审计（AI Governance）
+
+- [ ] 默认“仅建议不执行”策略强化 + 执行白名单（模块：`agent/agent.go`、`agent/executor.go`）
+- [ ] Agent 建议效果评估 — 建议命中率、执行后收益、回撤影响（模块：`api/agent_analysis_log.go`、`api/analytics.go`）
+- [ ] Agent 风险联动 — 执行前组合风控校验与拒单原因记录（模块：`agent/executor.go`、`api/risk_control.go`）
+
+### 9.7 前端交易运营（UI/UX）
+
+- [ ] 组合健康看板 — 风险预算使用率、实时回撤、策略拥挤度（模块：`trading-app/src/components/*`）
+- [ ] Agent 执行前核对弹层增强 — 下单金额/杠杆/止盈止损预估影响（模块：`trading-app/src/components/AIAnalysisPanel.js`）
+- [ ] 策略降权/退役一键操作（模块：`trading-app/src/components/*`、`api/strategy_persist.go`）
+
+---
+
 ## 统计
+
+> 注：以下统计仅包含“已完成”功能，不含第九章规划项。
 
 | 分类 | 已完成 | 待开发 | 完成率 |
 |------|--------|--------|--------|

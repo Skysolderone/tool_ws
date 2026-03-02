@@ -186,6 +186,8 @@ func main() {
 		apiGroup.GET("/recommend/analyze", api.HandleRecommendAnalyze)
 		apiGroup.POST("/agent/analyze", agent.HandleAnalyze)
 		apiGroup.GET("/agent/analyze", agent.HandleAnalyze)
+		apiGroup.GET("/agent/logs", agent.HandleLogs)
+		apiGroup.GET("/agent/policy", agent.HandlePolicy)
 
 		// 本地止盈止损
 		apiGroup.GET("/tpsl/list", api.HandleGetTPSLList)
