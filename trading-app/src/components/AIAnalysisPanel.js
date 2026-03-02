@@ -1,487 +1,443 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+  ScrollView,
 } from 'react-native';
 import { colors, spacing, radius, fontSize } from '../services/theme';
 import api from '../services/api';
 
-// 暖金色板（与 RecommendPanel 共享）
 const C = {
-  neon: colors.gold,
-  neonDim: colors.goldDark,
-  neonGlow: colors.goldGlow,
-  neonBg: colors.goldBg,
-  panelBg: colors.bg,
-  cardBg: colors.card,
-  cardBorder: colors.cardBorder,
-  surface: colors.surface,
+  primary: colors.gold,
+  primaryBg: colors.goldBg,
+  border: colors.cardBorder,
+  card: colors.card,
+  bg: colors.bg,
   text: colors.text,
   textDim: colors.textSecondary,
-  long: colors.green,
-  longBg: colors.greenBg,
-  short: colors.red,
-  shortBg: colors.redBg,
+  success: colors.green,
+  successBg: colors.greenBg,
+  danger: colors.red,
+  dangerBg: colors.redBg,
   warn: colors.yellow,
   warnBg: colors.yellowBg,
 };
 
-export default function AIAnalysisPanel({ onNavigateToTrade }) {
-  const [analyzeData, setAnalyzeData] = useState(null);
-  const [analyzeLoading, setAnalyzeLoading] = useState(false);
-  const [analyzeError, setAnalyzeError] = useState(null);
-  const [scanDots, setScanDots] = useState('');
-  const analyzeTimerRef = useRef(null);
+export default function AIAnalysisPanel() {
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [selectedActions, setSelectedActions] = useState({});
 
-  // 扫描动画
+  const actionItems = data?.action_items || [];
+  const execution = data?.execution;
+
   useEffect(() => {
-    if (!analyzeLoading) return;
-    const iv = setInterval(() => {
-      setScanDots((d) => (d.length >= 3 ? '' : d + '.'));
-    }, 400);
-    return () => clearInterval(iv);
-  }, [analyzeLoading]);
+    const next = {};
+    actionItems.forEach((item, idx) => {
+      next[getActionKey(item, idx)] = false;
+    });
+    setSelectedActions(next);
+  }, [actionItems]);
 
-  const fetchAnalysis = useCallback(async (showLoading = false) => {
-    if (showLoading) setAnalyzeLoading(true);
+  const actionStats = useMemo(() => {
+    const total = actionItems.length;
+    const high = actionItems.filter((x) => x.priority === 'high').length;
+    return { total, high };
+  }, [actionItems]);
+
+  const selectedActionItems = useMemo(
+    () => actionItems.filter((item, idx) => !!selectedActions[getActionKey(item, idx)]),
+    [actionItems, selectedActions],
+  );
+  const selectedCount = selectedActionItems.length;
+
+  const runAgent = async ({ execute, items = [] }) => {
+    setLoading(true);
     try {
-      const res = await api.getRecommendAnalyze();
-      setAnalyzeData(res.data || res);
-      setAnalyzeError(null);
+      const body = {
+        mode: 'full',
+        execute,
+      };
+      if (execute) {
+        body.action_items = items;
+      }
+      const res = await api.analyzeAgent(body);
+      setData(res.data || res);
+      setError(null);
     } catch (e) {
-      setAnalyzeError(e.message);
+      setError(e.message);
     } finally {
-      setAnalyzeLoading(false);
+      setLoading(false);
     }
-  }, []);
+  };
 
-  useEffect(() => {
-    fetchAnalysis(true);
-    analyzeTimerRef.current = setInterval(() => fetchAnalysis(false), 60000);
-    return () => clearInterval(analyzeTimerRef.current);
-  }, [fetchAnalysis]);
+  const onAnalyzePress = () => {
+    runAgent({ execute: false, items: [] });
+  };
 
-  const items = analyzeData?.items || [];
+  const onExecutePress = () => {
+    if (!actionItems.length) {
+      Alert.alert('无可执行建议', '请先点击“开始AI分析”获取建议。');
+      return;
+    }
+    if (!selectedCount) {
+      Alert.alert('未选择建议', '请先勾选要执行的建议。');
+      return;
+    }
+    Alert.alert(
+      '执行确认',
+      `将执行 ${selectedCount} 条已勾选建议（可执行动作由后端校验）。是否继续？`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '执行',
+          style: 'destructive',
+          onPress: () => runAgent({ execute: true, items: selectedActionItems }),
+        },
+      ],
+    );
+  };
+
+  const onToggleAction = (item, idx) => {
+    const k = getActionKey(item, idx);
+    setSelectedActions((prev) => ({ ...prev, [k]: !prev[k] }));
+  };
+
+  const onSelectAll = () => {
+    const next = {};
+    actionItems.forEach((item, idx) => {
+      next[getActionKey(item, idx)] = true;
+    });
+    setSelectedActions(next);
+  };
+
+  const onClearAll = () => {
+    const next = {};
+    actionItems.forEach((item, idx) => {
+      next[getActionKey(item, idx)] = false;
+    });
+    setSelectedActions(next);
+  };
 
   return (
-    <View style={s.root}>
-      {/* 顶部标题 + 刷新 */}
-      <View style={s.headerRow}>
-        <View style={s.headerLeft}>
-          <Text style={s.headerIcon}>◈</Text>
-          <View>
-            <Text style={s.headerTitle}>持仓分析</Text>
-            <Text style={s.headerSub}>AI 多时间框架智能分析</Text>
-          </View>
-        </View>
-        <TouchableOpacity
-          style={s.scanBtn}
-          onPress={() => fetchAnalysis(true)}
-          activeOpacity={0.7}
-        >
-          <View style={s.scanBtnInner}>
-            <Text style={s.scanBtnIcon}>{analyzeLoading ? '◉' : '⟳'}</Text>
-            <Text style={s.scanBtnText}>{analyzeLoading ? '分析中' : '刷新'}</Text>
-          </View>
-        </TouchableOpacity>
-      </View>
-
-      {/* 加载 */}
-      {analyzeLoading && !analyzeData && (
-        <View style={s.loadingBox}>
-          <ActivityIndicator color={C.neon} size="large" />
-          <Text style={s.loadingText}>正在分析持仓{scanDots}</Text>
-          <Text style={s.loadingHint}>扫描多时间框架信号中</Text>
-        </View>
-      )}
-      {analyzeError && !analyzeData && (
-        <View style={s.loadingBox}>
-          <Text style={s.errorIcon}>⚠</Text>
-          <Text style={s.errorText}>连接失败</Text>
-          <Text style={s.errorDetail}>{analyzeError}</Text>
-          <TouchableOpacity style={s.retryBtn} onPress={() => fetchAnalysis(true)}>
-            <Text style={s.retryText}>重试</Text>
+    <ScrollView style={s.root} contentContainerStyle={s.content}>
+      <View style={s.headerCard}>
+        <Text style={s.title}>Agent 智能分析</Text>
+        <Text style={s.subtitle}>点击按钮后才会触发分析，不再自动轮询</Text>
+        <View style={s.btnRow}>
+          <TouchableOpacity style={s.primaryBtn} onPress={onAnalyzePress} disabled={loading}>
+            <Text style={s.primaryBtnText}>{loading ? '分析中...' : '开始AI分析'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={s.dangerBtn} onPress={onExecutePress} disabled={loading}>
+            <Text style={s.dangerBtnText}>执行建议下单</Text>
           </TouchableOpacity>
         </View>
-      )}
-      {items.length === 0 && analyzeData && !analyzeLoading && (
-        <View style={s.loadingBox}>
-          <Text style={s.emptyIcon}>◇</Text>
-          <Text style={s.emptyText}>暂无持仓</Text>
-          <Text style={s.loadingHint}>开仓后将自动显示 AI 分析</Text>
+      </View>
+
+      {loading && (
+        <View style={s.card}>
+          <ActivityIndicator size="large" color={C.primary} />
+          <Text style={s.loadingText}>正在请求 Agent，请稍候...</Text>
         </View>
       )}
 
-      {/* 汇总统计 */}
-      {items.length > 0 && (
-        <View style={s.analysisSummary}>
-          <View style={s.summaryCell}>
-            <Text style={s.summaryCellLabel}>持仓数</Text>
-            <Text style={s.summaryCellVal}>{items.length}</Text>
-          </View>
-          <View style={s.dividerLine} />
-          <View style={s.summaryCell}>
-            <Text style={s.summaryCellLabel}>总盈亏</Text>
-            <Text style={[s.summaryCellVal, {
-              color: items.reduce((a, b) => a + b.unrealizedPnl, 0) >= 0 ? C.long : C.short,
-            }]}>
-              ${items.reduce((a, b) => a + b.unrealizedPnl, 0).toFixed(2)}
-            </Text>
-          </View>
-          <View style={s.dividerLine} />
-          <View style={s.summaryCell}>
-            <Text style={s.summaryCellLabel}>警告</Text>
-            <Text style={[s.summaryCellVal, {
-              color: items.filter(i => ['close', 'stop_loss'].includes(i.advice)).length > 0 ? C.short : C.neon,
-            }]}>
-              {items.filter(i => ['close', 'stop_loss', 'reduce'].includes(i.advice)).length}
-            </Text>
-          </View>
+      {error && !loading && (
+        <View style={s.card}>
+          <Text style={s.errorTitle}>请求失败</Text>
+          <Text style={s.errorText}>{error}</Text>
         </View>
       )}
 
-      {/* 持仓分析卡片 */}
-      {items.map((item, idx) => {
-        const isLong = item.side === 'LONG';
-        const sc = isLong ? C.long : C.short;
-        const pnlColor = item.unrealizedPnl >= 0 ? C.long : C.short;
-        const adviceStyle = getAdviceStyle(item.advice);
+      {!!data && !loading && (
+        <>
+          <View style={s.card}>
+            <Text style={s.cardTitle}>分析总结</Text>
+            <Text style={s.summaryText}>{data.summary || '无总结'}</Text>
+          </View>
 
-        return (
-          <View key={item.symbol + idx} style={[s.card, { borderLeftColor: adviceStyle.border }]}>
-            <View style={[s.cardTopLine, { backgroundColor: adviceStyle.border + '40' }]} />
-
-            {/* 头部 */}
-            <View style={s.cardHeader}>
-              <View style={s.cardLeft}>
-                <Text style={s.cardSymbol}>{item.symbol}</Text>
-                <View style={[s.dirBadge, { backgroundColor: isLong ? C.longBg : C.shortBg, borderColor: sc + '55' }]}>
-                  <Text style={[s.dirArrow, { color: sc }]}>{isLong ? '▲' : '▼'}</Text>
-                  <Text style={[s.dirText, { color: sc }]}>{item.side === 'LONG' ? '做多' : '做空'}</Text>
-                </View>
-              </View>
-              <View style={{ alignItems: 'flex-end' }}>
-                <Text style={[s.pnlVal, { color: pnlColor }]}>
-                  {item.unrealizedPnl >= 0 ? '+' : ''}{item.unrealizedPnl?.toFixed(2)} USDT
-                </Text>
-                <Text style={[s.pnlPct, { color: pnlColor }]}>
-                  {item.pnlPercent >= 0 ? '+' : ''}{item.pnlPercent?.toFixed(2)}%
-                </Text>
-              </View>
+          <View style={s.card}>
+            <Text style={s.cardTitle}>操作建议</Text>
+            <View style={s.statsRow}>
+              <Text style={s.statText}>总建议: {actionStats.total}</Text>
+              <Text style={s.statText}>高优先级: {actionStats.high}</Text>
+              <Text style={s.statText}>已勾选: {selectedCount}</Text>
             </View>
-
-            {/* 持仓信息 */}
-            <View style={s.posInfoRow}>
-              <View style={s.posInfoCell}>
-                <Text style={s.posInfoLabel}>开仓价</Text>
-                <Text style={s.posInfoVal}>${formatPrice(item.entryPrice)}</Text>
+            {actionItems.length > 0 && (
+              <View style={s.selectRow}>
+                <TouchableOpacity style={s.selectBtn} onPress={onSelectAll}>
+                  <Text style={s.selectBtnText}>全选</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.selectBtn} onPress={onClearAll}>
+                  <Text style={s.selectBtnText}>清空</Text>
+                </TouchableOpacity>
               </View>
-              <View style={s.posInfoCell}>
-                <Text style={s.posInfoLabel}>标记价</Text>
-                <Text style={s.posInfoVal}>${formatPrice(item.markPrice)}</Text>
-              </View>
-              <View style={s.posInfoCell}>
-                <Text style={s.posInfoLabel}>数量</Text>
-                <Text style={s.posInfoVal}>{Math.abs(item.amount)}</Text>
-              </View>
-              <View style={s.posInfoCell}>
-                <Text style={s.posInfoLabel}>杠杆</Text>
-                <Text style={s.posInfoVal}>{item.leverage}x</Text>
-              </View>
-            </View>
-
-            {/* AI 建议 */}
-            <View style={[s.adviceBanner, { backgroundColor: adviceStyle.bg, borderColor: adviceStyle.border + '55' }]}>
-              <Text style={[s.adviceIcon, { color: adviceStyle.border }]}>{adviceStyle.icon}</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={[s.adviceTag, { color: adviceStyle.border }]}>{adviceStyle.tag}</Text>
-                <Text style={s.adviceDetail}>{item.adviceLabel}</Text>
-              </View>
-              {item.confidence > 0 && (
-                <View style={[s.confRingSmall, { borderColor: adviceStyle.border }]}>
-                  <Text style={[s.confValSmall, { color: adviceStyle.border }]}>{item.confidence}%</Text>
-                </View>
-              )}
-            </View>
-
-            {/* TF 矩阵 */}
-            {(item.signals || []).length > 0 && (
-              <View style={s.tfMatrix}>
-                {item.signals.map((sig) => {
-                  const tfTag = sig.timeframe === '1d' ? '1D' : sig.timeframe.toUpperCase();
-                  const dc = sig.direction === 'LONG' ? C.long :
-                    sig.direction === 'SHORT' ? C.short : C.textDim;
-                  const arrow = sig.direction === 'LONG' ? '↑' : sig.direction === 'SHORT' ? '↓' : '—';
-                  const aligned = sig.direction === item.side;
-                  return (
-                    <View key={sig.timeframe} style={[s.tfCell, { borderColor: dc + '33' }]}>
-                      <Text style={s.tfTag}>{tfTag}</Text>
-                      <Text style={[s.tfArrow, { color: dc }]}>{arrow}</Text>
-                      <View style={s.tfDataRow}>
-                        <Text style={s.tfDataLabel}>RSI</Text>
-                        <Text style={[s.tfDataVal, {
-                          color: sig.rsi < 30 ? C.long : sig.rsi > 70 ? C.short : C.text,
-                        }]}>{sig.rsi?.toFixed(0) || '--'}</Text>
-                      </View>
-                      {sig.direction && (
-                        <Text style={[s.tfAlignTag, {
-                          color: aligned ? C.long : C.short,
-                        }]}>{aligned ? '一致' : '相反'}</Text>
-                      )}
+            )}
+            {actionItems.length === 0 && <Text style={s.emptyText}>暂无 action_items</Text>}
+            {actionItems.map((item, idx) => {
+              const p = (item.priority || '').toLowerCase();
+              const priorityStyle = p === 'high' ? s.priHigh : p === 'medium' ? s.priMedium : s.priLow;
+              const checked = !!selectedActions[getActionKey(item, idx)];
+              return (
+                <View key={`${item.symbol}-${item.action}-${idx}`} style={s.actionRow}>
+                  <View style={s.actionHeader}>
+                    <View style={s.actionMainWrap}>
+                      <TouchableOpacity style={s.checkboxBtn} onPress={() => onToggleAction(item, idx)}>
+                        <Text style={[s.checkboxText, checked ? s.checkboxChecked : null]}>{checked ? '☑' : '☐'}</Text>
+                      </TouchableOpacity>
+                      <Text style={s.actionMain}>{item.symbol} · {item.action}</Text>
                     </View>
-                  );
-                })}
-              </View>
-            )}
-
-            {/* 信号原因 */}
-            <View style={s.reasonBox}>
-              {(item.reasons || []).slice(0, 4).map((r, i) => (
-                <View key={i} style={s.reasonRow}>
-                  <Text style={s.reasonBullet}>›</Text>
-                  <Text style={s.reasonText}>{r}</Text>
+                    <Text style={[s.priorityTag, priorityStyle]}>{item.priority || 'low'}</Text>
+                  </View>
+                  <Text style={s.actionDetail}>{item.detail || '-'}</Text>
+                  <Text style={s.actionRisk}>风险: {item.risk || '-'}</Text>
                 </View>
-              ))}
-            </View>
-
-            {/* 止损止盈（基于AI推荐方向） */}
-            {item.stopLoss > 0 && item.takeProfit > 0 && (
-              <View style={s.priceMatrixWrap}>
-                {item.direction && item.direction !== item.side && (
-                  <View style={[s.aiDirTag, { backgroundColor: item.direction === 'LONG' ? C.longBg : C.shortBg, borderColor: (item.direction === 'LONG' ? C.long : C.short) + '55' }]}>
-                    <Text style={[s.aiDirText, { color: item.direction === 'LONG' ? C.long : C.short }]}>
-                      AI {item.direction === 'LONG' ? '▲ 看多' : '▼ 看空'}
-                    </Text>
-                  </View>
-                )}
-                <View style={s.priceMatrix}>
-                  <View style={s.priceCell}>
-                    <Text style={[s.priceCellLabel, { color: C.short }]}>止损</Text>
-                    <Text style={[s.priceCellVal, { color: C.short }]}>${formatPrice(item.stopLoss)}</Text>
-                  </View>
-                  <View style={[s.priceDivider, { backgroundColor: C.cardBorder }]} />
-                  <View style={s.priceCell}>
-                    <Text style={[s.priceCellLabel, { color: C.long }]}>止盈</Text>
-                    <Text style={[s.priceCellVal, { color: C.long }]}>${formatPrice(item.takeProfit)}</Text>
-                  </View>
-                </View>
-              </View>
-            )}
-
-            {/* 操作按钮 */}
-            <TouchableOpacity
-              style={[s.execBtn, { borderColor: C.neon, shadowColor: C.neon }]}
-              onPress={() => onNavigateToTrade?.(item.symbol, {
-                direction: item.direction || item.side,
-                stopLoss: item.stopLoss,
-                takeProfit: item.takeProfit,
-              })}
-              activeOpacity={0.7}
-            >
-              <Text style={[s.execBtnText, { color: C.neon }]}>管理持仓  ›</Text>
-            </TouchableOpacity>
+              );
+            })}
           </View>
-        );
-      })}
 
-      {analyzeData && (
-        <View style={s.footerRow}>
-          <View style={s.footerDot} />
-          <Text style={s.footerText}>
-            分析时间: {analyzeData.analyzedAt ? new Date(analyzeData.analyzedAt).toLocaleTimeString() : '--'}
-          </Text>
-          <Text style={s.footerText}>  |  自动刷新: 60秒</Text>
-        </View>
+          {!!execution && (
+            <View style={s.card}>
+              <Text style={s.cardTitle}>执行结果</Text>
+              <View style={s.statsRow}>
+                <Text style={s.statText}>请求: {execution.requested}</Text>
+                <Text style={s.statText}>执行: {execution.executed}</Text>
+                <Text style={[s.statText, { color: C.success }]}>成功: {execution.success}</Text>
+                <Text style={[s.statText, { color: C.danger }]}>失败: {execution.failed}</Text>
+                <Text style={[s.statText, { color: C.warn }]}>跳过: {execution.skipped}</Text>
+              </View>
+              {(execution.results || []).map((r, idx) => {
+                const status = (r.status || '').toLowerCase();
+                const color = status === 'success' ? C.success : status === 'failed' ? C.danger : C.warn;
+                return (
+                  <View key={`${r.symbol}-${r.action}-${idx}`} style={s.execRow}>
+                    <Text style={[s.execStatus, { color }]}>{r.status}</Text>
+                    <Text style={s.execText}>{r.symbol} · {r.action}</Text>
+                    <Text style={s.execMsg}>{r.message}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </>
       )}
-    </View>
+    </ScrollView>
   );
 }
 
-// ==================== 辅助函数 ====================
-
-function formatPrice(price) {
-  if (!price) return '--';
-  if (price >= 1000) return price.toFixed(1).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  if (price >= 1) return price.toFixed(2);
-  return price.toFixed(4);
-}
-
-function getAdviceStyle(advice) {
-  switch (advice) {
-    case 'add':
-      return { icon: '⊕', tag: '建议加仓', border: C.long, bg: C.longBg };
-    case 'take_profit':
-      return { icon: '◎', tag: '建议止盈', border: C.warn, bg: C.warnBg };
-    case 'reduce':
-      return { icon: '⊖', tag: '建议减仓', border: C.warn, bg: C.warnBg };
-    case 'stop_loss':
-      return { icon: '⛔', tag: '建议止损', border: C.short, bg: C.shortBg };
-    case 'close':
-      return { icon: '✕', tag: '建议平仓', border: C.short, bg: C.shortBg };
-    default:
-      return { icon: '◆', tag: '继续持有', border: C.neon, bg: C.neonBg };
-  }
-}
-
-// ==================== 样式 ====================
 const s = StyleSheet.create({
   root: {
+    flex: 1,
+    backgroundColor: C.bg,
+  },
+  content: {
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  headerCard: {
+    backgroundColor: C.card,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: C.border,
+    padding: spacing.lg,
     gap: spacing.sm,
   },
-  headerRow: {
+  title: {
+    color: C.primary,
+    fontSize: fontSize.lg,
+    fontWeight: '900',
+  },
+  subtitle: {
+    color: C.textDim,
+    fontSize: fontSize.sm,
+  },
+  btnRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  primaryBtn: {
+    flex: 1,
+    backgroundColor: C.primaryBg,
+    borderColor: C.primary,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+  },
+  primaryBtnText: {
+    color: C.primary,
+    fontWeight: '900',
+    fontSize: fontSize.sm,
+  },
+  dangerBtn: {
+    flex: 1,
+    backgroundColor: C.dangerBg,
+    borderColor: C.danger,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+  },
+  dangerBtnText: {
+    color: C.danger,
+    fontWeight: '900',
+    fontSize: fontSize.sm,
+  },
+  card: {
+    backgroundColor: C.card,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: C.border,
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  cardTitle: {
+    color: C.text,
+    fontSize: fontSize.md,
+    fontWeight: '800',
+  },
+  loadingText: {
+    color: C.textDim,
+    fontSize: fontSize.sm,
+    textAlign: 'center',
+  },
+  errorTitle: {
+    color: C.danger,
+    fontWeight: '800',
+    fontSize: fontSize.md,
+  },
+  errorText: {
+    color: C.text,
+    fontSize: fontSize.sm,
+  },
+  summaryText: {
+    color: C.text,
+    fontSize: fontSize.sm,
+    lineHeight: 22,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  statText: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+  },
+  emptyText: {
+    color: C.textDim,
+    fontSize: fontSize.sm,
+  },
+  actionRow: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    gap: 4,
+  },
+  actionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: spacing.sm,
   },
-  headerLeft: {
+  actionMainWrap: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
+    marginRight: spacing.sm,
+  },
+  checkboxBtn: {
+    marginRight: spacing.xs,
+    paddingHorizontal: 2,
+  },
+  checkboxText: {
+    color: C.textDim,
+    fontSize: fontSize.md,
+    fontWeight: '700',
+  },
+  checkboxChecked: {
+    color: C.primary,
+  },
+  actionMain: {
+    color: C.text,
+    fontWeight: '700',
+    fontSize: fontSize.sm,
+    flexShrink: 1,
+  },
+  priorityTag: {
+    fontSize: fontSize.xs,
+    fontWeight: '800',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  priHigh: {
+    color: C.danger,
+    backgroundColor: C.dangerBg,
+  },
+  priMedium: {
+    color: C.warn,
+    backgroundColor: C.warnBg,
+  },
+  priLow: {
+    color: C.success,
+    backgroundColor: C.successBg,
+  },
+  actionDetail: {
+    color: C.text,
+    fontSize: fontSize.sm,
+  },
+  actionRisk: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+  },
+  execRow: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    gap: 3,
+  },
+  execStatus: {
+    fontSize: fontSize.xs,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  execText: {
+    color: C.text,
+    fontWeight: '700',
+    fontSize: fontSize.sm,
+  },
+  execMsg: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+  },
+  selectRow: {
+    flexDirection: 'row',
     gap: spacing.sm,
   },
-  headerIcon: {
-    fontSize: 22,
-    color: C.neon,
-    fontFamily: 'monospace',
-    fontWeight: '700',
-    textShadowColor: C.neonGlow,
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 10,
-  },
-  headerTitle: {
-    fontSize: fontSize.lg,
-    fontWeight: '900',
-    color: C.text,
-    letterSpacing: 1.5,
-    fontFamily: 'monospace',
-  },
-  headerSub: {
-    fontSize: 9,
-    color: C.textDim,
-    letterSpacing: 0.8,
-    fontFamily: 'monospace',
-    marginTop: 1,
-  },
-  scanBtn: {
+  selectBtn: {
     borderWidth: 1,
-    borderColor: C.neon + '55',
+    borderColor: C.border,
     borderRadius: radius.sm,
-    overflow: 'hidden',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
   },
-  scanBtnInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs + 2,
-    backgroundColor: C.neonBg,
+  selectBtnText: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+    fontWeight: '700',
   },
-  scanBtnIcon: {
-    fontSize: 12,
-    color: C.neon,
-  },
-  scanBtnText: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: C.neon,
-    letterSpacing: 1,
-    fontFamily: 'monospace',
-  },
-
-  // 加载/空态
-  loadingBox: { alignItems: 'center', paddingVertical: spacing.xxl, gap: spacing.sm },
-  loadingText: { color: C.neon, fontSize: fontSize.sm, fontWeight: '700', letterSpacing: 1, fontFamily: 'monospace' },
-  loadingHint: { color: C.textDim, fontSize: 10, fontFamily: 'monospace' },
-  errorIcon: { fontSize: 28, color: C.short },
-  errorText: { color: C.short, fontSize: fontSize.sm, fontWeight: '800', letterSpacing: 1, fontFamily: 'monospace' },
-  errorDetail: { color: C.textDim, fontSize: 10, fontFamily: 'monospace', textAlign: 'center' },
-  retryBtn: { marginTop: spacing.xs, paddingHorizontal: spacing.lg, paddingVertical: spacing.xs + 2, borderRadius: radius.sm, borderWidth: 1, borderColor: C.neon + '55', backgroundColor: C.neonBg },
-  retryText: { color: C.neon, fontWeight: '800', fontSize: 11, letterSpacing: 1, fontFamily: 'monospace' },
-  emptyIcon: { fontSize: 32, color: C.textDim, fontFamily: 'monospace' },
-  emptyText: { color: C.textDim, fontSize: fontSize.sm, fontWeight: '700', letterSpacing: 1, fontFamily: 'monospace' },
-
-  // 汇总统计
-  analysisSummary: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: C.cardBg,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: C.cardBorder,
-    padding: spacing.lg,
-  },
-  summaryCell: { flex: 1, alignItems: 'center' },
-  summaryCellLabel: { fontSize: 8, fontWeight: '700', color: C.textDim, letterSpacing: 1, fontFamily: 'monospace', marginBottom: 3 },
-  summaryCellVal: { fontSize: fontSize.md, fontWeight: '900', color: C.neon, fontFamily: 'monospace', fontVariant: ['tabular-nums'] },
-  dividerLine: { width: 1, height: 24, backgroundColor: C.cardBorder },
-
-  // 卡片
-  card: {
-    backgroundColor: C.cardBg,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: C.cardBorder,
-    borderLeftWidth: 3,
-    padding: spacing.lg,
-    overflow: 'hidden',
-  },
-  cardTopLine: { position: 'absolute', top: 0, left: 0, right: 0, height: 1 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
-  cardLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  cardSymbol: { fontSize: fontSize.lg, fontWeight: '900', color: C.text, letterSpacing: 0.5, fontFamily: 'monospace' },
-  dirBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: spacing.sm, paddingVertical: 3, borderRadius: radius.xs, borderWidth: 1 },
-  dirArrow: { fontSize: 11, fontWeight: '900' },
-  dirText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.5, fontFamily: 'monospace' },
-
-  // PnL
-  pnlVal: { fontSize: fontSize.sm, fontWeight: '900', fontFamily: 'monospace', fontVariant: ['tabular-nums'] },
-  pnlPct: { fontSize: 10, fontWeight: '700', fontFamily: 'monospace', fontVariant: ['tabular-nums'], marginTop: 1 },
-
-  // 持仓信息
-  posInfoRow: { flexDirection: 'row', backgroundColor: C.surface, borderRadius: radius.sm, padding: spacing.sm, marginBottom: spacing.sm, borderWidth: 1, borderColor: C.cardBorder },
-  posInfoCell: { flex: 1, alignItems: 'center' },
-  posInfoLabel: { fontSize: 7, fontWeight: '700', color: C.textDim, letterSpacing: 1, fontFamily: 'monospace', marginBottom: 3 },
-  posInfoVal: { fontSize: 10, fontWeight: '800', color: C.text, fontFamily: 'monospace', fontVariant: ['tabular-nums'] },
-
-  // 建议
-  adviceBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.sm + 2, borderRadius: radius.sm, borderWidth: 1, marginBottom: spacing.sm },
-  adviceIcon: { fontSize: 18 },
-  adviceTag: { fontSize: 11, fontWeight: '900', letterSpacing: 1.5, fontFamily: 'monospace' },
-  adviceDetail: { fontSize: 10, color: C.textDim, fontFamily: 'monospace', marginTop: 2 },
-  confRingSmall: { width: 32, height: 32, borderRadius: 16, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
-  confValSmall: { fontSize: 9, fontWeight: '900', fontFamily: 'monospace' },
-
-  // TF 矩阵
-  tfMatrix: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm },
-  tfCell: { flex: 1, backgroundColor: C.surface, borderRadius: radius.sm, borderWidth: 1, paddingVertical: spacing.xs + 1, paddingHorizontal: spacing.xs, alignItems: 'center', gap: 2 },
-  tfTag: { fontSize: 9, fontWeight: '900', color: C.textDim, letterSpacing: 1, fontFamily: 'monospace' },
-  tfArrow: { fontSize: 16, fontWeight: '900', lineHeight: 18 },
-  tfDataRow: { flexDirection: 'row', gap: 3, alignItems: 'center' },
-  tfDataLabel: { fontSize: 7, fontWeight: '700', color: C.textDim, fontFamily: 'monospace', letterSpacing: 0.5 },
-  tfDataVal: { fontSize: 10, fontWeight: '800', fontFamily: 'monospace', fontVariant: ['tabular-nums'] },
-  tfAlignTag: { fontSize: 7, fontWeight: '900', letterSpacing: 0.5, fontFamily: 'monospace', marginTop: 1 },
-
-  // 信号原因
-  reasonBox: { marginBottom: spacing.sm, gap: 3 },
-  reasonRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.xs },
-  reasonBullet: { color: C.neon, fontSize: 13, fontWeight: '700', lineHeight: 16, fontFamily: 'monospace' },
-  reasonText: { color: C.textDim, fontSize: 11, flex: 1, fontFamily: 'monospace', lineHeight: 16 },
-
-  // 价格矩阵
-  priceMatrixWrap: { gap: spacing.xs },
-  aiDirTag: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.sm, paddingVertical: 3, borderRadius: radius.xs, borderWidth: 1 },
-  aiDirText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.5, fontFamily: 'monospace' },
-  priceMatrix: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.surface, borderRadius: radius.sm, padding: spacing.sm, borderWidth: 1, borderColor: C.cardBorder },
-  priceCell: { flex: 1, alignItems: 'center' },
-  priceCellLabel: { fontSize: 7, fontWeight: '700', color: C.textDim, letterSpacing: 1, fontFamily: 'monospace', marginBottom: 3 },
-  priceCellVal: { fontSize: fontSize.sm, fontWeight: '900', color: C.text, fontFamily: 'monospace', fontVariant: ['tabular-nums'] },
-  priceDivider: { width: 1, height: 26 },
-
-  // 执行按钮
-  execBtn: { marginTop: spacing.sm, alignSelf: 'stretch', alignItems: 'center', paddingVertical: spacing.sm + 2, borderRadius: radius.sm, borderWidth: 1, backgroundColor: 'transparent', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
-  execBtnText: { fontSize: 12, fontWeight: '900', letterSpacing: 2, fontFamily: 'monospace' },
-
-  // 底部
-  footerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: spacing.md },
-  footerDot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: C.neon, opacity: 0.5 },
-  footerText: { fontSize: 9, color: C.textDim, fontFamily: 'monospace', letterSpacing: 0.5 },
 });
+
+function getActionKey(item, idx) {
+  return `${item.symbol || ''}|${item.action || ''}|${item.priority || ''}|${item.detail || ''}|${idx}`;
+}

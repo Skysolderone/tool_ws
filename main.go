@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"tools/agent"
 	"tools/api"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -67,6 +68,11 @@ func main() {
 
 	// 启动推荐交易预计算引擎（后台多时间框架定时刷新）
 	api.StartRecommendEngine()
+
+	// 初始化 LLM 分析 Agent（可选配置，失败不影响主流程）
+	if err := agent.InitAgent(api.Cfg.LLM); err != nil {
+		log.Printf("[Agent] Init failed: %v (agent disabled)", err)
+	}
 
 	// 启动本地止盈止损监控器（从DB恢复ACTIVE条件）
 	api.StartLocalTPSLMonitor()
@@ -178,6 +184,8 @@ func main() {
 		// 推荐交易扫描
 		apiGroup.GET("/recommend/scan", api.HandleRecommendScan)
 		apiGroup.GET("/recommend/analyze", api.HandleRecommendAnalyze)
+		apiGroup.POST("/agent/analyze", agent.HandleAnalyze)
+		apiGroup.GET("/agent/analyze", agent.HandleAnalyze)
 
 		// 本地止盈止损
 		apiGroup.GET("/tpsl/list", api.HandleGetTPSLList)

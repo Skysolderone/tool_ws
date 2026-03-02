@@ -10,6 +10,7 @@ build-proxy:
 build:
 	GOOS=linux GOARCH=amd64  go build -o tool ./main.go
 main:
+	scp config.json wws:~/tools/config.json
 	go mod tidy
 	GOOS=linux GOARCH=amd64  go build -o tool ./main.go
 	ssh wws 'mkdir -p ~/tools'
