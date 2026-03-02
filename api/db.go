@@ -70,6 +70,7 @@ func autoMigrateSchema() error {
 		&StrategyState{},
 		&SlippageRecord{},
 		&SlippageRecord{}, // 滑点记录（新增表，不影响已有数据）
+		&AgentAnalysisLog{},
 	)
 }
 
@@ -106,6 +107,15 @@ func ensureDBIndexes() error {
 		return err
 	}
 	if err := createIndexIfMissing(&OperationRecord{}, "RelatedOrderID"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&AgentAnalysisLog{}, "Mode"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&AgentAnalysisLog{}, "Execute"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&AgentAnalysisLog{}, "Status"); err != nil {
 		return err
 	}
 	return nil

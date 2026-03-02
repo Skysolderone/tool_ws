@@ -13,13 +13,24 @@ type AuthConfig struct {
 	Token string `json:"token"` // API 访问令牌，为空则不启用认证
 }
 
+// LLMConfig 大模型配置
+type LLMConfig struct {
+	Provider    string  `json:"provider"`
+	APIKey      string  `json:"api_key"`
+	BaseURL     string  `json:"base_url"`
+	Model       string  `json:"model"`
+	MaxTokens   int     `json:"max_tokens"`
+	Temperature float64 `json:"temperature"`
+}
+
 // Config 应用配置
 type Config struct {
-	Server    ServerConfig    `json:"server"`
-	REST      RESTConfig      `json:"rest"`
-	WebSocket WebSocketConfig `json:"websocket"`
-	Database  DatabaseConfig  `json:"database"`
-	Auth      AuthConfig      `json:"auth"`
+	Server          ServerConfig          `json:"server"`
+	REST            RESTConfig            `json:"rest"`
+	WebSocket       WebSocketConfig       `json:"websocket"`
+	Database        DatabaseConfig        `json:"database"`
+	Auth            AuthConfig            `json:"auth"`
+	LLM             LLMConfig             `json:"llm"`
 	Risk            RiskConfig            `json:"risk"`
 	PortfolioRisk   PortfolioRiskConfig   `json:"portfolioRisk"`
 	Notify          NotifyConfig          `json:"notify"`

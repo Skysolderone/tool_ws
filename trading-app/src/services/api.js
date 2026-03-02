@@ -163,6 +163,7 @@ export default {
 
   // 持仓分析
   getRecommendAnalyze: () => apiCall('GET', '/recommend/analyze'),
+  analyzeAgent: (req) => apiCall('POST', '/agent/analyze', req),
 
   // 本地止盈止损
   getTPSLList: (symbol) => apiCall('GET', `/tpsl/list?symbol=${symbol || ''}`),
