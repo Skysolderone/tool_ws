@@ -125,7 +125,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     backgroundColor: colors.goldBg,
     borderWidth: 1,
-    borderColor: 'rgba(212,165,74,0.3)',
+    borderColor: 'rgba(0,229,255,0.3)',
   },
   chipStatic: {
     backgroundColor: colors.surface,

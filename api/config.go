@@ -20,8 +20,12 @@ type Config struct {
 	WebSocket WebSocketConfig `json:"websocket"`
 	Database  DatabaseConfig  `json:"database"`
 	Auth      AuthConfig      `json:"auth"`
-	Risk      RiskConfig      `json:"risk"`
-	Testnet   bool            `json:"testnet"`
+	Risk            RiskConfig            `json:"risk"`
+	PortfolioRisk   PortfolioRiskConfig   `json:"portfolioRisk"`
+	Notify          NotifyConfig          `json:"notify"`
+	VolatilityGuard VolatilityGuardConfig `json:"volatilityGuard"`
+	Testnet         bool                  `json:"testnet"`
+	DryRun          bool                  `json:"dryRun"` // 模拟交易模式，不实际下单
 }
 
 // ServerConfig HTTP 服务器配置

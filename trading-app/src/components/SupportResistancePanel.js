@@ -19,7 +19,12 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
   const [loading, setLoading] = useState(false);
   const [showPivot, setShowPivot] = useState(false);
   const [selectedTf, setSelectedTf] = useState('all');
+  const [expandedReasons, setExpandedReasons] = useState({});
   const timerRef = useRef(null);
+
+  const toggleReason = useCallback((key) => {
+    setExpandedReasons((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
 
   const fetchLevels = useCallback(async () => {
     if (!symbol) return;
@@ -57,6 +62,18 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
     }));
   }, [data?.resistances, currentPrice]);
 
+  // 根据价格查找最近的 level reason
+  const findReason = useCallback((levels, midPrice) => {
+    if (!levels?.length || !midPrice) return '';
+    let best = null;
+    let bestDist = Infinity;
+    for (const lv of levels) {
+      const d = Math.abs(lv.price - midPrice);
+      if (d < bestDist) { bestDist = d; best = lv; }
+    }
+    return best?.reason || '';
+  }, []);
+
   const supportZones = useMemo(() => {
     const raw = (data?.strongSupportZones?.length ? data.strongSupportZones : supports.map((lv) => ({
       lower: lv.zoneLow || lv.price,
@@ -66,6 +83,7 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
       strength: lv.strength,
       timeframes: lv.timeframes,
       touchCount: lv.touchCount,
+      reason: lv.reason || '',
     })));
     return raw.map((z) => {
       const lower = Number(z.lower) || 0;
@@ -74,9 +92,10 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
       const distance = currentPrice
         ? Math.round(((mid - currentPrice) / currentPrice) * 10000) / 100
         : (Number(z.distance) || 0);
-      return { ...z, lower, upper, mid, distance };
+      const reason = z.reason || findReason(supports, mid);
+      return { ...z, lower, upper, mid, distance, reason };
     });
-  }, [data?.strongSupportZones, supports, currentPrice]);
+  }, [data?.strongSupportZones, supports, currentPrice, findReason]);
 
   const resistanceZones = useMemo(() => {
     const raw = (data?.strongResistanceZones?.length ? data.strongResistanceZones : resistances.map((lv) => ({
@@ -87,6 +106,7 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
       strength: lv.strength,
       timeframes: lv.timeframes,
       touchCount: lv.touchCount,
+      reason: lv.reason || '',
     })));
     return raw.map((z) => {
       const lower = Number(z.lower) || 0;
@@ -95,9 +115,10 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
       const distance = currentPrice
         ? Math.round(((mid - currentPrice) / currentPrice) * 10000) / 100
         : (Number(z.distance) || 0);
-      return { ...z, lower, upper, mid, distance };
+      const reason = z.reason || findReason(resistances, mid);
+      return { ...z, lower, upper, mid, distance, reason };
     });
-  }, [data?.strongResistanceZones, resistances, currentPrice]);
+  }, [data?.strongResistanceZones, resistances, currentPrice, findReason]);
 
   const matchTf = useCallback((zone) => {
     if (selectedTf === 'all') return true;
@@ -127,16 +148,27 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
       ? (isResist ? colors.red : colors.green)
       : 'transparent';
     const rangeText = `${zone.lower.toFixed(2)} - ${zone.upper.toFixed(2)}`;
+    const zoneKey = `${zone.lower}-${zone.upper}-${zone.mid}`;
+    const isExpanded = !!expandedReasons[zoneKey];
+    const reason = zone.reason || '';
 
     const strengthPct = Math.min((zone.strength || 1) / 4, 1) * 100;
     return (
-      <View key={`${zone.lower}-${zone.upper}-${zone.mid}`} style={[styles.levelRow, { backgroundColor: bgColor, borderLeftColor: borderColor, borderLeftWidth: isClosest ? 3 : 0 }]}>
+      <TouchableOpacity
+        key={zoneKey}
+        style={[styles.levelRow, { backgroundColor: bgColor, borderLeftColor: borderColor, borderLeftWidth: isClosest ? 3 : 0 }]}
+        onPress={() => reason && toggleReason(zoneKey)}
+        activeOpacity={reason ? 0.7 : 1}
+      >
         <View style={styles.levelMain}>
           <View style={styles.levelPriceRow}>
             <Text style={[styles.zoneRange, { color: isResist ? colors.redLight : colors.greenLight }]}>
               {rangeText}
             </Text>
-            <Text style={styles.levelStars}>{STARS[zone.strength] || STARS[4]}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <Text style={styles.levelStars}>{STARS[zone.strength] || STARS[4]}</Text>
+              {reason ? <Text style={styles.reasonToggle}>{isExpanded ? '▾' : '▸'}</Text> : null}
+            </View>
           </View>
           <Text style={styles.zoneMid}>中位 {zone.mid.toFixed(2)}</Text>
           <View style={styles.strengthTrack}>
@@ -149,6 +181,14 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
             <Text style={styles.levelTF}>{zone.timeframes?.join(' / ')}</Text>
             <Text style={styles.levelTouch}>触及 {zone.touchCount}x</Text>
           </View>
+          {isExpanded && reason ? (
+            <View style={styles.reasonBox}>
+              <Text style={styles.reasonTitle}>
+                {isResist ? '为什么是阻力位？' : '为什么是支撑位？'}
+              </Text>
+              <Text style={styles.reasonDetail}>{reason}</Text>
+            </View>
+          ) : null}
         </View>
         <View style={styles.levelRight}>
           <Text style={[styles.levelDist, {
@@ -157,7 +197,7 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
             {zone.distance >= 0 ? '+' : ''}{zone.distance.toFixed(2)}%
           </Text>
         </View>
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -394,12 +434,12 @@ const styles = StyleSheet.create({
   overviewResist: {
     backgroundColor: colors.redBg,
     borderWidth: 1,
-    borderColor: 'rgba(217,68,82,0.2)',
+    borderColor: 'rgba(255,59,92,0.2)',
   },
   overviewSupport: {
     backgroundColor: colors.greenBg,
     borderWidth: 1,
-    borderColor: 'rgba(46,189,110,0.2)',
+    borderColor: 'rgba(0,230,118,0.2)',
   },
   overviewLabel: {
     fontSize: fontSize.xs,
@@ -498,6 +538,29 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
 
+  reasonToggle: {
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+  },
+  reasonBox: {
+    marginTop: spacing.sm,
+    backgroundColor: 'rgba(0,229,255,0.06)',
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.gold,
+  },
+  reasonTitle: {
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+    color: colors.gold,
+    marginBottom: spacing.xs,
+  },
+  reasonDetail: {
+    fontSize: fontSize.xs,
+    color: colors.textSecondary,
+    lineHeight: 18,
+  },
   emptyText: {
     color: colors.textMuted,
     textAlign: 'center',

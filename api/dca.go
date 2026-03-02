@@ -110,6 +110,7 @@ func StartDCA(config DCAConfig) error {
 	log.Printf("[DCA] Started for %s: side=%s, positionSide=%s, amount=%s USDT, total=%d, interval=%ds",
 		config.Symbol, config.Side, config.PositionSide, config.AmountPerOrder, config.TotalOrders, config.IntervalSec)
 
+	SaveStrategyState("dca", config.Symbol, config)
 	return nil
 }
 
@@ -128,6 +129,7 @@ func StopDCA(symbol string) error {
 	log.Printf("[DCA] Stopped for %s: orders=%d/%d, total=%.2f USDT, avgEntry=%.4f",
 		symbol, state.OrderCount, state.Config.TotalOrders, state.TotalAmount, state.AvgEntry)
 
+	MarkStrategyStopped("dca", symbol)
 	return nil
 }
 
@@ -215,8 +217,8 @@ func dcaLoop(state *dcaState) {
 				return
 			}
 
-			// 价格条件检查
-			if cfg.PriceDropPercent > 0 && state.LastPrice > 0 {
+			// 价格条件检查：做多只在价格低于均价时加仓，做空只在价格高于均价时加仓
+			if state.OrderCount > 0 {
 				cache := GetPriceCache()
 				currentPrice, err := cache.GetPrice(cfg.Symbol)
 				if err != nil {
@@ -224,17 +226,33 @@ func dcaLoop(state *dcaState) {
 					continue
 				}
 
-				var dropPct float64
-				if cfg.Side == futures.SideTypeBuy {
-					dropPct = (state.LastPrice - currentPrice) / state.LastPrice * 100
-				} else {
-					dropPct = (currentPrice - state.LastPrice) / state.LastPrice * 100
-				}
-
-				if dropPct < cfg.PriceDropPercent {
+				// 基础条件：价格必须低于均价（做多）或高于均价（做空）
+				if cfg.Side == futures.SideTypeBuy && currentPrice >= state.AvgEntry {
+					log.Printf("[DCA] Skip %s: price %.4f >= avgEntry %.4f (等待回调)", cfg.Symbol, currentPrice, state.AvgEntry)
 					continue
 				}
-				log.Printf("[DCA] Price condition met: drop=%.2f%% >= threshold=%.2f%%", dropPct, cfg.PriceDropPercent)
+				if cfg.Side == futures.SideTypeSell && currentPrice <= state.AvgEntry {
+					log.Printf("[DCA] Skip %s: price %.4f <= avgEntry %.4f (等待反弹)", cfg.Symbol, currentPrice, state.AvgEntry)
+					continue
+				}
+
+				// 额外条件：如果设置了 priceDropPercent，还需要相对上次买入价跌够阈值
+				if cfg.PriceDropPercent > 0 && state.LastPrice > 0 {
+					var dropPct float64
+					if cfg.Side == futures.SideTypeBuy {
+						dropPct = (state.LastPrice - currentPrice) / state.LastPrice * 100
+					} else {
+						dropPct = (currentPrice - state.LastPrice) / state.LastPrice * 100
+					}
+
+					if dropPct < cfg.PriceDropPercent {
+						log.Printf("[DCA] Skip %s: drop %.2f%% < threshold %.2f%%", cfg.Symbol, dropPct, cfg.PriceDropPercent)
+						continue
+					}
+					log.Printf("[DCA] Price drop condition met: drop=%.2f%% >= threshold=%.2f%%", dropPct, cfg.PriceDropPercent)
+				}
+
+				log.Printf("[DCA] Price condition met for %s: current=%.4f, avgEntry=%.4f", cfg.Symbol, currentPrice, state.AvgEntry)
 			}
 
 			if err := dcaExecuteWithRetry(ctx, state, 2); err != nil {

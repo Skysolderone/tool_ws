@@ -182,6 +182,7 @@ func StartDojiStrategy(config DojiConfig) error {
 		config.Symbol, config.Interval, config.BodyRatio, config.TrendBars,
 		config.EnableRSI, config.EnableVolume)
 
+	SaveStrategyState("doji", config.Symbol, config)
 	return nil
 }
 
@@ -200,6 +201,7 @@ func StopDojiStrategy(symbol string) error {
 	log.Printf("[Doji] Stopped for %s: trades=%d, PnL=%.4f",
 		symbol, state.TotalTrades, state.TotalPnl)
 
+	MarkStrategyStopped("doji", symbol)
 	return nil
 }
 

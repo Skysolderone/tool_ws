@@ -1,61 +1,61 @@
-// 暗黑暖色金融风 — Bloomberg / 高端券商风格
+// 科幻蓝 — Cyberpunk / HUD 终端风格
 export const colors = {
-  // 基础背景层次（深棕→暖灰，从深到浅）
-  bg: '#0c0a08',
-  card: '#1a1613',
-  cardAlt: '#221d18',
-  cardBorder: '#2e2720',
-  surface: '#252019',
-  surfaceLight: '#332c23',
-  surfaceHover: '#3d3429',
-  divider: '#2e2720',
+  // 基础背景层次（深蓝黑→蓝灰，从深到浅）
+  bg: '#0a0e14',
+  card: '#0f1923',
+  cardAlt: '#142030',
+  cardBorder: '#1a3348',
+  surface: '#121e2b',
+  surfaceLight: '#1a2d3d',
+  surfaceHover: '#223848',
+  divider: '#1a3348',
 
-  // 文字层次（暖白→暖灰）
-  text: '#e8ddd0',
-  textSecondary: '#a89882',
-  textMuted: '#6b5e4f',
-  white: '#f5efe6',
+  // 文字层次（冷白→蓝灰）
+  text: '#c8dce8',
+  textSecondary: '#7a9ab0',
+  textMuted: '#4a6578',
+  white: '#e0eaf2',
 
-  // 主强调色 — 琥珀金
-  gold: '#d4a54a',
-  goldLight: '#e8c36d',
-  goldDark: '#b8892e',
-  goldBg: 'rgba(212,165,74,0.14)',
-  goldGlow: 'rgba(212,165,74,0.3)',
+  // 主强调色 — 霓虹青（变量名保留 gold 以兼容全局引用）
+  gold: '#00e5ff',
+  goldLight: '#33ecff',
+  goldDark: '#00a0b4',
+  goldBg: 'rgba(0,229,255,0.08)',
+  goldGlow: 'rgba(0,229,255,0.25)',
 
-  // 多头/做多（翡翠绿，偏暖）
-  green: '#2ebd6e',
-  greenLight: '#52d989',
-  greenBg: 'rgba(46,189,110,0.12)',
-  greenBgSolid: '#142a1c',
-  greenGlow: 'rgba(46,189,110,0.25)',
+  // 多头/做多（科技绿，更亮）
+  green: '#00e676',
+  greenLight: '#69f0ae',
+  greenBg: 'rgba(0,230,118,0.10)',
+  greenBgSolid: '#0a2418',
+  greenGlow: 'rgba(0,230,118,0.25)',
 
-  // 空头/做空（深红，偏暖）
-  red: '#d94452',
-  redLight: '#f07280',
-  redBg: 'rgba(217,68,82,0.12)',
-  redBgSolid: '#2a1215',
-  redGlow: 'rgba(217,68,82,0.25)',
+  // 空头/做空（霓虹红）
+  red: '#ff3b5c',
+  redLight: '#ff6b81',
+  redBg: 'rgba(255,59,92,0.10)',
+  redBgSolid: '#1f0a10',
+  redGlow: 'rgba(255,59,92,0.25)',
 
-  // 信息蓝（辅助，偏暖灰蓝）
-  blue: '#6b94c4',
-  blueLight: '#8bb0d8',
-  blueDark: '#4e78a8',
-  blueBg: 'rgba(107,148,196,0.14)',
-  blueGlow: 'rgba(107,148,196,0.3)',
+  // 信息蓝（主蓝）
+  blue: '#448aff',
+  blueLight: '#6ea6ff',
+  blueDark: '#2962ff',
+  blueBg: 'rgba(68,138,255,0.12)',
+  blueGlow: 'rgba(68,138,255,0.3)',
 
   // 辅助色
-  yellow: '#e0a836',
-  yellowBg: 'rgba(224,168,54,0.14)',
+  yellow: '#ffb800',
+  yellowBg: 'rgba(255,184,0,0.10)',
 
-  orange: '#d48a2c',
-  orangeBg: 'rgba(212,138,44,0.14)',
+  orange: '#ff9100',
+  orangeBg: 'rgba(255,145,0,0.10)',
 
-  purple: '#a07cc8',
-  purpleBg: 'rgba(160,124,200,0.14)',
+  purple: '#7b61ff',
+  purpleBg: 'rgba(123,97,255,0.12)',
 
   // 阴影
-  shadow: 'rgba(10, 6, 2, 0.85)',
+  shadow: 'rgba(0, 4, 12, 0.9)',
 };
 
 // 间距规范

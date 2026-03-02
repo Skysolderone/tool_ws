@@ -200,7 +200,7 @@ const styles = StyleSheet.create({
   titleContent: { flexDirection: 'row', alignItems: 'center' },
   statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: spacing.sm },
   title: { fontSize: fontSize.lg, fontWeight: '700', color: colors.white },
-  startBtn: { backgroundColor: colors.gold, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.pill },
+  startBtn: { backgroundColor: colors.green, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.pill },
   stopBtn: { backgroundColor: colors.red, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.pill },
   btnText: { color: colors.white, fontWeight: '700', fontSize: fontSize.sm },
   statusBox: { backgroundColor: colors.surface, padding: spacing.md, borderRadius: radius.lg, marginTop: spacing.sm, borderWidth: 1, borderColor: colors.cardBorder },

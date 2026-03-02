@@ -66,6 +66,10 @@ func autoMigrateSchema() error {
 		&TradeRecord{},
 		&OperationRecord{},
 		&LiquidationStatRecord{},
+		&LocalTPSLCondition{},
+		&StrategyState{},
+		&SlippageRecord{},
+		&SlippageRecord{}, // 滑点记录（新增表，不影响已有数据）
 	)
 }
 

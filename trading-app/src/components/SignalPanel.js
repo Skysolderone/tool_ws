@@ -93,7 +93,7 @@ export default function SignalPanel({ symbol }) {
     if (!rsi) return colors.textSecondary;
     if (rsi >= 70) return colors.red;
     if (rsi <= 30) return colors.green;
-    return colors.yellow || '#f0b90b';
+    return colors.yellow;
   };
 
   const signalColor = (sig) => {
@@ -363,7 +363,7 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: fontSize.lg, fontWeight: '700', color: colors.white },
   startBtn: {
-    backgroundColor: colors.gold,
+    backgroundColor: colors.green,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     borderRadius: radius.pill,

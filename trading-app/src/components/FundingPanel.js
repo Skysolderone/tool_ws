@@ -281,7 +281,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginBottom: spacing.sm,
     borderWidth: 1,
-    borderColor: 'rgba(212,138,44,0.3)',
+    borderColor: 'rgba(255,145,0,0.3)',
   },
   section: {
     marginBottom: spacing.sm,

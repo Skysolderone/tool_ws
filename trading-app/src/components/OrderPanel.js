@@ -14,7 +14,7 @@ const TEMPLATES_KEY = '@order_templates';
  * @param {string} symbol
  * @param {number|null} externalMarkPrice - 从 App.js 传入的实时价格
  */
-export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = null, positions = [] }) {
+export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = null, positions = [], preset = null }) {
   const [side, setSide] = useState('BUY');
   const [quoteQty, setQuoteQty] = useState('5');
   const [leverage, setLeverage] = useState('10');
@@ -23,6 +23,22 @@ export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [showTpsl, setShowTpsl] = useState(false);
+
+  // 推荐预设止损止盈价格
+  const [presetSLPrice, setPresetSLPrice] = useState('');
+  const [presetTPPrice, setPresetTPPrice] = useState('');
+
+  // 接收推荐面板传入的预设参数
+  useEffect(() => {
+    if (!preset) return;
+    if (preset.direction === 'LONG') setSide('BUY');
+    else if (preset.direction === 'SHORT') setSide('SELL');
+    if (preset.stopLoss) setPresetSLPrice(String(preset.stopLoss));
+    if (preset.takeProfit) setPresetTPPrice(String(preset.takeProfit));
+    setStopLossAmount('');
+    setRiskReward('');
+    setShowTpsl(true);
+  }, [preset]);
 
   // 阶梯止盈
   const [useComboTP, setUseComboTP] = useState(false);
@@ -165,16 +181,32 @@ export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = 
     if (!quoteQty) return Alert.alert('提示', '请输入下单金额');
     if (!leverage) return Alert.alert('提示', '请输入杠杆倍数');
 
+    if (!markPrice) return Alert.alert('提示', '价格加载中，请稍后');
+
     const req = {
       symbol,
       side,
       positionSide: side === 'BUY' ? 'LONG' : 'SHORT',
-      orderType: 'MARKET',
+      orderType: 'LIMIT',
+      price: String(markPrice),
+      timeInForce: 'GTC',
       quoteQuantity: quoteQty,
       leverage: parseInt(leverage, 10),
     };
 
-    if (stopLossAmount) {
+    if (presetSLPrice && presetTPPrice && markPrice) {
+      // 推荐预设模式：直接用止损价 + 盈亏比
+      const slP = parseFloat(presetSLPrice);
+      const tpP = parseFloat(presetTPPrice);
+      if (slP > 0 && tpP > 0) {
+        req.stopLossPrice = presetSLPrice;
+        const slDist = Math.abs(markPrice - slP);
+        const tpDist = Math.abs(tpP - markPrice);
+        if (slDist > 0) {
+          req.riskReward = parseFloat((tpDist / slDist).toFixed(2));
+        }
+      }
+    } else if (stopLossAmount) {
       req.stopLossAmount = parseFloat(stopLossAmount);
 
       if (useComboTP && tpLevels.length > 0) {
@@ -268,13 +300,13 @@ export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = 
           style={styles.tplBtn}
           onPress={() => setShowTemplates(!showTemplates)}
         >
-          <Text style={styles.tplBtnText}>📋 模板</Text>
+          <Text style={styles.tplBtnText}>▤ 模板</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.tplBtn}
           onPress={() => setSavingTemplate(true)}
         >
-          <Text style={styles.tplBtnText}>💾 存为模板</Text>
+          <Text style={styles.tplBtnText}>◆ 存为模板</Text>
         </TouchableOpacity>
       </View>
 
@@ -385,7 +417,39 @@ export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = 
 
       {showTpsl && (
         <View style={styles.tpslBox}>
-          {/* 止损金额 */}
+          {/* 推荐预设止损止盈价格 */}
+          {(presetSLPrice || presetTPPrice) ? (
+            <View style={styles.presetTpslRow}>
+              <View style={styles.presetTpslItem}>
+                <Text style={styles.presetTpslLabel}>止损价</Text>
+                <TextInput
+                  style={[styles.tpslInput, { borderColor: colors.red + '66' }]}
+                  value={presetSLPrice}
+                  onChangeText={setPresetSLPrice}
+                  keyboardType="decimal-pad"
+                  placeholderTextColor={colors.textMuted}
+                />
+              </View>
+              <View style={styles.presetTpslItem}>
+                <Text style={styles.presetTpslLabel}>止盈价</Text>
+                <TextInput
+                  style={[styles.tpslInput, { borderColor: colors.green + '66' }]}
+                  value={presetTPPrice}
+                  onChangeText={setPresetTPPrice}
+                  keyboardType="decimal-pad"
+                  placeholderTextColor={colors.textMuted}
+                />
+              </View>
+              <TouchableOpacity
+                style={styles.presetClearBtn}
+                onPress={() => { setPresetSLPrice(''); setPresetTPPrice(''); }}
+              >
+                <Text style={styles.presetClearText}>清除</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+          {/* 止损金额（无预设价格时使用） */}
+          {!presetSLPrice && (
           <View style={styles.tpslInputRow}>
             <View style={styles.tpslInputGroup}>
               <Text style={styles.tpslLabel}>止损金额(U)</Text>
@@ -412,6 +476,7 @@ export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = 
               </View>
             )}
           </View>
+          )}
 
           {/* 阶梯止盈开关 */}
           <TouchableOpacity
@@ -543,7 +608,7 @@ export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = 
           <ActivityIndicator color="#fff" />
         ) : (
           <Text style={styles.orderBtnText}>
-            {isBuy ? '买入做多' : '卖出做空'}
+            {isBuy ? '买入做多' : '卖出做空'} {markPrice ? `@ ${markPrice}` : ''}
           </Text>
         )}
       </TouchableOpacity>
@@ -647,7 +712,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     marginRight: spacing.sm,
     borderWidth: 1,
-    borderColor: 'rgba(212,165,74,0.3)',
+    borderColor: 'rgba(0,229,255,0.3)',
     minWidth: 80,
   },
   tplChipName: {
@@ -676,7 +741,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: spacing.md,
     alignItems: 'center',
-    backgroundColor: 'rgba(37,32,25,0.6)',
+    backgroundColor: 'rgba(15,25,35,0.6)',
     borderWidth: 1,
     borderColor: colors.cardBorder,
   },
@@ -808,6 +873,38 @@ const styles = StyleSheet.create({
   tpslBox: {
     marginBottom: spacing.md,
   },
+  presetTpslRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.gold + '33',
+  },
+  presetTpslItem: {
+    flex: 1,
+  },
+  presetTpslLabel: {
+    fontSize: fontSize.xs,
+    color: colors.gold,
+    fontWeight: '600',
+    marginBottom: 3,
+  },
+  presetClearBtn: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  presetClearText: {
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+    fontWeight: '600',
+  },
   tpslInputRow: {
     flexDirection: 'row',
     gap: spacing.sm,
@@ -907,7 +1004,7 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    backgroundColor: 'rgba(217,68,82,0.2)',
+    backgroundColor: 'rgba(255,59,92,0.2)',
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 14,

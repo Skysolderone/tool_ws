@@ -53,7 +53,7 @@ const styles = StyleSheet.create({
   },
   tabActive: {
     backgroundColor: colors.goldBg,
-    borderColor: 'rgba(212,165,74,0.3)',
+    borderColor: 'rgba(0,229,255,0.3)',
   },
   label: {
     fontSize: fontSize.md,

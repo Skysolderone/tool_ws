@@ -26,6 +26,12 @@ import MarketMonitorPanel from './src/components/MarketMonitorPanel';
 import FundingPanel from './src/components/FundingPanel';
 import StrategyLinkPanel from './src/components/StrategyLinkPanel';
 import SupportResistancePanel from './src/components/SupportResistancePanel';
+import RecommendPanel from './src/components/RecommendPanel';
+import AIAnalysisPanel from './src/components/AIAnalysisPanel';
+import ScalpPanel from './src/components/ScalpPanel';
+import EquityCurvePanel from './src/components/EquityCurvePanel';
+import StrategyComparePanel from './src/components/StrategyComparePanel';
+import DepthChartPanel from './src/components/DepthChartPanel';
 import { colors, spacing, radius, fontSize } from './src/services/theme';
 import api, { WS_PRICE_BASE, AUTH_TOKEN } from './src/services/api';
 
@@ -39,8 +45,10 @@ const MAIN_TABS = [
   { key: 'trade', label: '交易', icon: '⇅' },
   { key: 'strategy', label: '策略', icon: '⚙' },
   { key: 'monitor', label: '监控', icon: '◉' },
+  { key: 'recommend', label: 'AI', icon: '⬡' },
+  { key: 'analysis', label: '分析', icon: '◈' },
   { key: 'info', label: '资讯', icon: '◎' },
-  { key: 'me', label: '我的', icon: '◈' },
+  { key: 'me', label: '我的', icon: '▣' },
 ];
 
 // 交易 Tab 子页签
@@ -57,6 +65,9 @@ const MONITOR_SUB_TABS = [
   { key: 'hyper', label: 'Hyper监控' },
   { key: 'liquidation', label: '强平监控' },
   { key: 'market', label: '市场监控' },
+  { key: 'equity', label: '权益曲线' },
+  { key: 'compare', label: '策略对比' },
+  { key: 'depth', label: '深度图' },
 ];
 
 export default function App() {
@@ -67,6 +78,7 @@ export default function App() {
 
   // ===== 全局交易币对 =====
   const [tradeSymbol, setTradeSymbol] = useState(DEFAULT_SYMBOL);
+  const [orderPreset, setOrderPreset] = useState(null); // 推荐预设参数
   const [strategySymbol, setStrategySymbol] = useState(DEFAULT_SYMBOL);
   const [accountSnapshot, setAccountSnapshot] = useState({
     balance: null,
@@ -306,6 +318,7 @@ export default function App() {
                 externalMarkPrice={markPrice}
                 walletBalance={accountSnapshot.balance}
                 positions={accountSnapshot.positions}
+                preset={orderPreset}
               />
             )}
             {tradeSubTab === 'position' && (
@@ -334,6 +347,7 @@ export default function App() {
               <Text style={styles.sectionTitle}>策略控制台</Text>
               <SymbolPicker symbol={strategySymbol} onChangeSymbol={setStrategySymbol} />
             </View>
+            <ScalpPanel symbol={strategySymbol} />
             <StrategyLinkPanel symbol={strategySymbol} />
             <FundingPanel symbol={strategySymbol} />
             <SignalPanel symbol={strategySymbol} />
@@ -419,6 +433,15 @@ export default function App() {
             {monitorSubTab === 'market' && marketPanelMounted && (
               <MarketMonitorPanel onHasNew={handleMarketHasNew} />
             )}
+            {monitorSubTab === 'equity' && (
+              <EquityCurvePanel />
+            )}
+            {monitorSubTab === 'compare' && (
+              <StrategyComparePanel />
+            )}
+            {monitorSubTab === 'depth' && (
+              <DepthChartPanel symbol={tradeSymbol} />
+            )}
           </>
         )}
 
@@ -426,6 +449,34 @@ export default function App() {
           <View style={activeTab === 'monitor' && monitorSubTab === 'liquidation' ? undefined : styles.hidden}>
             <LiquidationMonitorPanel onHasNew={handleLiqHasNew} />
           </View>
+        )}
+
+        {/* ==================== 推荐 Tab ==================== */}
+        {activeTab === 'recommend' && (
+          <RecommendPanel onNavigateToTrade={(symbol, recommendation) => {
+            setTradeSymbol(symbol);
+            setOrderPreset(recommendation ? {
+              direction: recommendation.direction,
+              stopLoss: recommendation.stopLoss,
+              takeProfit: recommendation.takeProfit,
+            } : null);
+            setActiveTab('trade');
+            setTradeSubTab('order');
+          }} />
+        )}
+
+        {/* ==================== 分析 Tab ==================== */}
+        {activeTab === 'analysis' && (
+          <AIAnalysisPanel onNavigateToTrade={(symbol, recommendation) => {
+            setTradeSymbol(symbol);
+            setOrderPreset(recommendation ? {
+              direction: recommendation.direction,
+              stopLoss: recommendation.stopLoss,
+              takeProfit: recommendation.takeProfit,
+            } : null);
+            setActiveTab('trade');
+            setTradeSubTab('order');
+          }} />
         )}
 
         {/* ==================== 资讯 Tab ==================== */}
@@ -463,27 +514,57 @@ export default function App() {
       {/* ==================== 底部 Tab Bar ==================== */}
       <View style={styles.tabBarWrap}>
         <View style={styles.tabBar}>
-          {MAIN_TABS.map((tab) => {
-            const isActive = activeTab === tab.key;
-            const showBadge = (tab.key === 'info' && infoBadge) || (tab.key === 'monitor' && monitorBadge);
-            return (
-              <TouchableOpacity
-                key={tab.key}
-                style={styles.tabItem}
-                onPress={() => switchMainTab(tab.key)}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.tabIcon, isActive && styles.tabIconActive]}>
-                  {tab.icon}
-                </Text>
-                <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
-                  {tab.label}
-                </Text>
-                {isActive && <View style={styles.tabIndicator} />}
-                {showBadge && <View style={styles.tabBadgeDot} />}
-              </TouchableOpacity>
-            );
-          })}
+          {/* 左三 */}
+          <View style={styles.tabGroupLeft}>
+            {MAIN_TABS.slice(0, 3).map((tab) => {
+              const isActive = activeTab === tab.key;
+              const showBadge = (tab.key === 'info' && infoBadge) || (tab.key === 'monitor' && monitorBadge);
+              return (
+                <TouchableOpacity
+                  key={tab.key}
+                  style={styles.tabItem}
+                  onPress={() => switchMainTab(tab.key)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.tabIcon, isActive && styles.tabIconActive]}>{tab.icon}</Text>
+                  <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>{tab.label}</Text>
+                  {isActive && <View style={styles.tabIndicator} />}
+                  {showBadge && <View style={styles.tabBadgeDot} />}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          {/* 中间分隔 */}
+          <View style={styles.tabDivider} />
+          {/* 右四 */}
+          <View style={styles.tabGroupRight}>
+            {MAIN_TABS.slice(3).map((tab) => {
+              const isActive = activeTab === tab.key;
+              const showBadge = (tab.key === 'info' && infoBadge) || (tab.key === 'monitor' && monitorBadge);
+              const isAI = tab.key === 'recommend' || tab.key === 'analysis';
+              return (
+                <TouchableOpacity
+                  key={tab.key}
+                  style={styles.tabItem}
+                  onPress={() => switchMainTab(tab.key)}
+                  activeOpacity={0.7}
+                >
+                  {isAI ? (
+                    <View style={[styles.aiIconWrap, isActive && styles.aiIconWrapActive]}>
+                      <Text style={[styles.aiIcon, isActive && styles.aiIconActive]}>{tab.icon}</Text>
+                    </View>
+                  ) : (
+                    <Text style={[styles.tabIcon, isActive && styles.tabIconActive]}>{tab.icon}</Text>
+                  )}
+                  <Text style={[styles.tabLabel, isAI && styles.aiLabel, isActive && (isAI ? styles.aiLabelActive : styles.tabLabelActive)]}>
+                    {tab.label}
+                  </Text>
+                  {isActive && !isAI && <View style={styles.tabIndicator} />}
+                  {showBadge && <View style={styles.tabBadgeDot} />}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         </View>
       </View>
     </View>
@@ -893,15 +974,32 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(18, 14, 10, 0.95)',
+    backgroundColor: 'rgba(10, 14, 20, 0.95)',
     borderTopWidth: 1,
     borderTopColor: colors.divider,
     paddingBottom: 20, // 安全区
   },
   tabBar: {
     flexDirection: 'row',
+    alignItems: 'center',
     paddingTop: spacing.md,
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.sm,
+  },
+  tabGroupLeft: {
+    flex: 3,
+    flexDirection: 'row',
+  },
+  tabGroupRight: {
+    flex: 4,
+    flexDirection: 'row',
+  },
+  tabDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: colors.cardBorder,
+    marginHorizontal: spacing.xs,
+    borderRadius: 0.5,
+    opacity: 0.6,
   },
   tabItem: {
     flex: 1,
@@ -945,6 +1043,47 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: 3,
     backgroundColor: colors.red,
+  },
+  // ===== AI 系列 Tab 科技风图标 =====
+  aiIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: colors.goldBg,
+    borderWidth: 1,
+    borderColor: 'rgba(0,229,255,0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 1,
+  },
+  aiIconWrapActive: {
+    backgroundColor: 'rgba(0,229,255,0.15)',
+    borderColor: colors.gold,
+    shadowColor: colors.gold,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  aiIcon: {
+    fontSize: 16,
+    color: colors.gold,
+    fontWeight: '900',
+    fontFamily: 'monospace',
+  },
+  aiIconActive: {
+    textShadowColor: colors.goldGlow,
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
+  },
+  aiLabel: {
+    color: colors.gold,
+    fontFamily: 'monospace',
+    letterSpacing: 0.5,
+  },
+  aiLabelActive: {
+    color: colors.goldLight,
+    fontWeight: '800',
   },
 
   // ===== Dashboard 我的 =====

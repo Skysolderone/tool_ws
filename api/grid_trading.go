@@ -112,6 +112,7 @@ func StartGrid(config GridConfig) error {
 	log.Printf("[Grid] Started for %s: range=[%.2f, %.2f], grids=%d, perGrid=%s USDT",
 		config.Symbol, config.LowerPrice, config.UpperPrice, config.GridCount, config.AmountPerGrid)
 
+	SaveStrategyState("grid", config.Symbol, config)
 	return nil
 }
 
@@ -130,6 +131,7 @@ func StopGrid(symbol string) error {
 	log.Printf("[Grid] Stopped for %s: buys=%d, sells=%d, profit=%.4f",
 		symbol, state.FilledBuys, state.FilledSells, state.TotalProfit)
 
+	MarkStrategyStopped("grid", symbol)
 	return nil
 }
 

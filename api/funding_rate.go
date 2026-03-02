@@ -100,6 +100,8 @@ func StartFundingMonitor(config FundingRateConfig) error {
 
 	log.Printf("[FundingRate] Monitor started: threshold=%.0f%% annualized, interval=%ds, autoTrade=%v",
 		config.ThresholdAnnualized, config.IntervalSec, config.AutoTrade)
+
+	SaveStrategyState("funding", "*", config)
 	return nil
 }
 
@@ -116,6 +118,7 @@ func StopFundingMonitor() error {
 	}
 	fundingMon.active = false
 	log.Println("[FundingRate] Monitor stopped")
+	MarkStrategyStopped("funding", "*")
 	return nil
 }
 

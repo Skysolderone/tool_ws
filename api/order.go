@@ -67,10 +67,11 @@ type ReversePositionReq struct {
 
 // PlaceOrderResult 下单结果，包含主单和可选的止盈止损单
 type PlaceOrderResult struct {
-	Order       *futures.CreateOrderResponse `json:"order"`                 // 主单
-	TakeProfit  *AlgoOrderResponse           `json:"takeProfit,omitempty"`  // 止盈单 (单级)
-	TakeProfits []*AlgoOrderResponse         `json:"takeProfits,omitempty"` // 阶梯止盈单列表
-	StopLoss    *AlgoOrderResponse           `json:"stopLoss,omitempty"`    // 止损单 (Algo Order)
+	Order            *futures.CreateOrderResponse `json:"order"`                       // 主单
+	TakeProfit       *AlgoOrderResponse           `json:"takeProfit,omitempty"`        // 止盈单 (单级，Algo模式兼容)
+	TakeProfits      []*AlgoOrderResponse         `json:"takeProfits,omitempty"`       // 阶梯止盈单列表 (Algo模式兼容)
+	StopLoss         *AlgoOrderResponse           `json:"stopLoss,omitempty"`          // 止损单 (Algo模式兼容)
+	LocalTPSLGroupID string                       `json:"localTpslGroupId,omitempty"`  // 本地TPSL组ID
 }
 
 // ReversePositionResult 一键反手结果
@@ -392,16 +393,36 @@ func findPosition(ctx context.Context, symbol string, positionSide futures.Posit
 	return nil, fmt.Errorf("no open position for %s (side=%s)", symbol, positionSide)
 }
 
-// createReduceOrder 创建减仓/平仓市价单（reduceOnly=true）
-func createReduceOrder(ctx context.Context, symbol string, side futures.SideType, positionSide futures.PositionSideType, quantity string) (*futures.CreateOrderResponse, error) {
+// createReduceOrder 创建减仓/平仓限价单（用当前价格，reduceOnly=true）
+func createReduceOrder(ctx context.Context, symbol string, side futures.SideType, positionSide futures.PositionSideType, quantity string, priceStr ...string) (*futures.CreateOrderResponse, error) {
 	if positionSide == "" {
 		positionSide = futures.PositionSideTypeBoth
 	}
+
+	// 确定限价
+	var price string
+	if len(priceStr) > 0 && priceStr[0] != "" {
+		price = priceStr[0]
+	} else {
+		// 兜底获取当前价格
+		p, err := getCurrentPrice(ctx, symbol, "")
+		if err != nil {
+			return nil, fmt.Errorf("get current price for reduce: %w", err)
+		}
+		pp, err := getSymbolPricePrecision(ctx, symbol)
+		if err != nil {
+			return nil, fmt.Errorf("get price precision: %w", err)
+		}
+		price = formatPrice(p, pp)
+	}
+
 	service := Client.NewCreateOrderService().
 		Symbol(symbol).
 		Side(side).
-		Type(futures.OrderTypeMarket).
+		Type(futures.OrderTypeLimit).
+		TimeInForce(futures.TimeInForceTypeGTC).
 		Quantity(quantity).
+		Price(price).
 		PositionSide(positionSide).
 		ReduceOnly(true)
 
@@ -523,7 +544,7 @@ func calcStopLossPrice(req PlaceOrderReq, entryPrice float64, quantity string) (
 
 // PlaceTPSLOrders 在主单成交后挂止盈止损单
 // 支持单级止盈和阶梯止盈两种模式：
-//   - 单级：用 riskReward 计算单个 TP (closePosition=true)
+//   - 单级：用 riskReward 计算单个 TP，使用本次下单数量（非 closePosition 全平）
 //   - 阶梯：用 tpLevels 数组，每级指定 percent + riskReward，按比例拆分数量
 func PlaceTPSLOrders(ctx context.Context, req PlaceOrderReq, entryPrice float64, quantity string) (tp *AlgoOrderResponse, sl *AlgoOrderResponse, err error) {
 	isBuy := req.Side == futures.SideTypeBuy
@@ -585,27 +606,27 @@ func PlaceTPSLOrders(ctx context.Context, req PlaceOrderReq, entryPrice float64,
 	log.Printf("[TPSL] entryPrice=%.4f, stopLoss=%s, takeProfit=%s, riskReward=1:%.1f",
 		entryPrice, slPriceStr, tpPriceStr, req.RiskReward)
 
-	// 下止盈单
+	// 下止盈单（使用本次下单数量，而非 closePosition 全平）
 	tpResult, err := PlaceAlgoOrder(ctx, AlgoOrderParams{
-		Symbol:        req.Symbol,
-		Side:          string(closeSide),
-		OrderType:     "TAKE_PROFIT_MARKET",
-		TriggerPrice:  tpPriceStr,
-		ClosePosition: true,
-		PositionSide:  string(positionSide),
+		Symbol:       req.Symbol,
+		Side:         string(closeSide),
+		OrderType:    "TAKE_PROFIT_MARKET",
+		TriggerPrice: tpPriceStr,
+		Quantity:     quantity,
+		PositionSide: string(positionSide),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("place take-profit order: %w", err)
 	}
 
-	// 下止损单
+	// 下止损单（使用本次下单数量，而非 closePosition 全平）
 	slResult, err := PlaceAlgoOrder(ctx, AlgoOrderParams{
-		Symbol:        req.Symbol,
-		Side:          string(closeSide),
-		OrderType:     "STOP_MARKET",
-		TriggerPrice:  slPriceStr,
-		ClosePosition: true,
-		PositionSide:  string(positionSide),
+		Symbol:       req.Symbol,
+		Side:         string(closeSide),
+		OrderType:    "STOP_MARKET",
+		TriggerPrice: slPriceStr,
+		Quantity:     quantity,
+		PositionSide: string(positionSide),
 	})
 	if err != nil {
 		log.Printf("[TPSL] stop-loss failed, cancelling take-profit algo order %d: %v", tpResult.AlgoID, err)
@@ -684,14 +705,14 @@ func placeComboTPSL(ctx context.Context, req PlaceOrderReq, entryPrice float64, 
 		placedAlgoIDs = append(placedAlgoIDs, tpResult.AlgoID)
 	}
 
-	// 下止损单 (closePosition=true，平掉剩余全部)
+	// 下止损单（使用本次下单全部数量，而非 closePosition 全平）
 	slResult, slErr := PlaceAlgoOrder(ctx, AlgoOrderParams{
-		Symbol:        req.Symbol,
-		Side:          string(closeSide),
-		OrderType:     "STOP_MARKET",
-		TriggerPrice:  slPriceStr,
-		ClosePosition: true,
-		PositionSide:  string(positionSide),
+		Symbol:       req.Symbol,
+		Side:         string(closeSide),
+		OrderType:    "STOP_MARKET",
+		TriggerPrice: slPriceStr,
+		Quantity:     quantity,
+		PositionSide: string(positionSide),
 	})
 	if slErr != nil {
 		for _, id := range placedAlgoIDs {

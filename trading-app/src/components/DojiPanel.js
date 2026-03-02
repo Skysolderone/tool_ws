@@ -122,7 +122,7 @@ export default function DojiPanel({ symbol }) {
     if (!p || p === 'NONE') return colors.textMuted;
     if (p === 'HAMMER' || p === 'ENGULF_BULL') return colors.green;
     if (p === 'SHOOTING_STAR' || p === 'ENGULF_BEAR') return colors.red;
-    return colors.yellow || '#f0b90b';
+    return colors.yellow;
   };
 
   const trendColor = (t) => {
@@ -463,7 +463,7 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: fontSize.lg, fontWeight: '700', color: colors.white },
   startBtn: {
-    backgroundColor: colors.gold,
+    backgroundColor: colors.green,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     borderRadius: radius.pill,

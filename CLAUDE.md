@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## 项目概述
 
 币安合约交易工具，前后端分离：Go 后端 + React Native Expo 移动端。
@@ -9,14 +11,21 @@
 **后端**：Go 1.26 / Hertz HTTP / go-binance/v2 futures / PostgreSQL (GORM) / gorilla/websocket
 **前端**：React Native 0.81 + Expo 54 / react-native-webview
 
-## 构建命令
+## 构建与测试命令
 
 ```bash
+# 后端
 make run           # 本地运行 go run main.go
 make build         # 编译 Linux/amd64 → ./tool
 make main          # tidy + build + SSH 部署到 wws 服务器
-go test ./api/...  # 测试
-cd trading-app && npx expo start  # 前端开发
+make migrate       # 仅执行 DB 迁移 (go run main.go -migrate-only)
+make build-proxy   # 编译反代服务 → ./proxy
+go test ./api/...       # 后端业务测试
+go test ./websocket/... # WS 模块测试
+
+# 前端
+cd trading-app && npx expo start              # 开发调试
+cd trading-app && eas build --platform android --profile preview --local  # 打 APK
 ```
 
 ## 后端架构
@@ -26,6 +35,14 @@ cd trading-app && npx expo start  # 前端开发
 启动顺序：`LoadConfig` → `InitClient` → `InitDB` → `InitRiskControl` → `InitWsClient`(异步) → `StartUserStream` → `StartWsPriceServer`
 
 路由全部注册在 `main.go`，Handler 在 `api/handler.go`，业务逻辑按功能分散到 `api/` 各文件。
+
+### 双重下单通道
+
+代码维护两个客户端（`api/client.go`）：
+- `Client *futures.Client`：REST API，HMAC SHA256 签名，主路径
+- `WsOrderClient *ws.WsClient`：WebSocket API，Ed25519 签名（`websocket/` 包），优先使用，失败自动降级到 REST
+
+**重要**：自 2025-12-09 币安要求 `STOP_MARKET`/`TAKE_PROFIT_MARKET` 等条件单必须走 `/fapi/v1/algoOrder`，不能用 go-binance `NewCreateOrderService`，相关逻辑在 `api/algo_order.go` 中自行构造 HMAC 签名。
 
 ### 后端关键文件
 
@@ -46,10 +63,13 @@ cd trading-app && npx expo start  # 前端开发
 | `api/doji_strategy.go` | K线十字星形态 |
 | `api/liquidation_history.go` | 爆仓历史 |
 | `api/ws_liquidation_stats.go` | 爆仓统计 WS |
+| `api/strategy_link.go` | 跨策略联动规则（触发源→动作，带冷却期） |
+| `websocket/` | 币安 WS-FAPI 客户端封装（Ed25519 签名下单） |
+| `cmd/proxy_server/` | 独立币安 API 反代服务（port 10087） |
 
 ## 前端架构
 
-React Native Expo 单页应用，暖色金融风主题（Bloomberg 风格）。
+React Native Expo 应用，暖色金融风主题（Bloomberg 风格）。5 个主 Tab：交易 / 策略 / 监控 / 资讯 / 我的。
 
 ### 设计系统 (`src/services/theme.js`)
 
@@ -61,7 +81,7 @@ React Native Expo 单页应用，暖色金融风主题（Bloomberg 风格）。
 
 ```
 trading-app/
-  App.js              # 入口，4-tab 导航（交易/策略/资讯/我的），全局 WS 价格连接
+  App.js              # 入口，5-tab 导航（交易/策略/监控/资讯/我的），全局 WS 价格连接
   src/
     services/
       api.js           # 后端 HTTP/WS 请求封装
@@ -97,4 +117,7 @@ trading-app/
 - go-binance SDK：`Client.NewXxxService().Param(val).Do(ctx)` 链式调用
 - GORM AutoMigrate 自动建表（不删列）
 - 配置通过 `config.json`（`-config` 参数指定路径）
-- 所有接口需 Token 认证（Header `Authorization` 或 WS `?token=`）
+- 所有接口需 Token 认证（Header `X-Auth-Token` / `Authorization: Bearer` 或 WS `?token=`）
+- 市场告警规则持久化到 `data/ws-monitor/` 目录下 JSON 文件（原子写：临时文件 + rename）
+- 策略联动规则（`strategy_link.go`）：触发源 `rsi_buy/rsi_sell/liq_spike/funding_high` → 动作 `start_grid/close_position/reduce_position` 等，带冷却期防重复
+- 价格数据流：币安 aggTrade WS → 后端 priceHub 广播 → App 客户端（App 不直连币安，解决网络问题）

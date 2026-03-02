@@ -395,10 +395,10 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
   },
-  askBar: { backgroundColor: 'rgba(248,81,73,0.15)' },
-  bidBar: { backgroundColor: 'rgba(63,185,80,0.15)' },
-  askCumBar: { backgroundColor: 'rgba(248,81,73,0.06)' },
-  bidCumBar: { backgroundColor: 'rgba(63,185,80,0.06)' },
+  askBar: { backgroundColor: 'rgba(255,59,92,0.15)' },
+  bidBar: { backgroundColor: 'rgba(0,230,118,0.15)' },
+  askCumBar: { backgroundColor: 'rgba(255,59,92,0.06)' },
+  bidCumBar: { backgroundColor: 'rgba(0,230,118,0.06)' },
 
   cell: {
     flex: 1,

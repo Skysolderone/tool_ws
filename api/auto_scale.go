@@ -113,6 +113,7 @@ func StartAutoScale(config AutoScaleConfig) error {
 		config.Symbol, config.Side, config.AddQuantity, config.MaxScaleCount,
 		config.TriggerAmount, config.TriggerPercent)
 
+	SaveStrategyState("autoscale", config.Symbol, config)
 	return nil
 }
 
@@ -131,6 +132,7 @@ func StopAutoScale(symbol string) error {
 	log.Printf("[AutoScale] Stopped for %s (scaled %d times, total %.2f USDT added)",
 		symbol, state.ScaleCount, state.TotalAdded)
 
+	MarkStrategyStopped("autoscale", symbol)
 	return nil
 }
 

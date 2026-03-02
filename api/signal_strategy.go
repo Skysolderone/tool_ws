@@ -142,6 +142,7 @@ func StartSignalStrategy(config SignalConfig) error {
 		config.RSIOverbought, config.RSIOversold,
 		config.VolumePeriod, config.VolumeMulti)
 
+	SaveStrategyState("signal", config.Symbol, config)
 	return nil
 }
 
@@ -160,6 +161,7 @@ func StopSignalStrategy(symbol string) error {
 	log.Printf("[Signal] Stopped for %s: trades=%d, PnL=%.4f",
 		symbol, state.TotalTrades, state.TotalPnl)
 
+	MarkStrategyStopped("signal", symbol)
 	return nil
 }
 

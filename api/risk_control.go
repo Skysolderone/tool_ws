@@ -9,20 +9,22 @@ import (
 
 // RiskConfig 风控配置
 type RiskConfig struct {
-	DailyMaxLosses int  `json:"dailyMaxLosses"` // 每日最大亏损次数，0=不限制
-	Enabled        bool `json:"enabled"`        // 是否启用风控
+	DailyMaxLosses    int     `json:"dailyMaxLosses"`    // 每日最大亏损次数，0=不限制
+	MaxDailyLossAmount float64 `json:"maxDailyLossAmount"` // 每日最大亏损金额(USDT)，0=不限制
+	Enabled           bool    `json:"enabled"`           // 是否启用风控
 }
 
 // riskState 风控运行时状态
 type riskState struct {
-	mu           sync.RWMutex
-	config       RiskConfig
-	dailyPnl     float64   // 当天已实现盈亏
-	dailyLosses  int       // 当天亏损次数
-	locked       bool      // 是否已锁定下单
-	lockReason   string    // 锁定原因
-	lockedAt     time.Time // 锁定时间
-	lastResetDay string    // 上次重置的日期 "2006-01-02"
+	mu              sync.RWMutex
+	config          RiskConfig
+	dailyPnl        float64   // 当天已实现盈亏
+	dailyLosses     int       // 当天亏损次数
+	dailyLossAmount float64   // 当天累计亏损金额（仅记录亏损，正数）
+	locked          bool      // 是否已锁定下单
+	lockReason      string    // 锁定原因
+	lockedAt        time.Time // 锁定时间
+	lastResetDay    string    // 上次重置的日期 "2006-01-02"
 }
 
 var risk = &riskState{}
@@ -35,11 +37,13 @@ func InitRiskControl(config RiskConfig) {
 	risk.lastResetDay = today()
 	risk.dailyPnl = 0
 	risk.dailyLosses = 0
+	risk.dailyLossAmount = 0
 	risk.locked = false
 	risk.lockReason = ""
 
 	if config.Enabled {
-		log.Printf("[Risk] Enabled: max loss count = %d per day", config.DailyMaxLosses)
+		log.Printf("[Risk] Enabled: max loss count=%d per day, max daily loss amount=%.2f USDT",
+			config.DailyMaxLosses, config.MaxDailyLossAmount)
 		// 从数据库恢复当天已有的盈亏
 		go recoverDailyPnl()
 	} else {
@@ -81,6 +85,7 @@ func AddDailyPnl(pnl float64) {
 	if today() != risk.lastResetDay {
 		risk.dailyPnl = 0
 		risk.dailyLosses = 0
+		risk.dailyLossAmount = 0
 		risk.locked = false
 		risk.lockReason = ""
 		risk.lastResetDay = today()
@@ -89,10 +94,12 @@ func AddDailyPnl(pnl float64) {
 
 	risk.dailyPnl += pnl
 
-	// 亏损次数计数
+	// 亏损次数 + 亏损金额计数
 	if pnl < 0 {
 		risk.dailyLosses++
-		log.Printf("[Risk] Loss #%d today (%.2f USDT), daily PnL: %.2f", risk.dailyLosses, pnl, risk.dailyPnl)
+		risk.dailyLossAmount += -pnl // 累加亏损绝对值
+		log.Printf("[Risk] Loss #%d today (%.2f USDT), daily PnL: %.2f, daily loss amount: %.2f",
+			risk.dailyLosses, pnl, risk.dailyPnl, risk.dailyLossAmount)
 	} else {
 		log.Printf("[Risk] Profit +%.2f USDT, daily PnL: %.2f", pnl, risk.dailyPnl)
 	}
@@ -104,6 +111,18 @@ func AddDailyPnl(pnl float64) {
 			risk.lockedAt = time.Now()
 			risk.lockReason = fmt.Sprintf("今日已亏损 %d 次 (限额 %d 次)", risk.dailyLosses, risk.config.DailyMaxLosses)
 			log.Printf("[Risk] LOCKED! %s", risk.lockReason)
+			NotifyRiskLocked(risk.lockReason)
+		}
+	}
+
+	// 检查锁定条件: 亏损金额
+	if risk.config.MaxDailyLossAmount > 0 && risk.dailyLossAmount >= risk.config.MaxDailyLossAmount {
+		if !risk.locked {
+			risk.locked = true
+			risk.lockedAt = time.Now()
+			risk.lockReason = fmt.Sprintf("今日累计亏损 %.2f USDT 已达限额 %.2f USDT", risk.dailyLossAmount, risk.config.MaxDailyLossAmount)
+			log.Printf("[Risk] LOCKED! %s", risk.lockReason)
+			NotifyRiskLocked(risk.lockReason)
 		}
 	}
 }
@@ -114,13 +133,15 @@ func GetRiskStatus() map[string]interface{} {
 	defer risk.mu.RUnlock()
 
 	return map[string]interface{}{
-		"enabled":        risk.config.Enabled,
-		"dailyMaxLosses": risk.config.DailyMaxLosses,
-		"dailyPnl":       risk.dailyPnl,
-		"dailyLosses":    risk.dailyLosses,
-		"locked":         risk.locked,
-		"lockReason":     risk.lockReason,
-		"lockedAt":       risk.lockedAt,
+		"enabled":            risk.config.Enabled,
+		"dailyMaxLosses":     risk.config.DailyMaxLosses,
+		"maxDailyLossAmount": risk.config.MaxDailyLossAmount,
+		"dailyPnl":           risk.dailyPnl,
+		"dailyLosses":        risk.dailyLosses,
+		"dailyLossAmount":    risk.dailyLossAmount,
+		"locked":             risk.locked,
+		"lockReason":         risk.lockReason,
+		"lockedAt":           risk.lockedAt,
 	}
 }
 
@@ -149,20 +170,24 @@ func recoverDailyPnl() {
 
 	var totalPnl float64
 	var lossCount int
+	var lossAmount float64
 	for _, r := range records {
 		pnl := r.RealizedPnl
 		totalPnl += pnl
 		if pnl < 0 {
 			lossCount++
+			lossAmount += -pnl
 		}
 	}
 
 	risk.mu.Lock()
 	risk.dailyPnl = totalPnl
 	risk.dailyLosses = lossCount
+	risk.dailyLossAmount = lossAmount
 	risk.mu.Unlock()
 
-	log.Printf("[Risk] Recovered: PnL=%.2f USDT, losses=%d (%d closed trades today)", totalPnl, lossCount, len(records))
+	log.Printf("[Risk] Recovered: PnL=%.2f USDT, losses=%d, lossAmount=%.2f USDT (%d closed trades today)",
+		totalPnl, lossCount, lossAmount, len(records))
 
 	// 触发锁定检查
 	if lossCount > 0 || totalPnl < 0 {

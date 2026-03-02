@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"strconv"
+	"time"
 
 	ws "tools/websocket"
 
@@ -60,6 +61,51 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 		req.PositionSide = futures.PositionSideTypeBoth
 	}
 
+	// DryRun 模拟交易模式：不实际下单，用虚拟资金撮合
+	if IsDryRun() {
+		qtyStr, qtyErr := calculateQuantityFromUSDT(ctx, req)
+		if qtyErr != nil {
+			return fail("PLACE_ORDER", fmt.Errorf("paper order calculate quantity: %w", qtyErr))
+		}
+		qtyFloat, _ := strconv.ParseFloat(qtyStr, 64)
+		// 持仓方向映射：BUY→LONG，SELL→SHORT
+		side := "LONG"
+		if req.Side == futures.SideTypeSell {
+			side = "SHORT"
+		}
+		if req.PositionSide == futures.PositionSideTypeLong {
+			side = "LONG"
+		} else if req.PositionSide == futures.PositionSideTypeShort {
+			side = "SHORT"
+		}
+		source := req.Source
+		if source == "" {
+			source = "manual"
+		}
+		trade, paperErr := PaperPlaceOrder(req.Symbol, side, qtyFloat, 0, req.Leverage, source)
+		if paperErr != nil {
+			return fail("PLACE_ORDER", paperErr)
+		}
+		fakeOrderID := trade.ID
+		log.Printf("[PaperTrading] PlaceOrder simulated: symbol=%s side=%s qty=%s tradeID=%d",
+			req.Symbol, side, qtyStr, fakeOrderID)
+		// 构造一个模拟的响应结构，price 使用模拟成交价
+		priceStr := fmt.Sprintf("%.8f", trade.Price)
+		fakeOrder := &futures.CreateOrderResponse{
+			OrderID:          fakeOrderID,
+			Symbol:           req.Symbol,
+			Status:           futures.OrderStatusTypeFilled,
+			OrigQuantity:     qtyStr,
+			ExecutedQuantity: qtyStr,
+			AvgPrice:         priceStr,
+			Price:            priceStr,
+			Side:             req.Side,
+			PositionSide:     req.PositionSide,
+			Type:             req.OrderType,
+		}
+		return &PlaceOrderResult{Order: fakeOrder}, nil
+	}
+
 	// 先调整该交易对的杠杆倍数
 	_, err := ChangeLeverage(ctx, req.Symbol, req.Leverage)
 	if err != nil {
@@ -99,7 +145,31 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 
 	result := &PlaceOrderResult{Order: mainOrder}
 
-	// 主单成交后挂止盈止损
+	// 异步记录滑点（市价单才有意义，限价单 intendedPrice 即为挂单价格）
+	go func() {
+		avgPriceStr := mainOrder.AvgPrice
+		if avgPriceStr == "" || avgPriceStr == "0" {
+			return
+		}
+		executedPrice, parseErr := strconv.ParseFloat(avgPriceStr, 64)
+		if parseErr != nil || executedPrice == 0 {
+			return
+		}
+		// 下单时的市场价（标记价格缓存）
+		intendedPrice, priceErr := GetPriceCache().GetPrice(req.Symbol)
+		if priceErr != nil || intendedPrice == 0 {
+			return
+		}
+		qty, _ := strconv.ParseFloat(mainOrder.OrigQuantity, 64)
+		orderIDStr := strconv.FormatInt(mainOrder.OrderID, 10)
+		source := req.Source
+		if source == "" {
+			source = "manual"
+		}
+		RecordSlippage(req.Symbol, orderIDStr, string(req.Side), source, intendedPrice, executedPrice, qty)
+	}()
+
+	// 主单成交后注册本地止盈止损监控
 	if needTPSL {
 		// 确定入场价：市价单用 avgPrice，限价单用 price
 		entryPriceStr := mainOrder.AvgPrice
@@ -117,23 +187,13 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 			}
 		}
 
-		// 清空 combo TP 临时结果
-		lastComboTPResults = nil
-
-		tp, sl, tpslErr := PlaceTPSLOrders(ctx, req, entryPrice, quantity)
+		groupID, tpslErr := RegisterLocalTPSLFromOrder(req, entryPrice, quantity, mainOrder.OrderID)
 		if tpslErr != nil {
-			log.Printf("[TPSL] Warning: failed to place TP/SL orders: %v", tpslErr)
+			log.Printf("[TPSL] Warning: failed to register local TP/SL: %v", tpslErr)
 			recordFailure("PLACE_TPSL", tpslErr, mainOrder.OrderID)
 			return result, nil
 		}
-		result.TakeProfit = tp
-		result.StopLoss = sl
-
-		// 如果是阶梯止盈，设置完整的 TP 列表
-		if len(lastComboTPResults) > 0 {
-			result.TakeProfits = lastComboTPResults
-			lastComboTPResults = nil
-		}
+		result.LocalTPSLGroupID = groupID
 	}
 
 	return result, nil
@@ -430,16 +490,66 @@ func ClosePositionViaWs(ctx context.Context, req ClosePositionReq) (*futures.Cre
 	return reduceOrderViaWs(ctx, req.Symbol, side, req.PositionSide, quantity)
 }
 
-// reduceOrderViaWs 通过 WebSocket 发送减仓/平仓市价单，失败降级到 REST API
+// reduceOrderViaWs 通过 WebSocket 发送减仓/平仓限价单（用当前价格），失败降级到 REST API
 func reduceOrderViaWs(ctx context.Context, symbol string, side futures.SideType, positionSide futures.PositionSideType, quantity string) (*futures.CreateOrderResponse, error) {
+	// DryRun 模拟交易模式：不实际下单，模拟撮合
+	if IsDryRun() {
+		// 持仓方向：平多用 SELL 对应 LONG，平空用 BUY 对应 SHORT
+		posSide := "LONG"
+		if side == futures.SideTypeBuy {
+			posSide = "SHORT"
+		}
+		if positionSide == futures.PositionSideTypeLong {
+			posSide = "LONG"
+		} else if positionSide == futures.PositionSideTypeShort {
+			posSide = "SHORT"
+		}
+		qtyFloat, _ := strconv.ParseFloat(quantity, 64)
+		trade, paperErr := PaperReducePosition(symbol, posSide, qtyFloat, 0, "reduce/close")
+		if paperErr != nil {
+			log.Printf("[PaperTrading] ReducePosition failed: %v", paperErr)
+			return nil, paperErr
+		}
+		priceStr := fmt.Sprintf("%.8f", trade.Price)
+		fakeOrder := &futures.CreateOrderResponse{
+			OrderID:          trade.ID,
+			Symbol:           symbol,
+			Status:           futures.OrderStatusTypeFilled,
+			OrigQuantity:     quantity,
+			ExecutedQuantity: quantity,
+			AvgPrice:         priceStr,
+			Price:            priceStr,
+			Side:             side,
+			PositionSide:     positionSide,
+			Type:             futures.OrderTypeMarket,
+		}
+		log.Printf("[PaperTrading] ReduceOrder simulated: symbol=%s side=%s qty=%s pnl=%.4f",
+			symbol, posSide, quantity, trade.PnL)
+		return fakeOrder, nil
+	}
+
+	// 获取当前价格，用于限价单
+	price, priceErr := getCurrentPrice(ctx, symbol, "")
+	if priceErr != nil {
+		return nil, fmt.Errorf("get current price for reduce order: %w", priceErr)
+	}
+
+	// 获取价格精度
+	pricePrecision, ppErr := getSymbolPricePrecision(ctx, symbol)
+	if ppErr != nil {
+		return nil, fmt.Errorf("get price precision: %w", ppErr)
+	}
+	priceStr := formatPrice(price, pricePrecision)
+
 	wsClient := GetWsClient()
 	if wsClient != nil {
 		params := ws.PlaceOrderParams{
-			Symbol:   symbol,
-			Side:     string(side),
-			Type:     "MARKET",
-			Quantity: quantity,
-			// ReduceOnly: "true",
+			Symbol:      symbol,
+			Side:        string(side),
+			Type:        "LIMIT",
+			Quantity:    quantity,
+			Price:       priceStr,
+			TimeInForce: "GTC",
 		}
 		if positionSide != "" {
 			params.PositionSide = string(positionSide)
@@ -447,8 +557,10 @@ func reduceOrderViaWs(ctx context.Context, symbol string, side futures.SideType,
 
 		result, err := wsClient.PlaceOrder(params)
 		if err == nil {
-			log.Printf("[WsOrder] ReduceOrder via WebSocket success: orderId=%d", result.OrderId)
-			return convertWsOrderResult(result), nil
+			log.Printf("[WsOrder] ReduceOrder via WebSocket success: orderId=%d, price=%s", result.OrderId, priceStr)
+			resp := convertWsOrderResult(result)
+			ensureOrderFilled(ctx, symbol, resp.OrderID, side, positionSide, quantity, true, 3)
+			return resp, nil
 		}
 		log.Printf("[WsOrder] ReduceOrder via WebSocket failed: %v, falling back to REST API", err)
 		go ReconnectWsClient()
@@ -457,7 +569,104 @@ func reduceOrderViaWs(ctx context.Context, symbol string, side futures.SideType,
 	}
 
 	// REST API 降级
-	return createReduceOrder(ctx, symbol, side, positionSide, quantity)
+	resp, err := createReduceOrder(ctx, symbol, side, positionSide, quantity, priceStr)
+	if err != nil {
+		return nil, err
+	}
+	ensureOrderFilled(ctx, symbol, resp.OrderID, side, positionSide, quantity, true, 3)
+	return resp, nil
+}
+
+// ensureOrderFilled 异步确保限价单成交
+// 每隔 5 秒检查一次订单状态，未成交则撤单并用最新价重挂，最多重试 maxRetries 次后转市价单
+func ensureOrderFilled(ctx context.Context, symbol string, orderID int64, side futures.SideType, positionSide futures.PositionSideType, quantity string, isReduceOnly bool, maxRetries int) {
+	go func() {
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			time.Sleep(5 * time.Second)
+
+			// 查询订单状态
+			order, err := Client.NewGetOrderService().Symbol(symbol).OrderID(orderID).Do(ctx)
+			if err != nil {
+				log.Printf("[OrderTimeout] Failed to query order %d: %v", orderID, err)
+				return
+			}
+
+			// 已完全成交，退出
+			if order.Status == futures.OrderStatusTypeFilled {
+				return
+			}
+
+			// 挂单中（未成交或部分成交），执行撤单+重挂
+			if order.Status == futures.OrderStatusTypeNew || order.Status == futures.OrderStatusTypePartiallyFilled {
+				_, cancelErr := Client.NewCancelOrderService().Symbol(symbol).OrderID(orderID).Do(ctx)
+				if cancelErr != nil {
+					log.Printf("[OrderTimeout] Cancel order %d failed: %v", orderID, cancelErr)
+					return
+				}
+				log.Printf("[OrderTimeout] Cancelled unfilled order %d (attempt %d/%d)", orderID, attempt+1, maxRetries)
+
+				if attempt >= maxRetries {
+					// 已达最大重试次数，改用市价单
+					log.Printf("[OrderTimeout] Max retries reached, placing market order for %s %s qty=%s", symbol, side, quantity)
+					svc := Client.NewCreateOrderService().
+						Symbol(symbol).
+						Side(side).
+						Type(futures.OrderTypeMarket).
+						Quantity(quantity)
+					if positionSide != "" {
+						svc = svc.PositionSide(positionSide)
+					}
+					if isReduceOnly {
+						svc = svc.ReduceOnly(true)
+					}
+					result, mktErr := svc.Do(ctx)
+					if mktErr != nil {
+						log.Printf("[OrderTimeout] Market order fallback failed: %v", mktErr)
+					} else {
+						log.Printf("[OrderTimeout] Market order placed: orderId=%d", result.OrderID)
+					}
+					return
+				}
+
+				// 获取最新价，重挂限价单
+				price, priceErr := getCurrentPrice(ctx, symbol, "")
+				if priceErr != nil {
+					log.Printf("[OrderTimeout] Get price failed: %v", priceErr)
+					return
+				}
+				pricePrecision, ppErr := getSymbolPricePrecision(ctx, symbol)
+				if ppErr != nil {
+					log.Printf("[OrderTimeout] Get price precision failed: %v", ppErr)
+					return
+				}
+				priceStr := formatPrice(price, pricePrecision)
+
+				svc := Client.NewCreateOrderService().
+					Symbol(symbol).
+					Side(side).
+					Type(futures.OrderTypeLimit).
+					TimeInForce(futures.TimeInForceTypeGTC).
+					Quantity(quantity).
+					Price(priceStr)
+				if positionSide != "" {
+					svc = svc.PositionSide(positionSide)
+				}
+				if isReduceOnly {
+					svc = svc.ReduceOnly(true)
+				}
+				result, replaceErr := svc.Do(ctx)
+				if replaceErr != nil {
+					log.Printf("[OrderTimeout] Re-place order failed: %v, giving up", replaceErr)
+					return
+				}
+				orderID = result.OrderID
+				log.Printf("[OrderTimeout] Re-placed limit order: orderId=%d, price=%s (attempt %d/%d)", orderID, priceStr, attempt+1, maxRetries)
+			} else {
+				// 已取消、已拒绝或其他终态，直接退出
+				return
+			}
+		}
+	}()
 }
 
 // convertWsPositionResults 将 WebSocket 仓位结果转为 REST API 兼容的响应结构

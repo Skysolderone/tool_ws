@@ -157,6 +157,40 @@ export default {
 
   // 支撑/阻力位
   getSRLevels: (symbol) => apiCall('GET', `/sr/levels?symbol=${symbol}`),
+
+  // 推荐交易扫描
+  getRecommendScan: (symbols) => apiCall('GET', `/recommend/scan${symbols ? `?symbols=${encodeURIComponent(symbols)}` : ''}`),
+
+  // 持仓分析
+  getRecommendAnalyze: () => apiCall('GET', '/recommend/analyze'),
+
+  // 本地止盈止损
+  getTPSLList: (symbol) => apiCall('GET', `/tpsl/list?symbol=${symbol || ''}`),
+  cancelTPSL: (req) => apiCall('POST', '/tpsl/cancel', req),
+  getTPSLHistory: (symbol, limit = 50) => apiCall('GET', `/tpsl/history?symbol=${symbol || ''}&limit=${limit}`),
+
+  // 1分钟 Scalp 策略
+  startScalp: (config) => apiCall('POST', '/scalp/start', config),
+  stopScalp: (symbol) => apiCall('POST', '/scalp/stop', { symbol }),
+  scalpStatus: (symbol) => apiCall('GET', `/scalp/status?symbol=${symbol}`),
+
+  // Paper Trading
+  getPaperStatus: () => apiCall('GET', '/paper/status'),
+  resetPaper: () => apiCall('POST', '/paper/reset'),
+
+  // 回测
+  runBacktest: (config) => apiCall('POST', '/backtest/run', config),
+
+  // 订单流
+  getOrderFlow: (symbol, depth = 500) =>
+    apiCall('GET', `/orderflow?symbol=${encodeURIComponent(symbol)}&depth=${depth}`),
+
+  // 滑点统计
+  getSlippageStats: (symbol) =>
+    apiCall('GET', `/slippage/stats?symbol=${encodeURIComponent(symbol || '')}`),
+
+  // 组合风控
+  getPortfolioRisk: () => apiCall('GET', '/risk/portfolio'),
 };
 
 export {

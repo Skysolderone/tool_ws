@@ -44,14 +44,35 @@ func main() {
 		return
 	}
 
+	// 初始化模拟交易引擎
+	api.InitPaperEngine(api.Cfg.DryRun)
+
 	// 初始化风控
 	api.InitRiskControl(api.Cfg.Risk)
+
+	// 初始化 Telegram 通知
+	api.InitNotify(api.Cfg.Notify)
+
+	// 初始化组合风控
+	api.InitPortfolioRisk(api.Cfg.PortfolioRisk)
+
+	// 启动异常波动守卫（如果配置启用）
+	api.StartVolatilityGuard(api.Cfg.VolatilityGuard)
 
 	// 初始化 WebSocket 订单客户端（异步，不阻塞启动）
 	go api.InitWsClient()
 
 	// 启动 User Data Stream（自动更新交易记录盈亏 + 风控联动）
 	api.StartUserStream()
+
+	// 启动推荐交易预计算引擎（后台多时间框架定时刷新）
+	api.StartRecommendEngine()
+
+	// 启动本地止盈止损监控器（从DB恢复ACTIVE条件）
+	api.StartLocalTPSLMonitor()
+
+	// 恢复持久化的策略
+	api.RecoverStrategies()
 
 	// 启动 WebSocket 价格转发服务
 	wsPort := api.Cfg.Server.WsPort
@@ -117,6 +138,8 @@ func main() {
 		// 风控
 		apiGroup.GET("/risk/status", api.HandleGetRiskStatus)
 		apiGroup.POST("/risk/unlock", api.HandleUnlockRisk)
+		apiGroup.GET("/risk/portfolio", api.HandleGetPortfolioStatus)
+		apiGroup.GET("/risk/volatility", api.HandleGetVolatilityGuardStatus)
 
 		// 网格交易
 		apiGroup.POST("/grid/start", api.HandleStartGrid)
@@ -151,6 +174,52 @@ func main() {
 
 		// 支撑/阻力位
 		apiGroup.GET("/sr/levels", api.HandleGetSRLevels)
+
+		// 推荐交易扫描
+		apiGroup.GET("/recommend/scan", api.HandleRecommendScan)
+		apiGroup.GET("/recommend/analyze", api.HandleRecommendAnalyze)
+
+		// 本地止盈止损
+		apiGroup.GET("/tpsl/list", api.HandleGetTPSLList)
+		apiGroup.POST("/tpsl/cancel", api.HandleCancelTPSL)
+		apiGroup.GET("/tpsl/history", api.HandleGetTPSLHistory)
+		apiGroup.POST("/tpsl/trailing", api.HandleSetTrailingStop)
+
+		// 1分钟 Scalp 策略
+		apiGroup.POST("/scalp/start", api.HandleStartScalp)
+		apiGroup.POST("/scalp/stop", api.HandleStopScalp)
+		apiGroup.GET("/scalp/status", api.HandleScalpStatus)
+
+		// 模拟交易（Paper Trading / DryRun）
+		apiGroup.GET("/paper/status", api.HandleGetPaperStatus)
+		apiGroup.POST("/paper/reset", api.HandleResetPaper)
+
+		// 回测系统
+		apiGroup.POST("/backtest/run", api.HandleRunBacktest)
+
+		// 订单流分析
+		apiGroup.GET("/orderflow", api.HandleGetOrderFlow)
+
+		// 滑点统计
+		apiGroup.GET("/slippage/stats", api.HandleGetSlippageStats)
+
+		// 新闻情绪事件驱动策略
+		apiGroup.POST("/news-sentiment/start", api.HandleStartNewsSentiment)
+		apiGroup.POST("/news-sentiment/stop", api.HandleStopNewsSentiment)
+		apiGroup.GET("/news-sentiment/status", api.HandleNewsSentimentStatus)
+
+		// 爆仓级联交易策略
+		apiGroup.POST("/liq-cascade/start", api.HandleStartLiqCascade)
+		apiGroup.POST("/liq-cascade/stop", api.HandleStopLiqCascade)
+		apiGroup.GET("/liq-cascade/status", api.HandleLiqCascadeStatus)
+
+		// 资金费率极端套利策略
+		apiGroup.POST("/funding-arb/start", api.HandleStartFundingArb)
+		apiGroup.POST("/funding-arb/stop", api.HandleStopFundingArb)
+		apiGroup.GET("/funding-arb/status", api.HandleFundingArbStatus)
+
+		// Analytics 相关
+		apiGroup.GET("/analytics/correlation", api.HandleGetAnalyticsCorrelation)
 	}
 
 	hErrCh := make(chan error, 1)

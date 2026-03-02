@@ -257,7 +257,7 @@ export default function TradeLogPanel({ symbol }) {
                 <Text style={[
                   styles.dayPnl,
                   { color: summary.pnl >= 0 ? colors.greenLight : colors.redLight },
-                  isSelected && { color: summary.pnl >= 0 ? '#4ade80' : '#fca5a5' },
+                  isSelected && { color: summary.pnl >= 0 ? colors.greenLight : colors.redLight },
                 ]} numberOfLines={1}>
                   {summary.pnl >= 0 ? '+' : ''}{summary.pnl.toFixed(1)}
                 </Text>
@@ -408,18 +408,18 @@ export default function TradeLogPanel({ symbol }) {
 const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.card,
-    borderRadius: radius.xl,
+    borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.cardBorder,
     padding: spacing.lg,
-    marginBottom: 16,
+    marginBottom: spacing.lg,
   },
   // 月份导航
   monthNav: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: spacing.md,
   },
   navBtn: {
     width: 36,
@@ -445,7 +445,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     padding: spacing.md,
-    marginBottom: 12,
+    marginBottom: spacing.md,
     gap: spacing.xs,
   },
   monthStatItem: {
@@ -514,19 +514,19 @@ const styles = StyleSheet.create({
   },
   // 明细区
   detailSection: {
-    marginTop: 14,
+    marginTop: spacing.lg,
     borderTopWidth: 1,
     borderTopColor: colors.cardBorder,
-    paddingTop: 12,
+    paddingTop: spacing.md,
   },
   detailHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: spacing.md,
   },
   detailTitle: {
-    fontSize: fontSize.md,
+    fontSize: fontSize.lg,
     fontWeight: '700',
     color: colors.white,
   },
@@ -537,7 +537,7 @@ const styles = StyleSheet.create({
   empty: {
     color: colors.textSecondary,
     textAlign: 'center',
-    paddingVertical: 16,
+    paddingVertical: spacing.lg,
     fontSize: 13,
   },
   // 交易项
@@ -545,13 +545,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     padding: spacing.md,
-    marginBottom: 8,
+    marginBottom: spacing.sm,
   },
   tradeRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: spacing.sm,
   },
   tradeLeft: {
     flexDirection: 'row',
@@ -607,10 +607,10 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
   },
   operationSection: {
-    marginTop: 10,
+    marginTop: spacing.md,
     borderTopWidth: 1,
     borderTopColor: colors.cardBorder,
-    paddingTop: 10,
+    paddingTop: spacing.md,
   },
   opHint: {
     fontSize: 11,
@@ -619,14 +619,14 @@ const styles = StyleSheet.create({
   opItem: {
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
-    padding: 10,
-    marginBottom: 8,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
   },
   opHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: spacing.xs,
   },
   opTitleRow: {
     flexDirection: 'row',

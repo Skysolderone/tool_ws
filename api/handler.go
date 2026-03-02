@@ -356,6 +356,16 @@ func HandleUnlockRisk(c context.Context, ctx *app.RequestContext) {
 	ctx.JSON(http.StatusOK, utils.H{"message": "risk control unlocked"})
 }
 
+// HandleGetPortfolioStatus GET /risk/portfolio
+func HandleGetPortfolioStatus(c context.Context, ctx *app.RequestContext) {
+	ctx.JSON(http.StatusOK, utils.H{"data": GetPortfolioStatus()})
+}
+
+// HandleGetVolatilityGuardStatus GET /tool/risk/volatility
+func HandleGetVolatilityGuardStatus(c context.Context, ctx *app.RequestContext) {
+	ctx.JSON(http.StatusOK, utils.H{"data": GetVolatilityGuardStatus()})
+}
+
 // ========== 网格交易 ==========
 
 // HandleStartGrid POST /api/grid/start
@@ -640,4 +650,155 @@ func HandleGetSRLevels(c context.Context, ctx *app.RequestContext) {
 		return
 	}
 	ctx.JSON(http.StatusOK, utils.H{"data": result})
+}
+
+// ========== 模拟交易（Paper Trading） ==========
+
+// HandleGetPaperStatus GET /tool/paper/status
+// 返回模拟账户余额、持仓列表、成交记录和累计盈亏
+func HandleGetPaperStatus(c context.Context, ctx *app.RequestContext) {
+	status := GetPaperStatus()
+	ctx.JSON(http.StatusOK, utils.H{"data": status})
+}
+
+// HandleResetPaper POST /tool/paper/reset
+// 重置模拟账户：清空持仓和交易记录，余额恢复为 10000 USDT
+func HandleResetPaper(c context.Context, ctx *app.RequestContext) {
+	ResetPaper()
+	ctx.JSON(http.StatusOK, utils.H{"message": "paper trading account reset", "balance": 10000})
+}
+
+// ========== 订单流分析 ==========
+
+// HandleGetOrderFlow GET /tool/orderflow?symbol=BTCUSDT&depth=500
+func HandleGetOrderFlow(c context.Context, ctx *app.RequestContext) {
+	symbol := ctx.DefaultQuery("symbol", "")
+	if symbol == "" {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": "symbol is required"})
+		return
+	}
+	depth, _ := strconv.Atoi(string(ctx.DefaultQuery("depth", "500")))
+	snap, err := AnalyzeOrderFlow(symbol, depth)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"data": snap})
+}
+
+// ========== 滑点统计 ==========
+
+// HandleGetSlippageStats GET /tool/slippage/stats?symbol=BTCUSDT
+func HandleGetSlippageStats(c context.Context, ctx *app.RequestContext) {
+	symbol := ctx.DefaultQuery("symbol", "")
+	if symbol == "" {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": "symbol is required"})
+		return
+	}
+	stats, err := GetSlippageStats(symbol)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"data": stats})
+}
+
+// ========== 新闻情绪策略 ==========
+
+// HandleStartNewsSentiment POST /tool/news-sentiment/start
+func HandleStartNewsSentiment(c context.Context, ctx *app.RequestContext) {
+	var cfg NewsSentimentConfig
+	if err := ctx.BindAndValidate(&cfg); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	if err := StartNewsSentiment(cfg); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "news sentiment strategy started"})
+}
+
+// HandleStopNewsSentiment POST /tool/news-sentiment/stop
+func HandleStopNewsSentiment(c context.Context, ctx *app.RequestContext) {
+	if err := StopNewsSentiment(); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "news sentiment strategy stopped"})
+}
+
+// HandleNewsSentimentStatus GET /tool/news-sentiment/status
+func HandleNewsSentimentStatus(c context.Context, ctx *app.RequestContext) {
+	status := GetNewsSentimentStatus()
+	ctx.JSON(http.StatusOK, utils.H{"data": status})
+}
+
+// ========== 爆仓级联策略 ==========
+
+// HandleStartLiqCascade POST /tool/liq-cascade/start
+func HandleStartLiqCascade(c context.Context, ctx *app.RequestContext) {
+	var cfg LiqCascadeConfig
+	if err := ctx.BindAndValidate(&cfg); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	if err := StartLiqCascade(cfg); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "liq cascade strategy started", "symbol": cfg.Symbol})
+}
+
+// HandleStopLiqCascade POST /tool/liq-cascade/stop
+func HandleStopLiqCascade(c context.Context, ctx *app.RequestContext) {
+	if err := StopLiqCascade(); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "liq cascade strategy stopped"})
+}
+
+// HandleLiqCascadeStatus GET /tool/liq-cascade/status
+func HandleLiqCascadeStatus(c context.Context, ctx *app.RequestContext) {
+	status := GetLiqCascadeStatus()
+	ctx.JSON(http.StatusOK, utils.H{"data": status})
+}
+
+// ========== 资金费率套利策略 ==========
+
+// HandleStartFundingArb POST /tool/funding-arb/start
+func HandleStartFundingArb(c context.Context, ctx *app.RequestContext) {
+	var cfg FundingArbConfig
+	if err := ctx.BindAndValidate(&cfg); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	if err := StartFundingArb(cfg); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "funding arb strategy started"})
+}
+
+// HandleStopFundingArb POST /tool/funding-arb/stop
+func HandleStopFundingArb(c context.Context, ctx *app.RequestContext) {
+	if err := StopFundingArb(); err != nil {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, utils.H{"message": "funding arb strategy stopped"})
+}
+
+// HandleFundingArbStatus GET /tool/funding-arb/status
+func HandleFundingArbStatus(c context.Context, ctx *app.RequestContext) {
+	status := GetFundingArbStatus()
+	ctx.JSON(http.StatusOK, utils.H{"data": status})
+}
+
+// ========== Analytics 相关补充 ==========
+
+// HandleGetAnalyticsCorrelation GET /tool/analytics/correlation?symbols=BTCUSDT,ETHUSDT,SOLUSDT&interval=1h&limit=100
+func HandleGetAnalyticsCorrelation(c context.Context, ctx *app.RequestContext) {
+	HandleGetCorrelation(c, ctx)
 }

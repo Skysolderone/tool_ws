@@ -7,6 +7,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ type SRLevel struct {
 	TouchCount int      `json:"touchCount"` // 被触及次数
 	ZoneLow    float64  `json:"zoneLow"`
 	ZoneHigh   float64  `json:"zoneHigh"`
+	Reason     string   `json:"reason"`     // 为什么是支撑/阻力的详细说明
 }
 
 // SRZone 强支撑/阻力区间
@@ -513,6 +515,7 @@ func mergeAndRankLevels(allSwings []swingPoint, currentPrice, tolerancePercent f
 				continue
 			}
 			level.Type = "RESISTANCE"
+			level.Reason = buildSRReason(level)
 			resistanceRanked = append(resistanceRanked, rankedLevel{level: level, score: score})
 		} else {
 			// 已明显突破的旧支撑（远离当前价）直接过滤，避免误导。
@@ -520,6 +523,7 @@ func mergeAndRankLevels(allSwings []swingPoint, currentPrice, tolerancePercent f
 				continue
 			}
 			level.Type = "SUPPORT"
+			level.Reason = buildSRReason(level)
 			supportRanked = append(supportRanked, rankedLevel{level: level, score: score})
 		}
 	}
@@ -707,6 +711,56 @@ func calculatePivotPoints(dailyKlines []*futures.Kline) *PivotSet {
 // round2 保留 2 位小数
 func round2(v float64) float64 {
 	return math.Round(v*100) / 100
+}
+
+// buildSRReason 生成支撑/阻力位的详细说明
+func buildSRReason(level SRLevel) string {
+	typeLabel := "支撑位"
+	swingLabel := "Swing Low（波段低点）"
+	priceAction := "价格在此处多次获得买盘支撑反弹上行"
+	if level.Type == "RESISTANCE" {
+		typeLabel = "阻力位"
+		swingLabel = "Swing High（波段高点）"
+		priceAction = "价格在此处多次遇到卖压而回落"
+	}
+
+	parts := []string{}
+
+	// 1. 基本原理
+	parts = append(parts, fmt.Sprintf("$%.2f 被识别为%s", level.Price, typeLabel))
+
+	// 2. Swing 检测原理
+	if level.TouchCount == 1 {
+		parts = append(parts, fmt.Sprintf("该价位在%s周期K线中形成%s", strings.Join(level.Timeframes, "/"), swingLabel))
+	} else {
+		parts = append(parts, fmt.Sprintf("该价位在%d次独立的价格测试中均形成%s", level.TouchCount, swingLabel))
+	}
+
+	// 3. 跨周期汇合
+	if level.Strength >= 3 {
+		parts = append(parts, fmt.Sprintf("★ 强汇合：在 %s 共%d个时间框架中均出现，跨周期一致性极高", strings.Join(level.Timeframes, "、"), level.Strength))
+	} else if level.Strength == 2 {
+		parts = append(parts, fmt.Sprintf("双周期汇合（%s），两个独立时间维度验证了该水平", strings.Join(level.Timeframes, "、")))
+	} else {
+		parts = append(parts, fmt.Sprintf("出现在 %s 周期", strings.Join(level.Timeframes, "、")))
+	}
+
+	// 4. 触及次数（市场记忆）
+	if level.TouchCount >= 4 {
+		parts = append(parts, fmt.Sprintf("历史触及%d次 — %s，市场对该价位有极强记忆", level.TouchCount, priceAction))
+	} else if level.TouchCount >= 2 {
+		parts = append(parts, fmt.Sprintf("历史触及%d次 — %s", level.TouchCount, priceAction))
+	}
+
+	// 5. 距离当前价
+	absDist := math.Abs(level.Distance)
+	if absDist < 0.5 {
+		parts = append(parts, fmt.Sprintf("距当前价仅 %.2f%%，属于近距离关键水平", absDist))
+	} else if absDist < 2 {
+		parts = append(parts, fmt.Sprintf("距当前价 %.2f%%", absDist))
+	}
+
+	return strings.Join(parts, "。") + "。"
 }
 
 // tfOrder 时间框架排序权重

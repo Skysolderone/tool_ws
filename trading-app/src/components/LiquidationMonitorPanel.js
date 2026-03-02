@@ -803,7 +803,7 @@ const styles = StyleSheet.create({
   spikeBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(217,68,82,0.18)',
+    backgroundColor: 'rgba(255,59,92,0.18)',
     borderWidth: 1,
     borderColor: colors.red,
     borderRadius: radius.md,
@@ -832,7 +832,7 @@ const styles = StyleSheet.create({
   },
   heroCardSpike: {
     borderColor: colors.red,
-    backgroundColor: 'rgba(217,68,82,0.12)',
+    backgroundColor: 'rgba(255,59,92,0.12)',
   },
   heroTitle: {
     color: colors.textSecondary,
