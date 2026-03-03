@@ -32,8 +32,6 @@
 | `t66y_7` | `t66y(7)` | `/t66y/7` |
 | `huggingface_daily_papers` | `Huggingface Papers` | `/huggingface/daily-papers/date` |
 | `anthropic_news` | `Anthropic News` | `/anthropic/news` |
-| `xsijishe_rank_weekly` | `司机社周榜` | `/xsijishe/rank/weekly` |
-| `jpxgmn_weekly` | `极品性感美女周榜` | `/jpxgmn/weekly` |
 | `hackernews_index` | `Hacker News` | `/hackernews` |
 | `36kr_newsflashes` | `36氪快讯` | `/36kr/newsflashes` |
 | `1x_latest_awarded` | `1x 每日获奖` | `/1x/latest/awarded` |

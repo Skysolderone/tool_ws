@@ -391,24 +391,6 @@ func buildRSSHubNewsSources(cfg NewsConfig) []newsFeedSource {
 			},
 		},
 		{
-			Key:  "xsijishe_rank_weekly",
-			Name: "司机社周榜",
-			URL:  fmt.Sprintf("%s/xsijishe/rank/weekly", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "jpxgmn_weekly",
-			Name: "极品性感美女周榜",
-			URL:  fmt.Sprintf("%s/jpxgmn/weekly", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
 			Key:  "hackernews_index",
 			Name: "Hacker News",
 			URL:  fmt.Sprintf("%s/hackernews", baseURL),

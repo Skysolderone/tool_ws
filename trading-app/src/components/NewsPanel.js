@@ -48,8 +48,6 @@ const BASE_FEED_CATEGORY_OVERRIDES = {
   t66y_7: 'adult',
   huggingface_daily_papers: 'tech',
   anthropic_news: 'tech',
-  xsijishe_rank_weekly: 'adult',
-  jpxgmn_weekly: 'adult',
   hackernews_index: 'tech',
   '36kr_newsflashes': 'tech',
   '1x_latest_awarded': 'visual',
@@ -127,14 +125,6 @@ const BASE_FEED_SOURCES = [
     name: 'Anthropic News',
   },
   {
-    key: 'xsijishe_rank_weekly',
-    name: '司机社周榜',
-  },
-  {
-    key: 'jpxgmn_weekly',
-    name: '极品性感美女周榜',
-  },
-  {
     key: 'hackernews_index',
     name: 'Hacker News',
   },
@@ -196,8 +186,6 @@ const BASE_FEED_NAME_OVERRIDES = {
   t66y_7: 't66y(7)',
   huggingface_daily_papers: 'Huggingface Papers',
   anthropic_news: 'Anthropic News',
-  xsijishe_rank_weekly: '司机社周榜',
-  jpxgmn_weekly: '极品性感美女周榜',
   hackernews_index: 'Hacker News',
   '36kr_newsflashes': '36氪快讯',
   '1x_latest_awarded': '1x 每日获奖',
@@ -229,7 +217,8 @@ function isTelegramFeedKey(key) {
 }
 
 function isPornFeedKey(key) {
-  return String(key || '').startsWith('pornhub');
+  const k = String(key || '').toLowerCase();
+  return k.startsWith('pornhub') || k === 't66y_7';
 }
 
 function inferFeedCategory(key, name) {
@@ -485,8 +474,10 @@ export default function NewsPanel({ onHasNew }) {
   const [error, setError] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
   const [newsBySource, setNewsBySource] = useState(buildEmptyNewsBySource(BASE_FEED_SOURCES));
-  const [activeSourceKey, setActiveSourceKey] = useState(BASE_FEED_SOURCES[0].key);
-  const [activeFeedGroup, setActiveFeedGroup] = useState('main');
+  const defaultMainFeed = BASE_FEED_SOURCES.find((feed) => !isPornFeedKey(feed.key)) || BASE_FEED_SOURCES[0];
+  const defaultPornFeed = BASE_FEED_SOURCES.find((feed) => isPornFeedKey(feed.key)) || BASE_FEED_SOURCES[0];
+  const [activeMainSourceKey, setActiveMainSourceKey] = useState(defaultMainFeed?.key || BASE_FEED_SOURCES[0].key);
+  const [activePornSourceKey, setActivePornSourceKey] = useState(defaultPornFeed?.key || BASE_FEED_SOURCES[0].key);
   const [selected, setSelected] = useState(null);
   const [showSourceLang, setShowSourceLang] = useState(false);
   const [translationMap, setTranslationMap] = useState({});
@@ -562,9 +553,15 @@ export default function NewsPanel({ onHasNew }) {
       });
       return next;
     });
-    setActiveSourceKey((prev) => {
-      if (feedSources.some((f) => f.key === prev)) return prev;
-      return feedSources[0]?.key || prev;
+    setActiveMainSourceKey((prev) => {
+      const mainFeeds = feedSources.filter((f) => !isPornFeedKey(f.key));
+      if (mainFeeds.some((f) => f.key === prev)) return prev;
+      return mainFeeds[0]?.key || prev;
+    });
+    setActivePornSourceKey((prev) => {
+      const pornFeeds = feedSources.filter((f) => isPornFeedKey(f.key));
+      if (pornFeeds.some((f) => f.key === prev)) return prev;
+      return pornFeeds[0]?.key || prev;
     });
     const nextTop = {};
     feedSources.forEach((feed) => {
@@ -573,36 +570,14 @@ export default function NewsPanel({ onHasNew }) {
     latestTopKeyRef.current = nextTop;
   }, [feedSources]);
 
-  const hasPornFeeds = useMemo(
-    () => feedSources.some((feed) => isPornFeedKey(feed.key)),
+  const mainFeedSources = useMemo(
+    () => feedSources.filter((feed) => !isPornFeedKey(feed.key)),
     [feedSources],
   );
-  const hasMainFeeds = useMemo(
-    () => feedSources.some((feed) => !isPornFeedKey(feed.key)),
+  const pornFeedSources = useMemo(
+    () => feedSources.filter((feed) => isPornFeedKey(feed.key)),
     [feedSources],
   );
-  const visibleFeedSources = useMemo(() => {
-    if (activeFeedGroup === 'porn') {
-      return feedSources.filter((feed) => isPornFeedKey(feed.key));
-    }
-    return feedSources.filter((feed) => !isPornFeedKey(feed.key));
-  }, [activeFeedGroup, feedSources]);
-
-  useEffect(() => {
-    if (activeFeedGroup === 'porn' && !hasPornFeeds) {
-      setActiveFeedGroup('main');
-      return;
-    }
-    if (activeFeedGroup === 'main' && !hasMainFeeds && hasPornFeeds) {
-      setActiveFeedGroup('porn');
-    }
-  }, [activeFeedGroup, hasMainFeeds, hasPornFeeds]);
-
-  useEffect(() => {
-    if (visibleFeedSources.length === 0) return;
-    if (visibleFeedSources.some((f) => f.key === activeSourceKey)) return;
-    setActiveSourceKey(visibleFeedSources[0].key);
-  }, [activeSourceKey, visibleFeedSources]);
 
   const applyNewsPayload = useCallback((payload = {}) => {
     const nextNewsBySource = buildEmptyNewsBySource(feedSources);
@@ -720,13 +695,17 @@ export default function NewsPanel({ onHasNew }) {
     requestRefresh();
   };
 
-  const activeFeed = visibleFeedSources.find((item) => item.key === activeSourceKey)
-    || visibleFeedSources[0]
-    || feedSources[0]
-    || BASE_FEED_SOURCES[0];
-  const activeList = activeFeed ? (newsBySource[activeFeed.key] || []) : [];
+  const activeMainFeed = mainFeedSources.find((item) => item.key === activeMainSourceKey)
+    || mainFeedSources[0]
+    || null;
+  const activePornFeed = pornFeedSources.find((item) => item.key === activePornSourceKey)
+    || pornFeedSources[0]
+    || null;
+  const activeMainList = activeMainFeed ? (newsBySource[activeMainFeed.key] || []) : [];
+  const activePornList = activePornFeed ? (newsBySource[activePornFeed.key] || []) : [];
   const hiddenCount = BASE_FEED_SOURCES.length - feedSources.length;
-  const showGroupSwitch = hasPornFeeds && hasMainFeeds;
+  const hasMainFeeds = mainFeedSources.length > 0;
+  const hasPornFeeds = pornFeedSources.length > 0;
   const sourceCountByKey = useMemo(() => {
     const out = {};
     feedSources.forEach((feed) => {
@@ -829,7 +808,9 @@ export default function NewsPanel({ onHasNew }) {
   }, [selectedKey]);
 
   useEffect(() => {
-    const list = Array.isArray(activeList) ? activeList.slice(0, TRANSLATE_BATCH_LIMIT) : [];
+    const mainList = Array.isArray(activeMainList) ? activeMainList.slice(0, TRANSLATE_BATCH_LIMIT) : [];
+    const pornList = Array.isArray(activePornList) ? activePornList.slice(0, TRANSLATE_BATCH_LIMIT) : [];
+    const list = [...mainList, ...pornList];
     list.forEach((item) => {
       if (!shouldAutoTranslate(item)) return;
       const key = getNewsItemKey(item);
@@ -870,7 +851,7 @@ export default function NewsPanel({ onHasNew }) {
         }
       })();
     });
-  }, [activeList, getPlainSummary, shouldAutoTranslate, translationMap]);
+  }, [activeMainList, activePornList, getPlainSummary, shouldAutoTranslate, translationMap]);
 
   const getDisplayTitle = useCallback(
     (item, preferSourceLanguage = false) => {
@@ -890,6 +871,93 @@ export default function NewsPanel({ onHasNew }) {
       return t?.summaryZh || getPlainSummary(item) || '暂无摘要';
     },
     [getPlainSummary, translationMap],
+  );
+
+  const renderFeedSection = useCallback(
+    ({ panelTitle, panelCountText, feedList, activeFeed, onSelectSource, items, emptyText = '暂无资讯' }) => {
+      if (!activeFeed) return null;
+      return (
+        <View style={styles.feedBlock}>
+          <View style={styles.feedBlockHeader}>
+            <Text style={styles.feedBlockTitle}>{panelTitle}</Text>
+            <Text style={styles.feedBlockCount}>{panelCountText}</Text>
+          </View>
+          <View style={styles.tabRowWrap}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.tabRow}
+            >
+              {feedList.map((feed) => {
+                const isActive = activeFeed.key === feed.key;
+                const count = sourceCountByKey[feed.key] || 0;
+                const categoryLabel = formatFeedCategoryLabel(feed.category);
+                return (
+                  <TouchableOpacity
+                    key={feed.key}
+                    style={[styles.tabBtn, isActive && styles.tabBtnActive]}
+                    onPress={() => onSelectSource(feed.key)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.tabText, isActive && styles.tabTextActive]} numberOfLines={1}>
+                      {feed.name}
+                    </Text>
+                    <View style={[styles.tabCategoryBadge, isActive && styles.tabCategoryBadgeActive]}>
+                      <Text style={[styles.tabCategoryBadgeText, isActive && styles.tabCategoryBadgeTextActive]}>
+                        {categoryLabel}
+                      </Text>
+                    </View>
+                    <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}>
+                      <Text style={[styles.tabBadgeText, isActive && styles.tabBadgeTextActive]}>
+                        {count}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionLeft}>
+              <Text style={styles.sectionTitle}>{activeFeed.name}</Text>
+              <View style={styles.sectionCategoryBadge}>
+                <Text style={styles.sectionCategoryText}>
+                  {formatFeedCategoryLabel(activeFeed.category)}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.sectionCount}>{items.length} 条 · 分组 {feedList.length} 源</Text>
+          </View>
+          {items.length === 0 ? (
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyText}>{emptyText}</Text>
+            </View>
+          ) : (
+            items.map((item) => (
+              <TouchableOpacity
+                key={`${activeFeed.key}-${getNewsItemKey(item)}`}
+                style={styles.newsCard}
+                onPress={() => {
+                  setSelected(item);
+                  setShowSourceLang(false);
+                }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.newsTitle} numberOfLines={2}>{getDisplayTitle(item)}</Text>
+                <Text style={styles.newsSummary} numberOfLines={2}>
+                  {getDisplaySummary(item)}
+                </Text>
+                <View style={styles.metaRow}>
+                  <Text style={[styles.meta, styles.metaSource]} numberOfLines={1}>{item.source}</Text>
+                  <Text style={[styles.meta, styles.metaTime]}>{formatTime(item.pubDate)}</Text>
+                </View>
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
+      );
+    },
+    [getDisplaySummary, getDisplayTitle, sourceCountByKey],
   );
 
   // 当前选中文章是否有 HTML 富文本内容
@@ -930,110 +998,39 @@ export default function NewsPanel({ onHasNew }) {
       ) : (
         <>
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
-          {showGroupSwitch ? (
-            <View style={styles.groupRowWrap}>
-              <TouchableOpacity
-                style={[styles.groupBtn, activeFeedGroup === 'main' && styles.groupBtnActive]}
-                onPress={() => setActiveFeedGroup('main')}
-                activeOpacity={0.85}
-              >
-                <Text style={[styles.groupBtnText, activeFeedGroup === 'main' && styles.groupBtnTextActive]}>
-                  主资讯
-                </Text>
-                <View style={[styles.groupBadge, activeFeedGroup === 'main' && styles.groupBadgeActive]}>
-                  <Text style={[styles.groupBadgeText, activeFeedGroup === 'main' && styles.groupBadgeTextActive]}>
-                    {mainFeedCount}/{mainItemCount}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.groupBtn, activeFeedGroup === 'porn' && styles.groupBtnActive]}
-                onPress={() => setActiveFeedGroup('porn')}
-                activeOpacity={0.85}
-              >
-                <Text style={[styles.groupBtnText, activeFeedGroup === 'porn' && styles.groupBtnTextActive]}>
-                  Porn
-                </Text>
-                <View style={[styles.groupBadge, activeFeedGroup === 'porn' && styles.groupBadgeActive]}>
-                  <Text style={[styles.groupBadgeText, activeFeedGroup === 'porn' && styles.groupBadgeTextActive]}>
-                    {pornFeedCount}/{pornItemCount}
-                  </Text>
-                </View>
-              </TouchableOpacity>
+          <View style={styles.feedOverviewRow}>
+            <View style={styles.feedOverviewChip}>
+              <Text style={styles.feedOverviewLabel}>主资讯</Text>
+              <Text style={styles.feedOverviewValue}>{mainFeedCount} 源 / {mainItemCount} 条</Text>
+            </View>
+            <View style={styles.feedOverviewChip}>
+              <Text style={styles.feedOverviewLabel}>Porn</Text>
+              <Text style={styles.feedOverviewValue}>{pornFeedCount} 源 / {pornItemCount} 条</Text>
+            </View>
+          </View>
+          {hasMainFeeds ? renderFeedSection({
+            panelTitle: '主资讯切卡',
+            panelCountText: `${mainFeedCount} 源 · ${mainItemCount} 条`,
+            feedList: mainFeedSources,
+            activeFeed: activeMainFeed,
+            onSelectSource: setActiveMainSourceKey,
+            items: activeMainList,
+            emptyText: '暂无主资讯',
+          }) : null}
+          {hasPornFeeds ? renderFeedSection({
+            panelTitle: 'Porn 独立切卡',
+            panelCountText: `${pornFeedCount} 源 · ${pornItemCount} 条`,
+            feedList: pornFeedSources,
+            activeFeed: activePornFeed,
+            onSelectSource: setActivePornSourceKey,
+            items: activePornList,
+            emptyText: '暂无 Porn 资讯',
+          }) : null}
+          {!hasMainFeeds && !hasPornFeeds ? (
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyText}>暂无可用资讯源</Text>
             </View>
           ) : null}
-          <View style={styles.tabRowWrap}>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.tabRow}
-            >
-              {visibleFeedSources.map((feed) => {
-                const isActive = activeSourceKey === feed.key;
-                const count = sourceCountByKey[feed.key] || 0;
-                const categoryLabel = formatFeedCategoryLabel(feed.category);
-                return (
-                  <TouchableOpacity
-                    key={feed.key}
-                    style={[styles.tabBtn, isActive && styles.tabBtnActive]}
-                    onPress={() => setActiveSourceKey(feed.key)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.tabText, isActive && styles.tabTextActive]} numberOfLines={1}>
-                      {feed.name}
-                    </Text>
-                    <View style={[styles.tabCategoryBadge, isActive && styles.tabCategoryBadgeActive]}>
-                      <Text style={[styles.tabCategoryBadgeText, isActive && styles.tabCategoryBadgeTextActive]}>
-                        {categoryLabel}
-                      </Text>
-                    </View>
-                    <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}>
-                      <Text style={[styles.tabBadgeText, isActive && styles.tabBadgeTextActive]}>
-                        {count}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
-          <View style={styles.sectionHeader}>
-            <View style={styles.sectionLeft}>
-              <Text style={styles.sectionTitle}>{activeFeed.name}</Text>
-              <View style={styles.sectionCategoryBadge}>
-                <Text style={styles.sectionCategoryText}>
-                  {formatFeedCategoryLabel(activeFeed.category)}
-                </Text>
-              </View>
-            </View>
-            <Text style={styles.sectionCount}>{activeList.length} 条 · 分组 {visibleFeedSources.length} 源</Text>
-          </View>
-          {activeList.length === 0 ? (
-            <View style={styles.emptyBox}>
-              <Text style={styles.emptyText}>暂无资讯</Text>
-            </View>
-          ) : (
-            activeList.map((item) => (
-              <TouchableOpacity
-                key={`${activeFeed.key}-${getNewsItemKey(item)}`}
-                style={styles.newsCard}
-                onPress={() => {
-                  setSelected(item);
-                  setShowSourceLang(false);
-                }}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.newsTitle} numberOfLines={2}>{getDisplayTitle(item)}</Text>
-                <Text style={styles.newsSummary} numberOfLines={2}>
-                  {getDisplaySummary(item)}
-                </Text>
-                <View style={styles.metaRow}>
-                  <Text style={[styles.meta, styles.metaSource]} numberOfLines={1}>{item.source}</Text>
-                  <Text style={[styles.meta, styles.metaTime]}>{formatTime(item.pubDate)}</Text>
-                </View>
-              </TouchableOpacity>
-            ))
-          )}
         </>
       )}
 
@@ -1258,6 +1255,54 @@ const styles = StyleSheet.create({
     color: colors.redLight,
     fontSize: 12,
     marginBottom: 10,
+  },
+  feedOverviewRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  feedOverviewChip: {
+    flex: 1,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+  },
+  feedOverviewLabel: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  feedOverviewValue: {
+    color: colors.white,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 3,
+  },
+  feedBlock: {
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+    marginBottom: 10,
+  },
+  feedBlockHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  feedBlockTitle: {
+    color: colors.white,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  feedBlockCount: {
+    color: colors.textSecondary,
+    fontSize: 12,
   },
   groupRowWrap: {
     flexDirection: 'row',
