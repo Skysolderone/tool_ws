@@ -27,6 +27,7 @@ func main() {
 	if err := api.LoadConfig(*cfgPath); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	api.InitNewsSourcesFromConfig(api.Cfg.News)
 
 	api.InitClient(*cfgPath)
 
@@ -77,6 +78,8 @@ func main() {
 
 	// 启动推荐交易预计算引擎（后台多时间框架定时刷新）
 	api.StartRecommendEngine()
+	// 每小时检测资讯源可用性
+	api.StartNewsSourceHealthMonitor()
 
 	// 初始化 LLM 分析 Agent（可选配置，失败不影响主流程）
 	if err := agent.InitAgent(api.Cfg.LLM); err != nil {
@@ -195,6 +198,7 @@ func main() {
 		apiGroup.GET("/recommend/analyze", api.HandleRecommendAnalyze)
 		apiGroup.POST("/agent/analyze", agent.HandleAnalyze)
 		apiGroup.GET("/agent/analyze", agent.HandleAnalyze)
+		apiGroup.POST("/agent/execute", agent.HandleExecute)
 		apiGroup.GET("/agent/logs", agent.HandleLogs)
 		apiGroup.GET("/agent/policy", agent.HandlePolicy)
 
@@ -226,6 +230,7 @@ func main() {
 		apiGroup.POST("/news-sentiment/start", api.HandleStartNewsSentiment)
 		apiGroup.POST("/news-sentiment/stop", api.HandleStopNewsSentiment)
 		apiGroup.GET("/news-sentiment/status", api.HandleNewsSentimentStatus)
+		apiGroup.GET("/news/sources/status", api.HandleGetNewsSourceStatus)
 
 		// 爆仓级联交易策略
 		apiGroup.POST("/liq-cascade/start", api.HandleStartLiqCascade)

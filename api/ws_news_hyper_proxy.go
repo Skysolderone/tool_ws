@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 const (
 	newsRefreshInterval      = 5 * time.Second
+	newsHealthCheckInterval  = time.Hour
 	hyperInfoURL             = "https://api.hyperliquid.xyz/info"
 	hyperWSURL               = "wss://api.hyperliquid.xyz/ws"
 	hyperPingInterval        = 30 * time.Second
@@ -53,6 +55,23 @@ type newsPayload struct {
 	Time     int64                 `json:"t"`
 }
 
+type newsSourceHealthItem struct {
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	Reachable   bool   `json:"reachable"`
+	StatusCode  int    `json:"statusCode"`
+	ContentType string `json:"contentType,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+type newsSourceHealthReport struct {
+	CheckedAt            int64                  `json:"checkedAt"`
+	Sources              []newsSourceHealthItem `json:"sources"`
+	ReachableSourceCount int                    `json:"reachableSourceCount"`
+	TotalSourceCount     int                    `json:"totalSourceCount"`
+}
+
 type newsHub struct {
 	mu      sync.RWMutex
 	clients map[*wsClient]bool
@@ -65,7 +84,7 @@ type newsHub struct {
 }
 
 var (
-	newsSources = []newsFeedSource{
+	defaultNewsSources = []newsFeedSource{
 		{
 			Key:  "blockbeats",
 			Name: "BlockBeats",
@@ -83,7 +102,62 @@ var (
 				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
 			},
 		},
+		{
+			Key:  "bbc_world",
+			Name: "BBC World",
+			URL:  "https://feeds.bbci.co.uk/news/world/rss.xml",
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "aljazeera_all",
+			Name: "Al Jazeera All",
+			URL:  "https://www.aljazeera.com/xml/rss/all.xml",
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "guardian_world",
+			Name: "The Guardian World",
+			URL:  "https://www.theguardian.com/world/rss",
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "npr_world",
+			Name: "NPR World",
+			URL:  "https://feeds.npr.org/1004/rss.xml",
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "cnbc_world",
+			Name: "CNBC World",
+			URL:  "https://www.cnbc.com/id/100727362/device/rss/rss.html",
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "google_reuters_24h",
+			Name: "Google News Reuters 24h",
+			URL:  "https://news.google.com/rss/search?q=when:24h+source:Reuters&hl=en-US&gl=US&ceid=US:en",
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
 	}
+	newsSources = cloneNewsSources(defaultNewsSources)
 
 	newsClient = &http.Client{Timeout: newsHTTPTimeout}
 	hyperHTTP  = &http.Client{Timeout: hyperHTTPTimeout}
@@ -93,6 +167,7 @@ var (
 	reEntry    = regexp.MustCompile(`(?is)<entry[\s\S]*?</entry>`)
 	reAtomLink = regexp.MustCompile(`(?is)<link\b[^>]*href=["']([^"']+)["'][^>]*/?>`)
 	reAddress  = regexp.MustCompile(`^0x[a-fA-F0-9]{40}$`)
+	reTGUser   = regexp.MustCompile(`^[A-Za-z0-9_]{5,}$`)
 
 	// 预编译的 XML tag 正则缓存
 	tagRegexCache   = make(map[string]*regexp.Regexp)
@@ -102,11 +177,365 @@ var (
 		clients: make(map[*wsClient]bool),
 	}
 
+	newsHealthClient = &http.Client{Timeout: 15 * time.Second}
+	newsHealthOnce   sync.Once
+	newsHealthState  struct {
+		mu     sync.RWMutex
+		report newsSourceHealthReport
+	}
+
 	// hyperMonitor 客户端注册表：address -> []*wsClient
 	// 跟单事件通过此注册表广播给正在监控同一地址的所有前端
 	hyperMonitorClients   = make(map[string]map[*wsClient]bool)
 	hyperMonitorClientsMu sync.RWMutex
 )
+
+// InitNewsSourcesFromConfig 根据配置初始化资讯源（固定源 + RSSHub 路由 + TG 频道）。
+func InitNewsSourcesFromConfig(cfg NewsConfig) {
+	sources := cloneNewsSources(defaultNewsSources)
+	rsshubSources := buildRSSHubNewsSources(cfg)
+	sources = append(sources, rsshubSources...)
+	sources = append(sources, buildTelegramNewsSources(cfg)...)
+
+	newsSources = sources
+	rsshubCount := len(rsshubSources)
+	tgCount := len(newsSources) - len(defaultNewsSources) - rsshubCount
+	log.Printf("[WsNews] configured sources: total=%d fixed=%d rsshub=%d tg=%d", len(newsSources), len(defaultNewsSources), rsshubCount, tgCount)
+}
+
+// StartNewsSourceHealthMonitor 每小时检测当前资讯源可用性。
+func StartNewsSourceHealthMonitor() {
+	newsHealthOnce.Do(func() {
+		go runNewsSourceHealthMonitor()
+	})
+}
+
+// GetNewsSourceHealthReport 返回最近一次可用性检测结果。
+func GetNewsSourceHealthReport() newsSourceHealthReport {
+	newsHealthState.mu.RLock()
+	defer newsHealthState.mu.RUnlock()
+
+	report := newsHealthState.report
+	if len(report.Sources) > 0 {
+		report.Sources = append([]newsSourceHealthItem(nil), report.Sources...)
+	}
+	return report
+}
+
+func runNewsSourceHealthMonitor() {
+	checkNewsSourceHealthOnce()
+
+	ticker := time.NewTicker(newsHealthCheckInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		checkNewsSourceHealthOnce()
+	}
+}
+
+func checkNewsSourceHealthOnce() {
+	report := newsSourceHealthReport{
+		CheckedAt: time.Now().UnixMilli(),
+	}
+
+	type result struct {
+		item newsSourceHealthItem
+	}
+	ch := make(chan result, len(newsSources))
+	var wg sync.WaitGroup
+
+	for _, source := range newsSources {
+		s := source
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ch <- result{item: checkNewsFeedAvailability(s)}
+		}()
+	}
+
+	wg.Wait()
+	close(ch)
+
+	report.Sources = make([]newsSourceHealthItem, 0, len(newsSources))
+	reachable := 0
+	for res := range ch {
+		if res.item.Reachable {
+			reachable++
+		}
+		report.Sources = append(report.Sources, res.item)
+	}
+	sort.Slice(report.Sources, func(i, j int) bool { return report.Sources[i].Key < report.Sources[j].Key })
+	report.ReachableSourceCount = reachable
+	report.TotalSourceCount = len(report.Sources)
+
+	newsHealthState.mu.Lock()
+	newsHealthState.report = report
+	newsHealthState.mu.Unlock()
+
+	log.Printf(
+		"[WsNews][Health] sources=%d/%d reachable",
+		report.ReachableSourceCount,
+		report.TotalSourceCount,
+	)
+}
+
+func cloneNewsSources(in []newsFeedSource) []newsFeedSource {
+	out := make([]newsFeedSource, 0, len(in))
+	for _, src := range in {
+		cp := src
+		if src.Headers != nil {
+			cp.Headers = make(map[string]string, len(src.Headers))
+			for k, v := range src.Headers {
+				cp.Headers[k] = v
+			}
+		}
+		out = append(out, cp)
+	}
+	return out
+}
+
+func getRSSHubBaseURL(cfg NewsConfig) string {
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.RSSHubBaseURL), "/")
+	if baseURL == "" {
+		baseURL = "https://rsshub.umzzz.com"
+	}
+	return baseURL
+}
+
+func buildRSSHubNewsSources(cfg NewsConfig) []newsFeedSource {
+	baseURL := getRSSHubBaseURL(cfg)
+	return []newsFeedSource{
+		{
+			Key:  "bbc_zhongwen",
+			Name: "BBC 中文",
+			URL:  fmt.Sprintf("%s/bbc/zhongwen", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "gamer_gnn",
+			Name: "巴哈姆特 GNN",
+			URL:  fmt.Sprintf("%s/gamer/gnn", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "nature_news",
+			Name: "Nature News",
+			URL:  fmt.Sprintf("%s/nature/news", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "t66y_7",
+			Name: "草榴 t66y(7)",
+			URL:  fmt.Sprintf("%s/t66y/7", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "gov_zhengce_zuixin",
+			Name: "国办 最新政策",
+			URL:  fmt.Sprintf("%s/gov/zhengce/zuixin", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "smzdm_haowen_1",
+			Name: "什么值得买 好文",
+			URL:  fmt.Sprintf("%s/smzdm/haowen/1", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "500px_tribe_set_dailyshot",
+			Name: "500px 每日一拍",
+			URL:  fmt.Sprintf("%s/500px/tribe/set/f5de0b8aa6d54ec486f5e79616418001", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "huggingface_daily_papers",
+			Name: "Huggingface Papers",
+			URL:  fmt.Sprintf("%s/huggingface/daily-papers/date", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "hacking8_index",
+			Name: "Hacking8",
+			URL:  fmt.Sprintf("%s/hacking8/index", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "wsj_zh_cn_world",
+			Name: "WSJ 国际",
+			URL:  fmt.Sprintf("%s/wsj/zh-cn/world", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "jin10",
+			Name: "金十快讯",
+			URL:  fmt.Sprintf("%s/jin10", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "reuters_world_us",
+			Name: "Reuters US",
+			URL:  fmt.Sprintf("%s/reuters/world/us", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+	}
+}
+
+func buildTelegramNewsSources(cfg NewsConfig) []newsFeedSource {
+	baseURL := getRSSHubBaseURL(cfg)
+
+	seen := make(map[string]struct{})
+	out := make([]newsFeedSource, 0, len(cfg.TelegramChannels))
+	for _, raw := range cfg.TelegramChannels {
+		username := normalizeTelegramChannel(raw)
+		if username == "" {
+			log.Printf("[WsNews] skip invalid telegram channel: %q", raw)
+			continue
+		}
+		if _, ok := seen[username]; ok {
+			continue
+		}
+		seen[username] = struct{}{}
+
+		out = append(out, newsFeedSource{
+			Key:  "tg_" + strings.ToLower(username),
+			Name: "TG @" + username,
+			URL:  fmt.Sprintf("%s/telegram/channel/%s", baseURL, url.PathEscape(username)),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		})
+	}
+	return out
+}
+
+func normalizeTelegramChannel(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+
+	s = strings.TrimSpace(strings.TrimPrefix(s, "@"))
+	lower := strings.ToLower(s)
+	if strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "http://") {
+		u, err := url.Parse(s)
+		if err != nil {
+			return ""
+		}
+		host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+		if host != "t.me" && host != "telegram.me" {
+			return ""
+		}
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) == 0 || parts[0] == "" {
+			return ""
+		}
+		if strings.EqualFold(parts[0], "s") && len(parts) >= 2 {
+			s = parts[1]
+		} else {
+			s = parts[0]
+		}
+	} else {
+		s = strings.TrimPrefix(strings.TrimPrefix(s, "t.me/"), "telegram.me/")
+		parts := strings.Split(strings.Trim(s, "/"), "/")
+		if len(parts) == 0 || parts[0] == "" {
+			return ""
+		}
+		if strings.EqualFold(parts[0], "s") && len(parts) >= 2 {
+			s = parts[1]
+		} else {
+			s = parts[0]
+		}
+	}
+
+	s = strings.TrimPrefix(strings.TrimSpace(s), "@")
+	if !reTGUser.MatchString(s) {
+		return ""
+	}
+	return s
+}
+
+func checkNewsFeedAvailability(source newsFeedSource) newsSourceHealthItem {
+	item := newsSourceHealthItem{
+		Key:  source.Key,
+		Name: source.Name,
+		URL:  source.URL,
+	}
+
+	req, err := http.NewRequest(http.MethodGet, source.URL, nil)
+	if err != nil {
+		item.Error = err.Error()
+		return item
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; NewsHealthCheck/1.0)")
+	req.Header.Set("Accept", "application/rss+xml, application/xml, text/xml, */*")
+	for k, v := range source.Headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := newsHealthClient.Do(req)
+	if err != nil {
+		item.Error = err.Error()
+		return item
+	}
+	defer resp.Body.Close()
+
+	item.StatusCode = resp.StatusCode
+	item.ContentType = resp.Header.Get("Content-Type")
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		item.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		return item
+	}
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if readErr != nil {
+		item.Error = readErr.Error()
+		return item
+	}
+	low := strings.ToLower(string(body))
+	if strings.Contains(low, "<rss") || strings.Contains(low, "<feed") || strings.Contains(low, "<rdf") || strings.Contains(low, "<item") {
+		item.Reachable = true
+		return item
+	}
+
+	item.Error = "not rss/atom payload"
+	return item
+}
 
 func handleWsNews(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")

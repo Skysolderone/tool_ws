@@ -32,6 +32,12 @@ type AgentConfig struct {
 	AllowedSymbols       []string `json:"allowed_symbols"`         // 允许执行的交易对白名单，空=不限制
 }
 
+// NewsConfig 资讯源配置
+type NewsConfig struct {
+	RSSHubBaseURL    string   `json:"rsshubBaseUrl"`    // RSSHub 实例地址
+	TelegramChannels []string `json:"telegramChannels"` // Telegram 频道用户名或 t.me 链接
+}
+
 // Config 应用配置
 type Config struct {
 	Server          ServerConfig          `json:"server"`
@@ -41,6 +47,7 @@ type Config struct {
 	Auth            AuthConfig            `json:"auth"`
 	LLM             LLMConfig             `json:"llm"`
 	Agent           AgentConfig           `json:"agent"`
+	News            NewsConfig            `json:"news"`
 	Risk            RiskConfig            `json:"risk"`
 	PortfolioRisk   PortfolioRiskConfig   `json:"portfolioRisk"`
 	Notify          NotifyConfig          `json:"notify"`
@@ -113,6 +120,9 @@ func LoadConfig(configPath string) error {
 			MaxActionsPerRequest: 5,
 			AllowedActions:       []string{"open", "add", "close", "reduce", "set_sl", "set_tp"},
 		},
+		News: NewsConfig{
+			RSSHubBaseURL: "https://rsshub.umzzz.com",
+		},
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -127,6 +137,11 @@ func LoadConfig(configPath string) error {
 	// 验证必填字段
 	if Cfg.REST.APIKey == "" || Cfg.REST.SecretKey == "" {
 		return fmt.Errorf("rest.api_key and rest.secret_key are required in config")
+	}
+	Cfg.News.RSSHubBaseURL = strings.TrimSpace(Cfg.News.RSSHubBaseURL)
+	Cfg.News.RSSHubBaseURL = strings.TrimRight(Cfg.News.RSSHubBaseURL, "/")
+	if Cfg.News.RSSHubBaseURL == "" {
+		Cfg.News.RSSHubBaseURL = "https://rsshub.umzzz.com"
 	}
 
 	return nil

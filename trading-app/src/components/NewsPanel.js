@@ -9,15 +9,16 @@ import {
   Modal,
   ScrollView,
   Linking,
+  Share,
   SafeAreaView,
   StatusBar,
   Platform,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { colors, spacing, radius, fontSize } from '../services/theme';
-import { AUTH_TOKEN, WS_NEWS_BASE } from '../services/api';
+import api, { AUTH_TOKEN, WS_NEWS_BASE } from '../services/api';
 
-const FEED_SOURCES = [
+const BASE_FEED_SOURCES = [
   {
     key: 'blockbeats',
     name: 'BlockBeats',
@@ -26,14 +27,129 @@ const FEED_SOURCES = [
     key: '0xzx',
     name: '0xzx',
   },
+  {
+    key: 'bbc_world',
+    name: 'BBC国际',
+  },
+  {
+    key: 'aljazeera_all',
+    name: '半岛电视台',
+  },
+  {
+    key: 'guardian_world',
+    name: 'Guardian国际',
+  },
+  {
+    key: 'npr_world',
+    name: 'NPR国际',
+  },
+  {
+    key: 'cnbc_world',
+    name: 'CNBC国际',
+  },
+  {
+    key: 'google_reuters_24h',
+    name: 'Reuters24h',
+  },
+  {
+    key: 'reuters_world_us',
+    name: 'Reuters US',
+  },
+  {
+    key: 'jin10',
+    name: '金十快讯',
+  },
+  {
+    key: 'hacking8_index',
+    name: 'Hacking8',
+  },
+  {
+    key: 'wsj_zh_cn_world',
+    name: 'WSJ国际',
+  },
+  {
+    key: 'bbc_zhongwen',
+    name: 'BBC中文',
+  },
+  {
+    key: 'gamer_gnn',
+    name: '巴哈姆特GNN',
+  },
+  {
+    key: 'nature_news',
+    name: 'Nature News',
+  },
+  {
+    key: 't66y_7',
+    name: 't66y(7)',
+  },
+  {
+    key: 'gov_zhengce_zuixin',
+    name: '国办政策',
+  },
+  {
+    key: 'smzdm_haowen_1',
+    name: '什么值得买',
+  },
+  {
+    key: '500px_tribe_set_dailyshot',
+    name: '500px每日一拍',
+  },
+  {
+    key: 'huggingface_daily_papers',
+    name: 'Huggingface Papers',
+  },
 ];
+const BASE_FEED_NAME_OVERRIDES = {
+  blockbeats: 'BlockBeats',
+  '0xzx': '0xzx',
+  bbc_world: 'BBC国际',
+  aljazeera_all: '半岛电视台',
+  guardian_world: 'Guardian国际',
+  npr_world: 'NPR国际',
+  cnbc_world: 'CNBC国际',
+  google_reuters_24h: 'Reuters24h',
+  reuters_world_us: 'Reuters US',
+  jin10: '金十快讯',
+  hacking8_index: 'Hacking8',
+  wsj_zh_cn_world: 'WSJ国际',
+  bbc_zhongwen: 'BBC中文',
+  gamer_gnn: '巴哈姆特GNN',
+  nature_news: 'Nature News',
+  t66y_7: 't66y(7)',
+  gov_zhengce_zuixin: '国办政策',
+  smzdm_haowen_1: '什么值得买',
+  '500px_tribe_set_dailyshot': '500px每日一拍',
+  huggingface_daily_papers: 'Huggingface Papers',
+};
+const BASE_FEED_KEY_SET = new Set(BASE_FEED_SOURCES.map((x) => x.key));
 const WS_RECONNECT_MS = 3000;
 const WS_PING_MS = 30000;
+const SOURCE_STATUS_REFRESH_MS = 60 * 60 * 1000;
+const TRANSLATE_ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
+const TRANSLATE_MAX_CHARS = 1800;
+const TRANSLATE_BATCH_LIMIT = 12;
 
-const EMPTY_NEWS_BY_SOURCE = FEED_SOURCES.reduce((acc, feed) => {
-  acc[feed.key] = [];
-  return acc;
-}, {});
+function buildEmptyNewsBySource(feeds) {
+  return feeds.reduce((acc, feed) => {
+    acc[feed.key] = [];
+    return acc;
+  }, {});
+}
+
+function isTelegramFeedKey(key) {
+  return String(key || '').startsWith('tg_');
+}
+
+function normalizeFeedDisplayName(key, name) {
+  if (BASE_FEED_NAME_OVERRIDES[key]) return BASE_FEED_NAME_OVERRIDES[key];
+  const n = String(name || key || '').trim();
+  if (isTelegramFeedKey(key)) {
+    if (n.toUpperCase().startsWith('TG ')) return n;
+    return `TG ${n}`;
+  }
+  return n || key;
+}
 
 function formatTime(pubDate) {
   if (!pubDate) return '-';
@@ -200,18 +316,71 @@ function stripHtml(html) {
     .trim();
 }
 
+function getNewsItemKey(item) {
+  return `${item?.link || item?.id || item?.title || '-'}::${item?.pubDate || '-'}`;
+}
+
+function containsChinese(text) {
+  return /[\u4e00-\u9fff]/.test(text || '');
+}
+
+function isLikelyEnglish(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  const letters = (t.match(/[A-Za-z]/g) || []).length;
+  const cjk = (t.match(/[\u4e00-\u9fff]/g) || []).length;
+  return letters >= 8 && letters > cjk * 3;
+}
+
+function languageLabel(langCode) {
+  const code = String(langCode || '').toLowerCase();
+  if (code.startsWith('en')) return '英文';
+  if (code.startsWith('zh')) return '中文';
+  if (code.startsWith('ja')) return '日文';
+  if (code.startsWith('ko')) return '韩文';
+  if (code.startsWith('fr')) return '法文';
+  if (code.startsWith('de')) return '德文';
+  if (code.startsWith('es')) return '西班牙文';
+  if (code.startsWith('ru')) return '俄文';
+  return '源语言';
+}
+
+function parseTranslateResponse(payload) {
+  if (!Array.isArray(payload) || !Array.isArray(payload[0])) return { translated: '', sourceLang: '' };
+  const translated = payload[0].map((seg) => (Array.isArray(seg) ? (seg[0] || '') : '')).join('').trim();
+  const sourceLang = typeof payload[2] === 'string' ? payload[2] : '';
+  return { translated, sourceLang };
+}
+
+async function translateTextToZh(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return { translated: '', sourceLang: '' };
+  const truncated = raw.length > TRANSLATE_MAX_CHARS ? raw.slice(0, TRANSLATE_MAX_CHARS) : raw;
+  const url = `${TRANSLATE_ENDPOINT}?client=gtx&sl=auto&tl=zh-CN&dt=t&q=${encodeURIComponent(truncated)}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`翻译请求失败(${res.status})`);
+  }
+  const data = await res.json();
+  return parseTranslateResponse(data);
+}
+
 export default function NewsPanel({ onHasNew }) {
+  const [feedSources, setFeedSources] = useState(BASE_FEED_SOURCES);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
-  const [newsBySource, setNewsBySource] = useState(EMPTY_NEWS_BY_SOURCE);
-  const [activeSourceKey, setActiveSourceKey] = useState(FEED_SOURCES[0].key);
+  const [newsBySource, setNewsBySource] = useState(buildEmptyNewsBySource(BASE_FEED_SOURCES));
+  const [activeSourceKey, setActiveSourceKey] = useState(BASE_FEED_SOURCES[0].key);
   const [selected, setSelected] = useState(null);
+  const [showSourceLang, setShowSourceLang] = useState(false);
+  const [translationMap, setTranslationMap] = useState({});
 
   const wsRef = useRef(null);
   const pingTimerRef = useRef(null);
   const reconnectTimerRef = useRef(null);
+  const translatingKeysRef = useRef(new Set());
   const mountedRef = useRef(false);
   const closedByUserRef = useRef(false);
   const initializedRef = useRef(false);
@@ -233,14 +402,66 @@ export default function NewsPanel({ onHasNew }) {
     wsRef.current.send(JSON.stringify(payload));
   }, []);
 
+  const loadSourceStatus = useCallback(async () => {
+    try {
+      const res = await api.getNewsSourceStatus();
+      const report = res?.data || res;
+      const items = Array.isArray(report?.sources) ? report.sources : [];
+      if (items.length === 0) return;
+
+      const statusByKey = new Map(items.map((x) => [x.key, x]));
+      const fixedSources = BASE_FEED_SOURCES.filter((feed) => {
+        const status = statusByKey.get(feed.key);
+        if (!status) return true;
+        return !!status.reachable;
+      }).map((feed) => ({ ...feed, name: normalizeFeedDisplayName(feed.key, feed.name) }));
+
+      const extraSources = items
+        .filter((item) => item && item.key && !BASE_FEED_KEY_SET.has(item.key))
+        .filter((item) => item.reachable || isTelegramFeedKey(item.key))
+        .map((item) => ({
+          key: item.key,
+          name: normalizeFeedDisplayName(item.key, item.name),
+        }));
+
+      const nextSources = [...fixedSources, ...extraSources];
+      if (nextSources.length > 0) setFeedSources(nextSources);
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    loadSourceStatus();
+    const timer = setInterval(loadSourceStatus, SOURCE_STATUS_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [loadSourceStatus]);
+
+  useEffect(() => {
+    setNewsBySource((prev) => {
+      const next = buildEmptyNewsBySource(feedSources);
+      feedSources.forEach((feed) => {
+        next[feed.key] = prev[feed.key] || [];
+      });
+      return next;
+    });
+    setActiveSourceKey((prev) => {
+      if (feedSources.some((f) => f.key === prev)) return prev;
+      return feedSources[0]?.key || prev;
+    });
+    const nextTop = {};
+    feedSources.forEach((feed) => {
+      nextTop[feed.key] = latestTopKeyRef.current[feed.key] || '';
+    });
+    latestTopKeyRef.current = nextTop;
+  }, [feedSources]);
+
   const applyNewsPayload = useCallback((payload = {}) => {
-    const nextNewsBySource = { ...EMPTY_NEWS_BY_SOURCE };
-    FEED_SOURCES.forEach((feed) => {
+    const nextNewsBySource = buildEmptyNewsBySource(feedSources);
+    feedSources.forEach((feed) => {
       nextNewsBySource[feed.key] = Array.isArray(payload.data?.[feed.key]) ? payload.data[feed.key] : [];
     });
 
     const nextTopKeys = {};
-    FEED_SOURCES.forEach((feed) => {
+    feedSources.forEach((feed) => {
       const top = (nextNewsBySource[feed.key] || [])[0];
       nextTopKeys[feed.key] = top ? `${top.link || top.id || top.title || '-'}::${top.pubDate || '-'}` : '';
     });
@@ -248,7 +469,7 @@ export default function NewsPanel({ onHasNew }) {
     if (!initializedRef.current) {
       initializedRef.current = true;
     } else {
-      const hasNew = FEED_SOURCES.some((feed) => {
+      const hasNew = feedSources.some((feed) => {
         const prevKey = latestTopKeyRef.current[feed.key] || '';
         const nextKey = nextTopKeys[feed.key] || '';
         return prevKey && nextKey && prevKey !== nextKey;
@@ -271,7 +492,7 @@ export default function NewsPanel({ onHasNew }) {
 
     setLoading(false);
     setRefreshing(false);
-  }, [onHasNew]);
+  }, [feedSources, onHasNew]);
 
   const requestRefresh = useCallback(() => {
     setRefreshing(true);
@@ -349,8 +570,9 @@ export default function NewsPanel({ onHasNew }) {
     requestRefresh();
   };
 
-  const activeFeed = FEED_SOURCES.find((item) => item.key === activeSourceKey) || FEED_SOURCES[0];
-  const activeList = newsBySource[activeFeed.key] || [];
+  const activeFeed = feedSources.find((item) => item.key === activeSourceKey) || feedSources[0] || BASE_FEED_SOURCES[0];
+  const activeList = activeFeed ? (newsBySource[activeFeed.key] || []) : [];
+  const hiddenCount = BASE_FEED_SOURCES.length - feedSources.length;
 
   const openExternal = async (url) => {
     if (!url) return;
@@ -360,6 +582,133 @@ export default function NewsPanel({ onHasNew }) {
       Alert.alert('打开失败', e.message);
     }
   };
+
+  const openSystemTranslate = useCallback(async (text) => {
+    const payload = String(text || '').trim();
+    if (!payload) {
+      Alert.alert('提示', '暂无可翻译内容');
+      return;
+    }
+
+    // Android 优先调用系统文本处理（包含厂商翻译能力）
+    if (Platform.OS === 'android' && typeof Linking.sendIntent === 'function') {
+      try {
+        await Linking.sendIntent('android.intent.action.PROCESS_TEXT', [
+          { key: 'android.intent.extra.PROCESS_TEXT', value: payload },
+          { key: 'android.intent.extra.PROCESS_TEXT_READONLY', value: true },
+        ]);
+        return;
+      } catch (_) {
+        // 忽略并走分享面板兜底
+      }
+    }
+
+    // iOS/其他平台兜底：系统分享面板（通常可选翻译）
+    try {
+      await Share.share({
+        title: '翻译文本',
+        message: payload,
+      });
+    } catch (e) {
+      Alert.alert('打开翻译失败', e.message);
+    }
+  }, []);
+
+  const selectedKey = useMemo(
+    () => (selected ? getNewsItemKey(selected) : ''),
+    [selected],
+  );
+  const selectedTranslate = selectedKey ? translationMap[selectedKey] : null;
+  const selectedHasTranslation = !!(
+    selectedTranslate && (selectedTranslate.titleZh || selectedTranslate.summaryZh)
+  );
+  const selectedSourceLangLabel = languageLabel(selectedTranslate?.sourceLang || 'en');
+
+  const getPlainSummary = useCallback(
+    (item) => {
+      const raw = item?.summary || '';
+      return hasHtmlTags(raw) ? stripHtml(raw) : raw;
+    },
+    [],
+  );
+
+  const shouldAutoTranslate = useCallback(
+    (item) => {
+      const text = `${item?.title || ''}\n${getPlainSummary(item)}`;
+      if (!text.trim()) return false;
+      if (containsChinese(text)) return false;
+      return isLikelyEnglish(text);
+    },
+    [getPlainSummary],
+  );
+
+  useEffect(() => {
+    setShowSourceLang(false);
+  }, [selectedKey]);
+
+  useEffect(() => {
+    const list = Array.isArray(activeList) ? activeList.slice(0, TRANSLATE_BATCH_LIMIT) : [];
+    list.forEach((item) => {
+      if (!shouldAutoTranslate(item)) return;
+      const key = getNewsItemKey(item);
+      const cached = translationMap[key];
+      if (cached?.done || cached?.failed || cached?.loading || translatingKeysRef.current.has(key)) return;
+
+      translatingKeysRef.current.add(key);
+      setTranslationMap((prev) => ({
+        ...prev,
+        [key]: { ...(prev[key] || {}), loading: true, done: false, failed: false },
+      }));
+
+      (async () => {
+        try {
+          const titleRes = await translateTextToZh(item.title || '');
+          const summaryRes = await translateTextToZh(getPlainSummary(item));
+          const sourceLang = titleRes.sourceLang || summaryRes.sourceLang || 'en';
+          if (!mountedRef.current) return;
+          setTranslationMap((prev) => ({
+            ...prev,
+            [key]: {
+              titleZh: titleRes.translated || '',
+              summaryZh: summaryRes.translated || '',
+              sourceLang,
+              loading: false,
+              done: true,
+              failed: false,
+            },
+          }));
+        } catch (_e) {
+          if (!mountedRef.current) return;
+          setTranslationMap((prev) => ({
+            ...prev,
+            [key]: { ...(prev[key] || {}), loading: false, done: false, failed: true },
+          }));
+        } finally {
+          translatingKeysRef.current.delete(key);
+        }
+      })();
+    });
+  }, [activeList, getPlainSummary, shouldAutoTranslate, translationMap]);
+
+  const getDisplayTitle = useCallback(
+    (item, preferSourceLanguage = false) => {
+      const key = getNewsItemKey(item);
+      const t = translationMap[key];
+      if (preferSourceLanguage) return item?.title || '暂无标题';
+      return t?.titleZh || item?.title || '暂无标题';
+    },
+    [translationMap],
+  );
+
+  const getDisplaySummary = useCallback(
+    (item, preferSourceLanguage = false) => {
+      const key = getNewsItemKey(item);
+      const t = translationMap[key];
+      if (preferSourceLanguage) return getPlainSummary(item) || '暂无摘要';
+      return t?.summaryZh || getPlainSummary(item) || '暂无摘要';
+    },
+    [getPlainSummary, translationMap],
+  );
 
   // 当前选中文章是否有 HTML 富文本内容
   const selectedHasHtml = useMemo(
@@ -371,12 +720,12 @@ export default function NewsPanel({ onHasNew }) {
   const articleHtml = useMemo(() => {
     if (!selected || !selectedHasHtml) return '';
     return buildArticleHtml(
-      selected.title,
+      getDisplayTitle(selected, true),
       formatTime(selected.pubDate),
       selected.summary,
       selected.link,
     );
-  }, [selected, selectedHasHtml]);
+  }, [getDisplayTitle, selected, selectedHasHtml]);
 
   return (
     <View style={styles.card}>
@@ -386,7 +735,10 @@ export default function NewsPanel({ onHasNew }) {
           <Text style={styles.refreshText}>{refreshing ? '刷新中...' : '刷新'}</Text>
         </TouchableOpacity>
       </View>
-      <Text style={styles.hintText}>连接状态: {wsConnected ? '已连接' : '重连中'} | 点击刷新触发服务端拉取</Text>
+      <Text style={styles.hintText}>
+        连接状态: {wsConnected ? '已连接' : '重连中'} | 点击刷新触发服务端拉取
+        {hiddenCount > 0 ? ` | 已隐藏不可用源 ${hiddenCount} 个` : ''}
+      </Text>
 
       {loading ? (
         <View style={styles.loadingBox}>
@@ -397,7 +749,7 @@ export default function NewsPanel({ onHasNew }) {
         <>
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
           <View style={styles.tabRow}>
-            {FEED_SOURCES.map((feed) => (
+            {feedSources.map((feed) => (
               <TouchableOpacity
                 key={feed.key}
                 style={[styles.tabBtn, activeSourceKey === feed.key && styles.tabBtnActive]}
@@ -422,12 +774,15 @@ export default function NewsPanel({ onHasNew }) {
               <TouchableOpacity
                 key={`${activeFeed.key}-${item.id}`}
                 style={styles.newsCard}
-                onPress={() => setSelected(item)}
+                onPress={() => {
+                  setSelected(item);
+                  setShowSourceLang(false);
+                }}
                 activeOpacity={0.7}
               >
-                <Text style={styles.newsTitle} numberOfLines={2}>{item.title}</Text>
+                <Text style={styles.newsTitle} numberOfLines={2}>{getDisplayTitle(item)}</Text>
                 <Text style={styles.newsSummary} numberOfLines={2}>
-                  {hasHtmlTags(item.summary) ? stripHtml(item.summary) : (item.summary || '暂无摘要')}
+                  {getDisplaySummary(item)}
                 </Text>
                 <View style={styles.metaRow}>
                   <Text style={styles.meta} numberOfLines={1}>{item.source}</Text>
@@ -450,21 +805,37 @@ export default function NewsPanel({ onHasNew }) {
           <View style={styles.modalCard}>
             {selected ? (
               <>
-                <Text style={styles.modalTitle}>{selected.title}</Text>
+                <Text style={styles.modalTitle}>{getDisplayTitle(selected, showSourceLang)}</Text>
                 <Text style={styles.modalTime}>{formatTime(selected.pubDate)}</Text>
                 <ScrollView style={styles.modalBody}>
-                  <Text style={styles.modalSummary}>{selected.summary || '暂无摘要'}</Text>
+                  <Text style={styles.modalSummary}>{getDisplaySummary(selected, showSourceLang)}</Text>
                 </ScrollView>
                 <View style={styles.modalActions}>
                   <TouchableOpacity style={styles.modalBtn} onPress={() => setSelected(null)}>
                     <Text style={styles.modalBtnText}>关闭</Text>
+                  </TouchableOpacity>
+                  {selectedHasTranslation ? (
+                    <TouchableOpacity
+                      style={styles.modalBtn}
+                      onPress={() => setShowSourceLang((prev) => !prev)}
+                    >
+                      <Text style={styles.modalBtnText}>
+                        {showSourceLang ? '查看中文' : `查看${selectedSourceLangLabel}`}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  <TouchableOpacity
+                    style={styles.modalBtn}
+                    onPress={() => openSystemTranslate(`${getDisplayTitle(selected, showSourceLang)}\n\n${getDisplaySummary(selected, showSourceLang)}`)}
+                  >
+                    <Text style={styles.modalBtnText}>系统翻译</Text>
                   </TouchableOpacity>
                   {selected.link ? (
                     <TouchableOpacity
                       style={[styles.modalBtn, styles.modalBtnPrimary]}
                       onPress={() => openExternal(selected.link)}
                     >
-                      <Text style={[styles.modalBtnText, styles.modalBtnTextPrimary]}>查看原文</Text>
+                      <Text style={[styles.modalBtnText, styles.modalBtnTextPrimary]}>打开链接</Text>
                     </TouchableOpacity>
                   ) : null}
                 </View>
@@ -489,20 +860,42 @@ export default function NewsPanel({ onHasNew }) {
             <Text style={styles.articleHeaderTitle} numberOfLines={1}>
               {selected?.source || '文章详情'}
             </Text>
-            {selected?.link ? (
+            <View style={styles.articleHeaderActions}>
+              {selectedHasTranslation ? (
+                <TouchableOpacity
+                  style={styles.articleToggleBtn}
+                  onPress={() => setShowSourceLang((prev) => !prev)}
+                >
+                  <Text style={styles.articleToggleText}>
+                    {showSourceLang ? '查看中文' : `查看${selectedSourceLangLabel}`}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
               <TouchableOpacity
-                style={styles.articleExternalBtn}
-                onPress={() => openExternal(selected.link)}
+                style={styles.articleToggleBtn}
+                onPress={() => openSystemTranslate(`${getDisplayTitle(selected, showSourceLang)}\n\n${getDisplaySummary(selected, showSourceLang)}`)}
               >
-                <Text style={styles.articleExternalText}>浏览器</Text>
+                <Text style={styles.articleToggleText}>系统翻译</Text>
               </TouchableOpacity>
-            ) : (
-              <View style={{ width: 60 }} />
-            )}
+              {selected?.link ? (
+                <TouchableOpacity
+                  style={styles.articleExternalBtn}
+                  onPress={() => openExternal(selected.link)}
+                >
+                  <Text style={styles.articleExternalText}>浏览器</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
           </View>
 
-          {/* 本地 HTML 渲染 */}
-          {articleHtml ? (
+          {/* 默认显示中文翻译，切换后显示源语言 HTML */}
+          {!showSourceLang && selectedHasTranslation ? (
+            <ScrollView style={styles.articleTranslatedWrap} contentContainerStyle={styles.articleTranslatedContent}>
+              <Text style={styles.articleTranslatedTitle}>{getDisplayTitle(selected, false)}</Text>
+              <Text style={styles.articleTranslatedTime}>{formatTime(selected?.pubDate)}</Text>
+              <Text style={styles.articleTranslatedSummary}>{getDisplaySummary(selected, false)}</Text>
+            </ScrollView>
+          ) : articleHtml ? (
             <WebView
               originWhitelist={['*']}
               source={{ html: articleHtml }}
@@ -760,6 +1153,26 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginHorizontal: spacing.sm,
   },
+  articleHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    minWidth: 60,
+    justifyContent: 'flex-end',
+  },
+  articleToggleBtn: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  articleToggleText: {
+    color: colors.textSecondary,
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+  },
   articleExternalBtn: {
     backgroundColor: colors.goldBg,
     borderRadius: radius.pill,
@@ -774,5 +1187,28 @@ const styles = StyleSheet.create({
   articleWebView: {
     flex: 1,
     backgroundColor: colors.bg,
+  },
+  articleTranslatedWrap: {
+    flex: 1,
+    backgroundColor: colors.bg,
+  },
+  articleTranslatedContent: {
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  articleTranslatedTitle: {
+    color: colors.white,
+    fontSize: fontSize.lg,
+    fontWeight: '700',
+    lineHeight: 24,
+  },
+  articleTranslatedTime: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+  },
+  articleTranslatedSummary: {
+    color: colors.text,
+    fontSize: fontSize.sm,
+    lineHeight: 22,
   },
 });
