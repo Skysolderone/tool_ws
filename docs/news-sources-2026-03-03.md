@@ -23,11 +23,15 @@
 
 | key | tab 名称 | RSSHub 路由 |
 |---|---|---|
+| `reuters_world_all` | `Reuters World` | `/reuters/world` |
 | `reuters_world_us` | `Reuters US` | `/reuters/world/us` |
 | `jin10` | `金十快讯` | `/jin10` |
+| `wallstreetcn_live_global` | `华尔街见闻快讯` | `/wallstreetcn/live/global/2` |
+| `wallstreetcn_hot_day` | `华尔街见闻热榜` | `/wallstreetcn/hot` |
 | `nature_news` | `Nature News` | `/nature/news` |
 | `t66y_7` | `t66y(7)` | `/t66y/7` |
 | `huggingface_daily_papers` | `Huggingface Papers` | `/huggingface/daily-papers/date` |
+| `anthropic_news` | `Anthropic News` | `/anthropic/news` |
 | `xsijishe_rank_weekly` | `司机社周榜` | `/xsijishe/rank/weekly` |
 | `jpxgmn_weekly` | `极品性感美女周榜` | `/jpxgmn/weekly` |
 | `hackernews_index` | `Hacker News` | `/hackernews` |

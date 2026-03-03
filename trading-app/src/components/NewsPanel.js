@@ -39,11 +39,15 @@ const BASE_FEED_CATEGORY_OVERRIDES = {
   npr_world: 'global',
   cnbc_world: 'finance',
   google_reuters_24h: 'finance',
+  reuters_world_all: 'finance',
   reuters_world_us: 'finance',
   jin10: 'finance',
+  wallstreetcn_live_global: 'finance',
+  wallstreetcn_hot_day: 'finance',
   nature_news: 'science',
   t66y_7: 'adult',
   huggingface_daily_papers: 'tech',
+  anthropic_news: 'tech',
   xsijishe_rank_weekly: 'adult',
   jpxgmn_weekly: 'adult',
   hackernews_index: 'tech',
@@ -87,12 +91,24 @@ const BASE_FEED_SOURCES = [
     name: 'Reuters24h',
   },
   {
+    key: 'reuters_world_all',
+    name: 'Reuters World',
+  },
+  {
     key: 'reuters_world_us',
     name: 'Reuters US',
   },
   {
     key: 'jin10',
     name: '金十快讯',
+  },
+  {
+    key: 'wallstreetcn_live_global',
+    name: '华尔街见闻快讯',
+  },
+  {
+    key: 'wallstreetcn_hot_day',
+    name: '华尔街见闻热榜',
   },
   {
     key: 'nature_news',
@@ -105,6 +121,10 @@ const BASE_FEED_SOURCES = [
   {
     key: 'huggingface_daily_papers',
     name: 'Huggingface Papers',
+  },
+  {
+    key: 'anthropic_news',
+    name: 'Anthropic News',
   },
   {
     key: 'xsijishe_rank_weekly',
@@ -167,11 +187,15 @@ const BASE_FEED_NAME_OVERRIDES = {
   npr_world: 'NPR国际',
   cnbc_world: 'CNBC国际',
   google_reuters_24h: 'Reuters24h',
+  reuters_world_all: 'Reuters World',
   reuters_world_us: 'Reuters US',
   jin10: '金十快讯',
+  wallstreetcn_live_global: '华尔街见闻快讯',
+  wallstreetcn_hot_day: '华尔街见闻热榜',
   nature_news: 'Nature News',
   t66y_7: 't66y(7)',
   huggingface_daily_papers: 'Huggingface Papers',
+  anthropic_news: 'Anthropic News',
   xsijishe_rank_weekly: '司机社周榜',
   jpxgmn_weekly: '极品性感美女周榜',
   hackernews_index: 'Hacker News',

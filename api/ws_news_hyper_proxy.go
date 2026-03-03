@@ -337,9 +337,45 @@ func buildRSSHubNewsSources(cfg NewsConfig) []newsFeedSource {
 			},
 		},
 		{
+			Key:  "anthropic_news",
+			Name: "Anthropic News",
+			URL:  fmt.Sprintf("%s/anthropic/news", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
 			Key:  "jin10",
 			Name: "金十快讯",
 			URL:  fmt.Sprintf("%s/jin10", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "wallstreetcn_live_global",
+			Name: "华尔街见闻快讯",
+			URL:  fmt.Sprintf("%s/wallstreetcn/live/global/2", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "wallstreetcn_hot_day",
+			Name: "华尔街见闻热榜",
+			URL:  fmt.Sprintf("%s/wallstreetcn/hot", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "reuters_world_all",
+			Name: "Reuters World",
+			URL:  fmt.Sprintf("%s/reuters/world", baseURL),
 			Headers: map[string]string{
 				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
 				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
