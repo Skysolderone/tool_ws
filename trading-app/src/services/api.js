@@ -13,7 +13,8 @@ const WS_LIQUIDATION_BASE = 'wss://wws741.top/ws/liquidation-stats';
 const WS_MARKET_SPIKE_BASE = 'wss://wws741.top/ws/market-spike';
 const WS_MARKET_RANGE_BASE = 'wss://wws741.top/ws/market-range';
 
-async function apiCall(method, path, body = null) {
+async function apiCall(method, path, body = null, requestOptions = {}) {
+  const { signal } = requestOptions;
   const options = {
     method,
     headers: {
@@ -22,6 +23,7 @@ async function apiCall(method, path, body = null) {
     },
   };
   if (body) options.body = JSON.stringify(body);
+  if (signal) options.signal = signal;
 
   const res = await fetch(`${API_BASE}${path}`, options);
   const text = await res.text();
@@ -106,6 +108,7 @@ export default {
       'GET',
       `/analytics/sentiment?symbol=${encodeURIComponent(symbol)}&period=${encodeURIComponent(period)}`,
     ),
+  getNewsSourceStatus: () => apiCall('GET', '/news/sources/status'),
 
   // Hyper 跟单（服务端执行）
   startHyperFollow: (config) => apiCall('POST', '/hyper/follow/start', config),
@@ -162,8 +165,9 @@ export default {
   getRecommendScan: (symbols) => apiCall('GET', `/recommend/scan${symbols ? `?symbols=${encodeURIComponent(symbols)}` : ''}`),
 
   // 持仓分析
-  getRecommendAnalyze: () => apiCall('GET', '/recommend/analyze'),
-  analyzeAgent: (req) => apiCall('POST', '/agent/analyze', req),
+  getRecommendAnalyze: (requestOptions = {}) => apiCall('GET', '/recommend/analyze', null, requestOptions),
+  analyzeAgent: (req, requestOptions = {}) => apiCall('POST', '/agent/analyze', req, requestOptions),
+  executeAgent: (req) => apiCall('POST', '/agent/execute', req),
   getAgentPolicy: () => apiCall('GET', '/agent/policy'),
 
   // 本地止盈止损

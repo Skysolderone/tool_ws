@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Alert,
   ScrollView,
+  TextInput,
 } from 'react-native';
 import { colors, spacing, radius, fontSize } from '../services/theme';
 import api from '../services/api';
@@ -26,17 +27,30 @@ const C = {
   warn: colors.yellow,
   warnBg: colors.yellowBg,
 };
+// 单币分析可能接近 100s，上层网关有超时限制，这里给前端更长窗口。
+const ANALYZE_TIMEOUT_MS = 210000;
+const RAW_POSITION_TIMEOUT_MS = 15000;
+const ANALYZE_MODE = 'positions';
 
 export default function AIAnalysisPanel() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [rawPositionData, setRawPositionData] = useState(null);
+  const [rawPositionError, setRawPositionError] = useState(null);
+  const [targetSymbol, setTargetSymbol] = useState('');
+  const [analyzedSymbol, setAnalyzedSymbol] = useState('');
   const [policy, setPolicy] = useState(null);
   const [policyError, setPolicyError] = useState(null);
   const [policyLoading, setPolicyLoading] = useState(true);
   const [selectedActions, setSelectedActions] = useState({});
+  const analyzeAbortRef = useRef(null);
+  const rawPositionAbortRef = useRef(null);
+  const requestIdRef = useRef(0);
 
-  const actionItems = data?.action_items || [];
+  const actionItems = useMemo(() => data?.action_items || [], [data]);
+  const positionAnalysis = useMemo(() => data?.position_analysis || [], [data]);
+  const rawPositionItems = useMemo(() => rawPositionData?.items || [], [rawPositionData]);
   const execution = data?.execution;
 
   useEffect(() => {
@@ -44,7 +58,15 @@ export default function AIAnalysisPanel() {
     actionItems.forEach((item, idx) => {
       next[getActionKey(item, idx)] = false;
     });
-    setSelectedActions(next);
+    setSelectedActions((prev) => {
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      if (prevKeys.length !== nextKeys.length) return next;
+      for (const k of nextKeys) {
+        if (prev[k] !== next[k]) return next;
+      }
+      return prev;
+    });
   }, [actionItems]);
 
   useEffect(() => {
@@ -66,6 +88,12 @@ export default function AIAnalysisPanel() {
     loadPolicy();
     return () => {
       active = false;
+      if (analyzeAbortRef.current) {
+        analyzeAbortRef.current.abort();
+      }
+      if (rawPositionAbortRef.current) {
+        rawPositionAbortRef.current.abort();
+      }
     };
   }, []);
 
@@ -82,31 +110,151 @@ export default function AIAnalysisPanel() {
   const selectedCount = selectedActionItems.length;
   const executionEnabled = !!policy?.enable_execution;
 
-  const runAgent = async ({ execute, items = [] }) => {
+  const runAgent = useCallback(async ({ symbols }) => {
+    if (analyzeAbortRef.current) {
+      analyzeAbortRef.current.abort();
+    }
+    if (rawPositionAbortRef.current) {
+      rawPositionAbortRef.current.abort();
+    }
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    const controller = new AbortController();
+    analyzeAbortRef.current = controller;
+    const normalizedSymbols = normalizeSymbolList(symbols || []);
+    const timeoutMs = normalizedSymbols.length > 1
+      ? Math.max(ANALYZE_TIMEOUT_MS, normalizedSymbols.length * 110000)
+      : ANALYZE_TIMEOUT_MS;
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+
     setLoading(true);
+    setError(null);
+    setRawPositionError(null);
+    setRawPositionData(null);
     try {
-      const body = {
-        mode: 'full',
-        execute,
-      };
-      if (execute) {
-        body.action_items = items;
+      let result;
+      if (normalizedSymbols.length <= 1) {
+        const body = {
+          mode: ANALYZE_MODE,
+          symbols: normalizedSymbols,
+        };
+        const res = await api.analyzeAgent(body, { signal: controller.signal });
+        result = res.data || res;
+      } else {
+        const merged = createEmptyAnalysisResult();
+        const summaryParts = [];
+        const failures = [];
+        for (const symbol of normalizedSymbols) {
+          if (controller.signal.aborted) break;
+          try {
+            const res = await api.analyzeAgent(
+              { mode: ANALYZE_MODE, symbols: [symbol] },
+              { signal: controller.signal },
+            );
+            const part = res.data || res;
+            if (part?.summary) {
+              summaryParts.push(`[${symbol}] ${part.summary}`);
+            }
+            mergeAnalysisResult(merged, part);
+          } catch (e) {
+            if (controller.signal.aborted) {
+              throw e;
+            }
+            failures.push(`${symbol}: ${e.message}`);
+          }
+        }
+        if (!hasAnalysisResult(merged)) {
+          throw new Error(failures.length ? `全部币种分析失败: ${failures.join('；')}` : '分析失败');
+        }
+        if (summaryParts.length > 0) {
+          merged.summary = summaryParts.join('\n\n');
+        }
+        if (failures.length > 0) {
+          const failureText = `以下币种分析失败：${failures.join('；')}`;
+          merged.summary = merged.summary ? `${merged.summary}\n\n${failureText}` : failureText;
+        }
+        result = merged;
       }
-      const res = await api.analyzeAgent(body);
-      setData(res.data || res);
+
+      if (requestId !== requestIdRef.current) return;
+      setData(result);
+      setAnalyzedSymbol(
+        normalizedSymbols.length > 0 ? normalizedSymbols.join(', ') : '全部持仓'
+      );
       setError(null);
+
+      const rawController = new AbortController();
+      rawPositionAbortRef.current = rawController;
+      const rawTimeoutId = setTimeout(() => {
+        rawController.abort();
+      }, RAW_POSITION_TIMEOUT_MS);
+      api
+        .getRecommendAnalyze({ signal: rawController.signal })
+        .then((rawRes) => {
+          if (requestId !== requestIdRef.current) return;
+          setRawPositionData(rawRes?.data || rawRes || null);
+          setRawPositionError(null);
+        })
+        .catch((e) => {
+          if (requestId !== requestIdRef.current) return;
+          if (rawController.signal.aborted) {
+            setRawPositionError(`原始仓位分析超时（>${RAW_POSITION_TIMEOUT_MS / 1000}s）`);
+            return;
+          }
+          setRawPositionError(e.message);
+        })
+        .finally(() => {
+          clearTimeout(rawTimeoutId);
+          if (rawPositionAbortRef.current === rawController) {
+            rawPositionAbortRef.current = null;
+          }
+        });
     } catch (e) {
-      setError(e.message);
+      if (requestId !== requestIdRef.current) return;
+      if (controller.signal.aborted) {
+        setError(timedOut ? `分析超时（>${Math.round(timeoutMs / 1000)}s），请重试。` : '已取消本次分析。');
+      } else {
+        setError(e.message);
+      }
     } finally {
-      setLoading(false);
+      clearTimeout(timeoutId);
+      if (analyzeAbortRef.current === controller) {
+        analyzeAbortRef.current = null;
+      }
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+      }
+    }
+  }, []);
+
+  const onAnalyzePress = () => {
+    const raw = String(targetSymbol || '').trim();
+    if (!raw) {
+      setTargetSymbol('');
+      runAgent({ symbols: [] });
+      return;
+    }
+
+    const symbols = parseSymbolsInput(raw);
+    if (!symbols.length) {
+      Alert.alert('参数错误', '请输入有效代币，例如 BTCUSDT 或 ETH；留空则分析全部持仓。');
+      return;
+    }
+    setTargetSymbol(symbols.join(', '));
+    runAgent({ symbols });
+  };
+
+  const onCancelAnalyze = () => {
+    if (analyzeAbortRef.current) {
+      analyzeAbortRef.current.abort();
     }
   };
 
-  const onAnalyzePress = () => {
-    runAgent({ execute: false, items: [] });
-  };
-
-  const onExecutePress = () => {
+  const onExecutePress = async () => {
     if (policyLoading) {
       Alert.alert('策略加载中', '执行策略尚在加载，请稍后重试。');
       return;
@@ -116,11 +264,15 @@ export default function AIAnalysisPanel() {
       return;
     }
     if (!actionItems.length) {
-      Alert.alert('无可执行建议', '请先点击“开始AI分析”获取建议。');
+      Alert.alert('无可执行建议', '请先点击“使用Agent分析”获取建议。');
       return;
     }
     if (!selectedCount) {
       Alert.alert('未选择建议', '请先勾选要执行的建议。');
+      return;
+    }
+    if (!analyzedSymbol) {
+      Alert.alert('请先分析', '请先点击“使用Agent分析”生成建议。');
       return;
     }
     // 风控预检：逐条检查 open/add 类动作
@@ -156,7 +308,19 @@ export default function AIAnalysisPanel() {
         {
           text: riskWarnings.length > 0 ? '强制执行' : '执行',
           style: 'destructive',
-          onPress: () => runAgent({ execute: true, items: selectedActionItems }),
+          onPress: async () => {
+            setLoading(true);
+            setError(null);
+            try {
+              const res = await api.executeAgent({ action_items: selectedActionItems });
+              const exec = res.data || res;
+              setData((prev) => ({ ...(prev || {}), execution: exec }));
+            } catch (e) {
+              setError(e.message);
+            } finally {
+              setLoading(false);
+            }
+          },
         },
       ],
     );
@@ -187,7 +351,21 @@ export default function AIAnalysisPanel() {
     <ScrollView style={s.root} contentContainerStyle={s.content}>
       <View style={s.headerCard}>
         <Text style={s.title}>Agent 智能分析</Text>
-        <Text style={s.subtitle}>点击按钮后才会触发分析，不再自动轮询</Text>
+        <Text style={s.subtitle}>不会自动分析，仅在点击按钮时分析（可指定代币或全部持仓）</Text>
+        <View style={s.symbolRow}>
+          <TextInput
+            style={s.symbolInput}
+            value={targetSymbol}
+            onChangeText={setTargetSymbol}
+            placeholder="输入代币，如 BTCUSDT,ETH 或 SOL；留空=全部持仓"
+            placeholderTextColor={C.textDim}
+            autoCapitalize="characters"
+            autoCorrect={false}
+          />
+          <View style={s.symbolHintWrap}>
+            <Text style={s.symbolHint}>当前分析: {analyzedSymbol || '未分析'}</Text>
+          </View>
+        </View>
         <View style={s.policyCard}>
           <Text style={s.policyTitle}>执行策略</Text>
           {policyLoading && <Text style={s.policyText}>加载中...</Text>}
@@ -211,15 +389,21 @@ export default function AIAnalysisPanel() {
         </View>
         <View style={s.btnRow}>
           <TouchableOpacity style={s.primaryBtn} onPress={onAnalyzePress} disabled={loading}>
-            <Text style={s.primaryBtnText}>{loading ? '分析中...' : '开始AI分析'}</Text>
+            <Text style={s.primaryBtnText}>{loading ? '分析中...' : '使用Agent分析'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[s.dangerBtn, (!executionEnabled || policyLoading) ? s.btnDisabled : null]}
-            onPress={onExecutePress}
-            disabled={loading || policyLoading || !executionEnabled}
-          >
-            <Text style={s.dangerBtnText}>{executionEnabled ? '执行建议下单' : '执行已禁用'}</Text>
-          </TouchableOpacity>
+          {loading ? (
+            <TouchableOpacity style={s.cancelBtn} onPress={onCancelAnalyze}>
+              <Text style={s.cancelBtnText}>取消分析</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[s.dangerBtn, (!executionEnabled || policyLoading) ? s.btnDisabled : null]}
+              onPress={onExecutePress}
+              disabled={policyLoading || !executionEnabled}
+            >
+              <Text style={s.dangerBtnText}>{executionEnabled ? '执行建议下单' : '执行已禁用'}</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -227,6 +411,7 @@ export default function AIAnalysisPanel() {
         <View style={s.card}>
           <ActivityIndicator size="large" color={C.primary} />
           <Text style={s.loadingText}>正在请求 Agent，请稍候...</Text>
+          <Text style={s.loadingHint}>reasoner 模型可能需要 1-3 分钟；若不想等待可点击上方“取消分析”。</Text>
         </View>
       )}
 
@@ -239,6 +424,67 @@ export default function AIAnalysisPanel() {
 
       {!!data && !loading && (
         <>
+          <View style={s.card}>
+            <Text style={s.cardTitle}>仓位情况分析</Text>
+            {!!rawPositionError && (
+              <Text style={[s.emptyText, { color: C.warn }]}>原始仓位分析加载失败: {rawPositionError}</Text>
+            )}
+            {!rawPositionError && rawPositionItems.length === 0 && <Text style={s.emptyText}>暂无仓位数据</Text>}
+            {rawPositionItems.map((item, idx) => {
+              const isLong = (item.side || '').toUpperCase() === 'LONG';
+              const pnl = Number(item.unrealizedPnl || 0);
+              const pnlPct = Number(item.pnlPercent || 0);
+              return (
+                <View key={`${item.symbol}-${item.side}-${idx}`} style={s.rawPosRow}>
+                  <View style={s.rawPosHead}>
+                    <Text style={s.rawPosSymbol}>{item.symbol || '--'}</Text>
+                    <Text style={[s.sideTag, isLong ? s.sideLong : s.sideShort]}>{item.side || '--'}</Text>
+                  </View>
+                  <View style={s.rawPosMeta}>
+                    <Text style={[s.rawPosPnl, { color: pnl >= 0 ? C.success : C.danger }]}>
+                      浮盈亏: {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} USDT ({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%)
+                    </Text>
+                    <Text style={s.rawPosMetaText}>
+                      入场: {formatPrice(item.entryPrice)} · 现价: {formatPrice(item.markPrice)} · 数量: {Math.abs(Number(item.amount || 0))} · 杠杆: {Number(item.leverage || 0)}x
+                    </Text>
+                  </View>
+                  <Text style={s.rawPosAdvice}>建议: {item.adviceLabel || '-'}</Text>
+                  {(item.reasons || []).slice(0, 3).map((reason, ridx) => (
+                    <Text key={`${item.symbol}-reason-${ridx}`} style={s.rawPosReason}>- {reason}</Text>
+                  ))}
+                </View>
+              );
+            })}
+          </View>
+
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Agent仓位分析</Text>
+            {positionAnalysis.length === 0 && <Text style={s.emptyText}>暂无 position_analysis</Text>}
+            {positionAnalysis.map((item, idx) => {
+              const r = (item.risk || '').toLowerCase();
+              const riskStyle = r === 'critical'
+                ? s.riskCritical
+                : r === 'high'
+                  ? s.riskHigh
+                  : r === 'medium'
+                    ? s.riskMedium
+                    : s.riskLow;
+              return (
+                <View key={`${item.symbol}-${idx}`} style={s.positionRow}>
+                  <View style={s.positionHeader}>
+                    <Text style={s.positionSymbol}>{item.symbol || '--'}</Text>
+                    <Text style={[s.riskTag, riskStyle]}>{item.risk || 'low'}</Text>
+                  </View>
+                  <Text style={s.positionAssessment}>{item.assessment || '-'}</Text>
+                  <Text style={s.positionSuggestion}>建议: {item.suggestion || '-'}</Text>
+                  {(item.reasons || []).slice(0, 4).map((reason, ridx) => (
+                    <Text key={`${item.symbol}-agent-reason-${ridx}`} style={s.positionReason}>- {reason}</Text>
+                  ))}
+                </View>
+              );
+            })}
+          </View>
+
           <View style={s.card}>
             <Text style={s.cardTitle}>分析总结</Text>
             <Text style={s.summaryText}>{data.summary || '无总结'}</Text>
@@ -339,6 +585,28 @@ const s = StyleSheet.create({
     color: C.textDim,
     fontSize: fontSize.sm,
   },
+  symbolRow: {
+    gap: spacing.xs,
+    marginBottom: spacing.xs,
+  },
+  symbolInput: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: radius.sm,
+    backgroundColor: C.bg,
+    color: C.text,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+  },
+  symbolHintWrap: {
+    alignItems: 'flex-end',
+  },
+  symbolHint: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+  },
   policyCard: {
     borderWidth: 1,
     borderColor: C.border,
@@ -391,6 +659,21 @@ const s = StyleSheet.create({
     fontWeight: '900',
     fontSize: fontSize.sm,
   },
+  cancelBtn: {
+    flex: 1,
+    backgroundColor: C.warnBg,
+    borderColor: C.warn,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+  },
+  cancelBtnText: {
+    color: C.warn,
+    fontWeight: '900',
+    fontSize: fontSize.sm,
+  },
   btnDisabled: {
     opacity: 0.45,
   },
@@ -410,6 +693,11 @@ const s = StyleSheet.create({
   loadingText: {
     color: C.textDim,
     fontSize: fontSize.sm,
+    textAlign: 'center',
+  },
+  loadingHint: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
     textAlign: 'center',
   },
   errorTitle: {
@@ -438,6 +726,118 @@ const s = StyleSheet.create({
   emptyText: {
     color: C.textDim,
     fontSize: fontSize.sm,
+  },
+  rawPosRow: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    gap: 4,
+  },
+  rawPosHead: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  rawPosSymbol: {
+    color: C.text,
+    fontSize: fontSize.sm,
+    fontWeight: '800',
+    flex: 1,
+    marginRight: spacing.sm,
+  },
+  sideTag: {
+    fontSize: fontSize.xs,
+    fontWeight: '800',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  sideLong: {
+    color: C.success,
+    backgroundColor: C.successBg,
+  },
+  sideShort: {
+    color: C.danger,
+    backgroundColor: C.dangerBg,
+  },
+  rawPosMeta: {
+    gap: 2,
+  },
+  rawPosPnl: {
+    fontSize: fontSize.sm,
+    fontWeight: '800',
+  },
+  rawPosMetaText: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+  },
+  rawPosAdvice: {
+    color: C.text,
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+  },
+  rawPosReason: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+    lineHeight: 18,
+  },
+  positionRow: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    gap: 4,
+  },
+  positionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  positionSymbol: {
+    color: C.text,
+    fontWeight: '800',
+    fontSize: fontSize.sm,
+    flex: 1,
+    marginRight: spacing.sm,
+  },
+  positionAssessment: {
+    color: C.text,
+    fontSize: fontSize.sm,
+  },
+  positionSuggestion: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+  },
+  positionReason: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+    lineHeight: 18,
+  },
+  riskTag: {
+    fontSize: fontSize.xs,
+    fontWeight: '800',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  riskCritical: {
+    color: C.danger,
+    backgroundColor: C.dangerBg,
+  },
+  riskHigh: {
+    color: C.danger,
+    backgroundColor: C.dangerBg,
+  },
+  riskMedium: {
+    color: C.warn,
+    backgroundColor: C.warnBg,
+  },
+  riskLow: {
+    color: C.success,
+    backgroundColor: C.successBg,
   },
   actionRow: {
     borderWidth: 1,
@@ -544,4 +944,78 @@ const s = StyleSheet.create({
 
 function getActionKey(item, idx) {
   return `${item.symbol || ''}|${item.action || ''}|${item.priority || ''}|${item.detail || ''}|${idx}`;
+}
+
+function normalizeSymbol(input) {
+  const raw = String(input || '').trim().toUpperCase();
+  if (!raw) return '';
+  if (/^[A-Z0-9]+USDT$/.test(raw)) return raw;
+  if (/^[A-Z0-9]+$/.test(raw)) return `${raw}USDT`;
+  return '';
+}
+
+function normalizeSymbolList(inputSymbols) {
+  const seen = new Set();
+  const out = [];
+  (inputSymbols || []).forEach((item) => {
+    const symbol = normalizeSymbol(item);
+    if (!symbol || seen.has(symbol)) return;
+    seen.add(symbol);
+    out.push(symbol);
+  });
+  return out;
+}
+
+function parseSymbolsInput(input) {
+  const tokens = String(input || '')
+    .split(/[,\s，;；]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  return normalizeSymbolList(tokens);
+}
+
+function createEmptyAnalysisResult() {
+  return {
+    summary: '',
+    position_analysis: [],
+    signal_evaluation: [],
+    journal_review: {
+      patterns: [],
+      weaknesses: [],
+      strengths: [],
+      suggestion: '',
+    },
+    action_items: [],
+  };
+}
+
+function mergeAnalysisResult(base, part) {
+  if (!base || !part) return;
+  if (Array.isArray(part.position_analysis)) {
+    base.position_analysis = base.position_analysis.concat(part.position_analysis);
+  }
+  if (Array.isArray(part.signal_evaluation)) {
+    base.signal_evaluation = base.signal_evaluation.concat(part.signal_evaluation);
+  }
+  if (Array.isArray(part.action_items)) {
+    base.action_items = base.action_items.concat(part.action_items);
+  }
+}
+
+function hasAnalysisResult(result) {
+  if (!result) return false;
+  return (
+    (Array.isArray(result.position_analysis) && result.position_analysis.length > 0) ||
+    (Array.isArray(result.signal_evaluation) && result.signal_evaluation.length > 0) ||
+    (Array.isArray(result.action_items) && result.action_items.length > 0) ||
+    !!String(result.summary || '').trim()
+  );
+}
+
+function formatPrice(value) {
+  const p = Number(value || 0);
+  if (!Number.isFinite(p) || p <= 0) return '--';
+  if (p >= 1000) return p.toFixed(1);
+  if (p >= 1) return p.toFixed(2);
+  return p.toFixed(4);
 }

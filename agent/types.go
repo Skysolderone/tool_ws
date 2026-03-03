@@ -4,6 +4,7 @@ package agent
 type AnalysisRequest struct {
 	Mode        string       `json:"mode"`                   // full|positions|signals|journal|sentiment
 	Symbols     []string     `json:"symbols"`                // 可选：指定币种过滤
+	Mock        bool         `json:"mock,omitempty"`         // 调试：返回 mock 分析结果（不调用 LLM）
 	Execute     bool         `json:"execute,omitempty"`      // 是否执行 action_items
 	ActionItems []ActionItem `json:"action_items,omitempty"` // 可选：执行指定动作；为空时执行本次分析动作
 }
@@ -20,10 +21,11 @@ type AnalysisOutput struct {
 
 // PositionAdvice 单个持仓的 LLM 分析。
 type PositionAdvice struct {
-	Symbol     string `json:"symbol"`
-	Assessment string `json:"assessment"`
-	Risk       string `json:"risk"` // low|medium|high|critical
-	Suggestion string `json:"suggestion"`
+	Symbol     string   `json:"symbol"`
+	Assessment string   `json:"assessment"`
+	Risk       string   `json:"risk"` // low|medium|high|critical
+	Suggestion string   `json:"suggestion"`
+	Reasons    []string `json:"reasons,omitempty"` // 触发该建议的原因
 }
 
 // SignalEval 推荐信号评估。

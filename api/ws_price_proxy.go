@@ -19,7 +19,7 @@ import (
 )
 
 // ========== 价格转发中心 ==========
-// 后端订阅币安 aggTrade，转发给所有连接的 app 客户端
+// 后端订阅币安 markPrice，转发给所有连接的 app 客户端
 // app 不再直连币安，解决国内网络问题
 
 // priceHub 管理所有 symbol 的价格订阅和客户端连接
@@ -205,7 +205,7 @@ func (h *priceHub) stopRoom(symbol string) {
 	}
 }
 
-// startBinanceStream 连接币安 aggTrade 并广播给所有客户端
+// startBinanceStream 连接币安 markPrice 并广播给所有客户端
 func (h *priceHub) startBinanceStream(room *symbolRoom) {
 	sym := strings.ToLower(room.symbol)
 	backoff := time.Second
@@ -217,11 +217,11 @@ func (h *priceHub) startBinanceStream(room *symbolRoom) {
 		default:
 		}
 
-		log.Printf("[WsProxy] Connecting to Binance aggTrade for %s", room.symbol)
+		log.Printf("[WsProxy] Connecting to Binance markPrice for %s", room.symbol)
 
-		doneC, stopC, err := futures.WsAggTradeServe(sym, func(event *futures.WsAggTradeEvent) {
+		doneC, stopC, err := futures.WsMarkPriceServeWithRate(sym, time.Second, func(event *futures.WsMarkPriceEvent) {
 			room.mu.Lock()
-			room.lastPrice = event.Price
+			room.lastPrice = event.MarkPrice
 			clients := make([]*wsClient, 0, len(room.clients))
 			for c := range room.clients {
 				clients = append(clients, c)
@@ -229,14 +229,14 @@ func (h *priceHub) startBinanceStream(room *symbolRoom) {
 			room.mu.Unlock()
 
 			// 记录数据质量指标 + 降级恢复
-			if price, parseErr := strconv.ParseFloat(event.Price, 64); parseErr == nil {
+			if price, parseErr := strconv.ParseFloat(event.MarkPrice, 64); parseErr == nil {
 				RecordTick(event.Symbol, price, event.Time)
 			}
 			RecordWsData(event.Symbol)
 
 			msg, _ := json.Marshal(PriceMsg{
 				Symbol: event.Symbol,
-				Price:  event.Price,
+				Price:  event.MarkPrice,
 				Time:   event.Time,
 			})
 

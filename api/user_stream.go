@@ -211,6 +211,7 @@ func createCloseTradeRecordFromUpdate(update futures.WsOrderTradeUpdate) error {
 	}
 
 	pnl := parseNumeric(update.RealizedPnL)
+	leverage := resolveCloseTradeLeverage(strings.ToUpper(strings.TrimSpace(update.Symbol)), positionSide)
 	record := &TradeRecord{
 		Source:        "manual",
 		Symbol:        strings.ToUpper(strings.TrimSpace(update.Symbol)),
@@ -221,6 +222,7 @@ func createCloseTradeRecordFromUpdate(update futures.WsOrderTradeUpdate) error {
 		Quantity:      qty,
 		Price:         price,
 		QuoteQuantity: qty * price,
+		Leverage:      leverage,
 		RealizedPnl:   pnl,
 		CloseReason:   closeReason,
 		ClosedAt:      &now,
@@ -241,6 +243,28 @@ func createCloseTradeRecordFromUpdate(update futures.WsOrderTradeUpdate) error {
 	}
 	log.Printf("[UserStream] Created close trade record: orderId=%d, symbol=%s, pnl=%.8f", update.ID, record.Symbol, pnl)
 	return nil
+}
+
+func resolveCloseTradeLeverage(symbol, positionSide string) int {
+	if DB == nil || symbol == "" {
+		return 0
+	}
+
+	var record TradeRecord
+	q := DB.Where("symbol = ? AND leverage > 0", symbol).Order("created_at DESC")
+	if positionSide != "" && positionSide != string(futures.PositionSideTypeBoth) {
+		q = q.Where("position_side = ? OR position_side = ?", positionSide, string(futures.PositionSideTypeBoth))
+	}
+	if err := q.First(&record).Error; err == nil && record.Leverage > 0 {
+		return record.Leverage
+	}
+
+	// 兜底：不区分方向取最近一次有杠杆记录
+	record = TradeRecord{}
+	if err := DB.Where("symbol = ? AND leverage > 0", symbol).Order("created_at DESC").First(&record).Error; err == nil {
+		return record.Leverage
+	}
+	return 0
 }
 
 func markLatestOpenTradeClosed(symbol, positionSide string, closedAt time.Time) {

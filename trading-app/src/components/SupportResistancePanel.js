@@ -544,7 +544,7 @@ const styles = StyleSheet.create({
   },
   reasonBox: {
     marginTop: spacing.sm,
-    backgroundColor: 'rgba(0,229,255,0.06)',
+    backgroundColor: 'rgba(255,184,77,0.08)',
     borderRadius: radius.sm,
     padding: spacing.sm,
     borderLeftWidth: 2,

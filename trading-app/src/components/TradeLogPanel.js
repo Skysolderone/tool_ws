@@ -51,7 +51,7 @@ function todayKey() {
   return dateKey(new Date());
 }
 
-export default function TradeLogPanel({ symbol }) {
+export default function TradeLogPanel() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth()); // 0-indexed
@@ -62,8 +62,8 @@ export default function TradeLogPanel({ symbol }) {
 
   const fetchTrades = useCallback(async () => {
     const [tradeRes, opRes] = await Promise.allSettled([
-      api.getTrades(symbol, 200),
-      api.getOperations(symbol, '', 200),
+      api.getTrades('', 200),
+      api.getOperations('', '', 200),
     ]);
 
     if (tradeRes.status === 'fulfilled') {
@@ -79,7 +79,7 @@ export default function TradeLogPanel({ symbol }) {
     }
 
     setLoading(false);
-  }, [symbol]);
+  }, []);
 
   useEffect(() => {
     fetchTrades();
@@ -293,6 +293,8 @@ export default function TradeLogPanel({ symbol }) {
 
             const date = new Date(item.createdAt);
             const timeStr = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
+            const leverageNum = Number(item.leverage || 0);
+            const leverageText = leverageNum > 0 ? `${leverageNum}x` : '--';
 
             return (
               <View key={item.id || item.orderId || idx} style={styles.tradeItem}>
@@ -305,7 +307,7 @@ export default function TradeLogPanel({ symbol }) {
                       </Text>
                     </View>
                     <View style={[styles.badge, { backgroundColor: colors.goldBg }]}>
-                      <Text style={[styles.badgeText, { color: colors.gold }]}>{item.leverage}x</Text>
+                      <Text style={[styles.badgeText, { color: colors.gold }]}>{leverageText}</Text>
                     </View>
                     <View style={[styles.badge, {
                       backgroundColor: item.status === 'OPEN' ? colors.greenBg : colors.surface,

@@ -712,7 +712,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     marginRight: spacing.sm,
     borderWidth: 1,
-    borderColor: 'rgba(0,229,255,0.3)',
+    borderColor: colors.gold,
     minWidth: 80,
   },
   tplChipName: {

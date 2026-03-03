@@ -43,6 +43,12 @@ var recTimeframes = []recTimeframe{
 	{interval: "1h", label: "1H", weight: 1.5, refreshEvery: 15 * time.Minute, klineLimit: 80},
 }
 
+const (
+	recMinTakeProfitDistancePct = 0.8
+	recFallbackTakeProfitPct    = 2.0
+	recMinRiskReward            = 1.2
+)
+
 // ========== 数据结构 ==========
 
 // tfSignal 单个时间框架对单个币种的分析结果
@@ -59,26 +65,26 @@ type tfSignal struct {
 
 // RecommendItem 单条推荐
 type RecommendItem struct {
-	Symbol     string     `json:"symbol"`
-	Direction  string     `json:"direction"`  // LONG / SHORT
-	Confidence int        `json:"confidence"` // 0-100
-	Entry      float64    `json:"entry"`
-	StopLoss   float64    `json:"stopLoss"`
-	TakeProfit float64    `json:"takeProfit"`
-	Reasons    []string   `json:"reasons"`
-	Signals    []tfSignal `json:"signals"` // 各时间框架信号
+	Symbol     string      `json:"symbol"`
+	Direction  string      `json:"direction"`  // LONG / SHORT
+	Confidence int         `json:"confidence"` // 0-100
+	Entry      float64     `json:"entry"`
+	StopLoss   float64     `json:"stopLoss"`
+	TakeProfit float64     `json:"takeProfit"`
+	Reasons    []string    `json:"reasons"`
+	Signals    []tfSignal  `json:"signals"` // 各时间框架信号
 	Scores     ScoreDetail `json:"scores"`
 }
 
 // ScoreDetail 各维度评分明细
 type ScoreDetail struct {
-	RSI       float64 `json:"rsi"`
-	Volume    float64 `json:"volume"`
-	Pattern   float64 `json:"pattern"`
-	Trend     float64 `json:"trend"`
-	SR        float64 `json:"sr"`
-	Funding   float64 `json:"funding"`
-	Total     float64 `json:"total"`
+	RSI     float64 `json:"rsi"`
+	Volume  float64 `json:"volume"`
+	Pattern float64 `json:"pattern"`
+	Trend   float64 `json:"trend"`
+	SR      float64 `json:"sr"`
+	Funding float64 `json:"funding"`
+	Total   float64 `json:"total"`
 }
 
 // MarketSentiment 全局市场情绪
@@ -109,8 +115,8 @@ type recCache struct {
 
 var (
 	// recCaches[interval] → cache
-	recCaches     = map[string]*recCache{}
-	recCachesMu   sync.RWMutex
+	recCaches      = map[string]*recCache{}
+	recCachesMu    sync.RWMutex
 	sentimentCache struct {
 		sync.RWMutex
 		data      MarketSentiment
@@ -633,6 +639,7 @@ func mergeTimeframes(symbol string) *RecommendItem {
 	fundingScore := 0.0
 
 	// 支撑阻力
+	var srData *SRResponse
 	srCtx, srCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	srData, srErr := GetSRLevels(srCtx, symbol)
 	srCancel()
@@ -709,6 +716,7 @@ func mergeTimeframes(symbol string) *RecommendItem {
 			takeProfit = entry * 0.96
 		}
 	}
+	takeProfit, reasons = applyTakeProfitGuard(direction, entry, stopLoss, takeProfit, srData, reasons)
 
 	// 最终得分：多TF加权平均 + 一致性 + SR + funding，满分约 13
 	total := avgScore + alignBonus + srScore + fundingScore
@@ -764,6 +772,104 @@ func mergeTimeframes(symbol string) *RecommendItem {
 	}
 }
 
+func selectFurtherTPFromSR(direction string, entry float64, srData *SRResponse, minDistPct float64) (float64, bool) {
+	if srData == nil || entry <= 0 {
+		return 0, false
+	}
+
+	bestPrice := 0.0
+	bestDist := math.MaxFloat64
+
+	switch direction {
+	case "LONG":
+		for _, level := range srData.Resistances {
+			if level.Price <= entry {
+				continue
+			}
+			distPct := (level.Price - entry) / entry * 100
+			if distPct < minDistPct || distPct >= bestDist {
+				continue
+			}
+			bestDist = distPct
+			bestPrice = level.Price
+		}
+	case "SHORT":
+		for _, level := range srData.Supports {
+			if level.Price >= entry {
+				continue
+			}
+			distPct := (entry - level.Price) / entry * 100
+			if distPct < minDistPct || distPct >= bestDist {
+				continue
+			}
+			bestDist = distPct
+			bestPrice = level.Price
+		}
+	}
+
+	if bestPrice <= 0 {
+		return 0, false
+	}
+	return bestPrice, true
+}
+
+func applyTakeProfitGuard(direction string, entry, stopLoss, takeProfit float64, srData *SRResponse, reasons []string) (float64, []string) {
+	if entry <= 0 || takeProfit <= 0 {
+		return takeProfit, reasons
+	}
+
+	tpDistPct := math.Abs(takeProfit-entry) / entry * 100
+	if tpDistPct < recMinTakeProfitDistancePct {
+		oldDist := tpDistPct
+		if srTP, ok := selectFurtherTPFromSR(direction, entry, srData, recMinTakeProfitDistancePct); ok {
+			takeProfit = srTP
+		} else if direction == "LONG" {
+			takeProfit = entry * (1 + recFallbackTakeProfitPct/100)
+		} else if direction == "SHORT" {
+			takeProfit = entry * (1 - recFallbackTakeProfitPct/100)
+		}
+
+		if takeProfit > 0 {
+			newDist := math.Abs(takeProfit-entry) / entry * 100
+			reasons = append(reasons, fmt.Sprintf("防护策略：止盈目标过近(%.2f%%)，已调整为 %.2f%%", oldDist, newDist))
+		}
+	}
+
+	if stopLoss <= 0 || takeProfit <= 0 {
+		return takeProfit, reasons
+	}
+
+	slDist := math.Abs(entry - stopLoss)
+	tpDist := math.Abs(takeProfit - entry)
+	if slDist <= 0 {
+		return takeProfit, reasons
+	}
+
+	rr := tpDist / slDist
+	if rr >= recMinRiskReward {
+		return takeProfit, reasons
+	}
+
+	targetTPDist := slDist * recMinRiskReward
+	updated := takeProfit
+	if direction == "LONG" {
+		updated = entry + targetTPDist
+		if updated > takeProfit {
+			takeProfit = updated
+		}
+	} else if direction == "SHORT" {
+		updated = entry - targetTPDist
+		if updated < takeProfit {
+			takeProfit = updated
+		}
+	}
+	if takeProfit != updated {
+		return takeProfit, reasons
+	}
+	reasons = append(reasons, fmt.Sprintf("防护策略：盈亏比 %.2f 偏低，已提升到至少 1:%.1f", rr, recMinRiskReward))
+	return takeProfit, reasons
+}
+
 // ========== 市场情绪 ==========
 
 func calcMarketSentiment() MarketSentiment {
@@ -816,39 +922,46 @@ func calcMarketSentiment() MarketSentiment {
 
 // PositionAnalysis 单条持仓分析结果
 type PositionAnalysis struct {
-	Symbol       string     `json:"symbol"`
-	Side         string     `json:"side"`         // LONG / SHORT
-	EntryPrice   float64    `json:"entryPrice"`
-	MarkPrice    float64    `json:"markPrice"`
-	Amount       float64    `json:"amount"`
-	Leverage     int        `json:"leverage"`
-	UnrealizedPnl float64  `json:"unrealizedPnl"`
-	PnlPercent   float64    `json:"pnlPercent"`   // 盈亏百分比
-	Direction    string     `json:"direction"`     // AI 建议方向 LONG/SHORT
-	Confidence   int        `json:"confidence"`
-	Advice       string     `json:"advice"`        // hold / take_profit / stop_loss / add / reduce / close
-	AdviceLabel  string     `json:"adviceLabel"`   // 中文建议
-	Reasons      []string   `json:"reasons"`
-	Signals      []tfSignal `json:"signals"`
-	StopLoss     float64    `json:"stopLoss"`
-	TakeProfit   float64    `json:"takeProfit"`
+	Symbol        string     `json:"symbol"`
+	Side          string     `json:"side"` // LONG / SHORT
+	EntryPrice    float64    `json:"entryPrice"`
+	MarkPrice     float64    `json:"markPrice"`
+	Amount        float64    `json:"amount"`
+	Leverage      int        `json:"leverage"`
+	UnrealizedPnl float64    `json:"unrealizedPnl"`
+	PnlPercent    float64    `json:"pnlPercent"` // 盈亏百分比
+	Direction     string     `json:"direction"`  // AI 建议方向 LONG/SHORT
+	Confidence    int        `json:"confidence"`
+	Advice        string     `json:"advice"`      // hold / take_profit / stop_loss / add / reduce / close
+	AdviceLabel   string     `json:"adviceLabel"` // 中文建议
+	Reasons       []string   `json:"reasons"`
+	Signals       []tfSignal `json:"signals"`
+	StopLoss      float64    `json:"stopLoss"`
+	TakeProfit    float64    `json:"takeProfit"`
 }
 
 // AnalyzeResponse 分析返回
 type AnalyzeResponse struct {
-	Items     []PositionAnalysis `json:"items"`
-	Sentiment MarketSentiment    `json:"sentiment"`
-	AnalyzedAt string            `json:"analyzedAt"`
-	Count     int                `json:"count"`
+	Items      []PositionAnalysis `json:"items"`
+	Sentiment  MarketSentiment    `json:"sentiment"`
+	AnalyzedAt string             `json:"analyzedAt"`
+	Count      int                `json:"count"`
 }
 
 // HandleRecommendAnalyze GET /tool/recommend/analyze
 func HandleRecommendAnalyze(c context.Context, ctx *app.RequestContext) {
+	start := time.Now()
+	reqID := strconv.FormatInt(time.Now().UnixNano(), 36)
+	log.Printf("[RecommendAnalyze][%s] start", reqID)
+
+	fetchStart := time.Now()
 	positions, err := GetPositionsViaWs(c)
 	if err != nil {
+		log.Printf("[RecommendAnalyze][%s] get_positions failed after=%v err=%v", reqID, time.Since(fetchStart).Round(time.Millisecond), err)
 		ctx.JSON(http.StatusInternalServerError, utils.H{"error": "获取持仓失败: " + err.Error()})
 		return
 	}
+	log.Printf("[RecommendAnalyze][%s] get_positions done after=%v count=%d", reqID, time.Since(fetchStart).Round(time.Millisecond), len(positions))
 
 	sentimentCache.RLock()
 	sentiment := sentimentCache.data
@@ -860,12 +973,15 @@ func HandleRecommendAnalyze(c context.Context, ctx *app.RequestContext) {
 		pa *PositionAnalysis
 	}
 	resultCh := make(chan result, len(positions))
+	analyzeStart := time.Now()
+	activePositions := 0
 
 	for _, pos := range positions {
 		amt, _ := strconv.ParseFloat(pos.PositionAmt, 64)
 		if amt == 0 {
 			continue
 		}
+		activePositions++
 		wg.Add(1)
 		go func(p posInfo) {
 			defer wg.Done()
@@ -892,6 +1008,7 @@ func HandleRecommendAnalyze(c context.Context, ctx *app.RequestContext) {
 			items = append(items, *res.pa)
 		}
 	}
+	log.Printf("[RecommendAnalyze][%s] analyze_positions done after=%v active=%d output=%d", reqID, time.Since(analyzeStart).Round(time.Millisecond), activePositions, len(items))
 
 	// 按盈亏百分比排序（亏最多的排前面，需要关注）
 	sort.Slice(items, func(i, j int) bool {
@@ -906,6 +1023,7 @@ func HandleRecommendAnalyze(c context.Context, ctx *app.RequestContext) {
 			Count:      len(items),
 		},
 	})
+	log.Printf("[RecommendAnalyze][%s] done after=%v", reqID, time.Since(start).Round(time.Millisecond))
 }
 
 type posInfo struct {

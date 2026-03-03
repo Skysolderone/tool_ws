@@ -78,6 +78,8 @@ func main() {
 
 	// 启动推荐交易预计算引擎（后台多时间框架定时刷新）
 	api.StartRecommendEngine()
+	// 启动常驻资讯抓取（不依赖 ws/news 客户端连接）
+	api.StartNewsBackgroundFetcher()
 	// 每小时检测资讯源可用性
 	api.StartNewsSourceHealthMonitor()
 
@@ -114,7 +116,8 @@ func main() {
 	h := server.New(
 		server.WithHostPorts(addr),
 		server.WithReadTimeout(15*time.Second),
-		server.WithWriteTimeout(20*time.Second),
+		// Agent 分析接口可能耗时接近 55s；写超时过短会被网关放大成 504。
+		server.WithWriteTimeout(90*time.Second),
 		server.WithIdleTimeout(60*time.Second),
 		server.WithKeepAliveTimeout(60*time.Second),
 		server.WithExitWaitTime(20*time.Second),

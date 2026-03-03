@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ScrollView, Text, StyleSheet, View, TouchableOpacity,
-  TextInput, Alert, Modal,
+  TextInput, Alert, Modal, Platform, StatusBar as RNStatusBar,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
@@ -42,13 +42,13 @@ const DEFAULT_WATCH_ADDRESSES = [
 
 // ==================== 底部主 Tab ====================
 const MAIN_TABS = [
-  { key: 'trade', label: '交易', icon: '⇅' },
-  { key: 'strategy', label: '策略', icon: '⚙' },
-  { key: 'monitor', label: '监控', icon: '◉' },
-  { key: 'recommend', label: 'AI', icon: '⬡' },
-  { key: 'analysis', label: '分析', icon: '◈' },
-  { key: 'info', label: '资讯', icon: '◎' },
-  { key: 'me', label: '我的', icon: '▣' },
+  { key: 'trade', label: '交易' },
+  { key: 'strategy', label: '策略' },
+  { key: 'monitor', label: '监控' },
+  { key: 'recommend', label: 'AI推荐' },
+  { key: 'analysis', label: 'AI分析' },
+  { key: 'info', label: '资讯' },
+  { key: 'me', label: '账户' },
 ];
 
 // 交易 Tab 子页签
@@ -71,6 +71,8 @@ const MONITOR_SUB_TABS = [
 ];
 
 export default function App() {
+  const androidStatusBarHeight = Platform.OS === 'android' ? (RNStatusBar.currentHeight || 0) : 0;
+
   // ===== 主Tab状态 =====
   const [activeTab, setActiveTab] = useState('trade');
   const [tradeSubTab, setTradeSubTab] = useState('order');
@@ -106,6 +108,24 @@ export default function App() {
   const lastUpdateRef = useRef(0);
   const pendingPriceRef = useRef(null);
   const rafRef = useRef(null);
+  const activeMainTabLabel = useMemo(
+    () => MAIN_TABS.find((tab) => tab.key === activeTab)?.label || '',
+    [activeTab],
+  );
+  const topPriceText = useMemo(() => {
+    if (markPrice == null) return '--';
+    if (markPrice >= 1000) return markPrice.toFixed(2);
+    if (markPrice >= 1) return markPrice.toFixed(4);
+    return markPrice.toFixed(6);
+  }, [markPrice]);
+  const openPositionCount = useMemo(
+    () => (accountSnapshot.positions || []).filter((p) => Math.abs(parseFloat(p.positionAmt || '0')) > 0).length,
+    [accountSnapshot.positions],
+  );
+  const floatingPnl = useMemo(
+    () => (accountSnapshot.positions || []).reduce((sum, p) => sum + parseFloat(p.unRealizedProfit || '0'), 0),
+    [accountSnapshot.positions],
+  );
 
   const throttledSetPrice = useCallback((price) => {
     pendingPriceRef.current = price;
@@ -144,7 +164,7 @@ export default function App() {
       await refreshAccountSnapshot();
     };
     run();
-    const timer = setInterval(run, 5000);
+    const timer = setInterval(run, 2000);
     return () => {
       active = false;
       clearInterval(timer);
@@ -284,15 +304,40 @@ export default function App() {
   // ======================== 渲染 ========================
   return (
     <View style={styles.container}>
-      <StatusBar style="light" />
+      <StatusBar style="light" translucent={false} backgroundColor={colors.bg} />
 
-      {/* 顶部安全区 */}
-      <View style={styles.safeTop} />
+      {/* 顶部安全区 + 标题条 */}
+      <View style={[styles.safeTop, { paddingTop: androidStatusBarHeight + 10 }]}>
+        <View style={styles.topBar}>
+          <View style={styles.topLeft}>
+            <Text style={styles.topTitle}>USDT 永续</Text>
+            <Text style={styles.topSubtitle}>{tradeSymbol} · {activeMainTabLabel}</Text>
+          </View>
+          <View style={styles.topRight}>
+            <View style={styles.topMetaRow}>
+              <Text style={styles.topMetaLabel}>标记价</Text>
+              <Text style={styles.topMetaValue}>{topPriceText}</Text>
+            </View>
+            <View style={styles.topMetaRow}>
+              <Text style={styles.topMetaLabel}>持仓</Text>
+              <Text style={styles.topMetaValue}>{openPositionCount}</Text>
+              <Text style={[
+                styles.topPnlText,
+                { color: floatingPnl >= 0 ? colors.greenLight : colors.redLight },
+              ]}
+              >
+                {floatingPnl >= 0 ? '+' : ''}{floatingPnl.toFixed(2)}U
+              </Text>
+            </View>
+          </View>
+        </View>
+      </View>
 
       {/* 内容区 */}
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
+        contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
@@ -325,6 +370,7 @@ export default function App() {
               <PositionPanel
                 symbol={tradeSymbol}
                 positions={accountSnapshot.positions}
+                liveMarkPrice={markPrice}
                 onRefreshPositions={refreshAccountSnapshot}
               />
             )}
@@ -335,7 +381,7 @@ export default function App() {
               <OrderBookPanel symbol={tradeSymbol} />
             )}
             {tradeSubTab === 'log' && (
-              <TradeLogPanel symbol={tradeSymbol} />
+              <TradeLogPanel />
             )}
           </>
         )}
@@ -514,57 +560,22 @@ export default function App() {
       {/* ==================== 底部 Tab Bar ==================== */}
       <View style={styles.tabBarWrap}>
         <View style={styles.tabBar}>
-          {/* 左三 */}
-          <View style={styles.tabGroupLeft}>
-            {MAIN_TABS.slice(0, 3).map((tab) => {
-              const isActive = activeTab === tab.key;
-              const showBadge = (tab.key === 'info' && infoBadge) || (tab.key === 'monitor' && monitorBadge);
-              return (
-                <TouchableOpacity
-                  key={tab.key}
-                  style={styles.tabItem}
-                  onPress={() => switchMainTab(tab.key)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={[styles.tabIcon, isActive && styles.tabIconActive]}>{tab.icon}</Text>
-                  <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>{tab.label}</Text>
-                  {isActive && <View style={styles.tabIndicator} />}
-                  {showBadge && <View style={styles.tabBadgeDot} />}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-          {/* 中间分隔 */}
-          <View style={styles.tabDivider} />
-          {/* 右四 */}
-          <View style={styles.tabGroupRight}>
-            {MAIN_TABS.slice(3).map((tab) => {
-              const isActive = activeTab === tab.key;
-              const showBadge = (tab.key === 'info' && infoBadge) || (tab.key === 'monitor' && monitorBadge);
-              const isAI = tab.key === 'recommend' || tab.key === 'analysis';
-              return (
-                <TouchableOpacity
-                  key={tab.key}
-                  style={styles.tabItem}
-                  onPress={() => switchMainTab(tab.key)}
-                  activeOpacity={0.7}
-                >
-                  {isAI ? (
-                    <View style={[styles.aiIconWrap, isActive && styles.aiIconWrapActive]}>
-                      <Text style={[styles.aiIcon, isActive && styles.aiIconActive]}>{tab.icon}</Text>
-                    </View>
-                  ) : (
-                    <Text style={[styles.tabIcon, isActive && styles.tabIconActive]}>{tab.icon}</Text>
-                  )}
-                  <Text style={[styles.tabLabel, isAI && styles.aiLabel, isActive && (isAI ? styles.aiLabelActive : styles.tabLabelActive)]}>
-                    {tab.label}
-                  </Text>
-                  {isActive && !isAI && <View style={styles.tabIndicator} />}
-                  {showBadge && <View style={styles.tabBadgeDot} />}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+          {MAIN_TABS.map((tab) => {
+            const isActive = activeTab === tab.key;
+            const showBadge = (tab.key === 'info' && infoBadge) || (tab.key === 'monitor' && monitorBadge);
+            return (
+              <TouchableOpacity
+                key={tab.key}
+                style={[styles.tabItem, isActive && styles.tabItemActive]}
+                onPress={() => switchMainTab(tab.key)}
+                activeOpacity={0.75}
+              >
+                {isActive && <View style={styles.tabIndicator} />}
+                <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>{tab.label}</Text>
+                {showBadge && <View style={styles.tabBadgeDot} />}
+              </TouchableOpacity>
+            );
+          })}
         </View>
       </View>
     </View>
@@ -863,16 +874,71 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
   },
   safeTop: {
-    height: 54,
+    paddingTop: 10,
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.sm,
     backgroundColor: colors.bg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+  },
+  topBar: {
+    minHeight: 64,
+    borderRadius: radius.md,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  topLeft: {
+    flex: 1,
+    gap: 2,
+  },
+  topRight: {
+    alignItems: 'flex-end',
+    gap: 2,
+  },
+  topTitle: {
+    color: colors.text,
+    fontSize: fontSize.md,
+    fontWeight: '700',
+  },
+  topSubtitle: {
+    color: colors.textSecondary,
+    fontSize: fontSize.xs,
+    fontWeight: '500',
+  },
+  topMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  topMetaLabel: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    fontWeight: '500',
+  },
+  topMetaValue: {
+    color: colors.text,
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  topPnlText: {
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
   },
   scroll: {
     flex: 1,
   },
   content: {
     paddingHorizontal: spacing.md,
-    paddingTop: spacing.xs,
-    paddingBottom: 100,
+    paddingTop: spacing.sm,
+    paddingBottom: 110,
     gap: spacing.sm,
   },
   hidden: {
@@ -888,12 +954,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    backgroundColor: colors.card,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
     paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
   },
   sectionTitle: {
-    fontSize: fontSize.xl,
-    fontWeight: '800',
-    color: colors.white,
+    fontSize: fontSize.lg,
+    fontWeight: '700',
+    color: colors.text,
   },
 
   // ===== Hyper地址输入 =====
@@ -938,7 +1009,6 @@ const styles = StyleSheet.create({
     fontSize: fontSize.xs,
     color: colors.textMuted,
     marginBottom: spacing.sm,
-    fontFamily: 'monospace',
   },
   hyperAddrRow: {
     flexDirection: 'row',
@@ -960,10 +1030,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     borderRadius: radius.md,
-    backgroundColor: colors.gold,
+    backgroundColor: colors.goldBg,
+    borderWidth: 1,
+    borderColor: colors.gold,
   },
   hyperAddrBtnText: {
-    color: colors.white,
+    color: colors.text,
     fontWeight: '700',
     fontSize: fontSize.sm,
   },
@@ -974,127 +1046,65 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(10, 14, 20, 0.95)',
+    backgroundColor: colors.bg,
     borderTopWidth: 1,
     borderTopColor: colors.divider,
-    paddingBottom: 20, // 安全区
+    paddingBottom: 12,
   },
   tabBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: spacing.md,
+    justifyContent: 'space-between',
+    backgroundColor: colors.bg,
     paddingHorizontal: spacing.sm,
-  },
-  tabGroupLeft: {
-    flex: 3,
-    flexDirection: 'row',
-  },
-  tabGroupRight: {
-    flex: 4,
-    flexDirection: 'row',
-  },
-  tabDivider: {
-    width: 1,
-    height: 28,
-    backgroundColor: colors.cardBorder,
-    marginHorizontal: spacing.xs,
-    borderRadius: 0.5,
-    opacity: 0.6,
+    paddingTop: spacing.sm,
   },
   tabItem: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: spacing.xs,
+    justifyContent: 'center',
+    minHeight: 42,
+    marginHorizontal: 1,
+    borderRadius: radius.sm,
     position: 'relative',
   },
-  tabIcon: {
-    fontSize: 22,
-    color: colors.textMuted,
-    marginBottom: 2,
-  },
-  tabIconActive: {
-    color: colors.gold,
-    textShadowColor: colors.goldGlow,
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
+  tabItemActive: {
+    backgroundColor: colors.card,
   },
   tabLabel: {
-    fontSize: fontSize.xs,
+    fontSize: 11,
     color: colors.textMuted,
     fontWeight: '600',
   },
   tabLabelActive: {
-    color: colors.gold,
+    color: colors.text,
     fontWeight: '700',
   },
   tabIndicator: {
     position: 'absolute',
-    top: -2,
+    top: 0,
     width: 28,
-    height: 2.5,
-    borderRadius: 1.25,
+    height: 2,
+    borderRadius: radius.pill,
     backgroundColor: colors.gold,
   },
   tabBadgeDot: {
     position: 'absolute',
-    top: 0,
-    right: '25%',
+    top: 8,
+    right: '30%',
     width: 6,
     height: 6,
     borderRadius: 3,
     backgroundColor: colors.red,
   },
-  // ===== AI 系列 Tab 科技风图标 =====
-  aiIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: colors.goldBg,
-    borderWidth: 1,
-    borderColor: 'rgba(0,229,255,0.3)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 1,
-  },
-  aiIconWrapActive: {
-    backgroundColor: 'rgba(0,229,255,0.15)',
-    borderColor: colors.gold,
-    shadowColor: colors.gold,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.5,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  aiIcon: {
-    fontSize: 16,
-    color: colors.gold,
-    fontWeight: '900',
-    fontFamily: 'monospace',
-  },
-  aiIconActive: {
-    textShadowColor: colors.goldGlow,
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
-  },
-  aiLabel: {
-    color: colors.gold,
-    fontFamily: 'monospace',
-    letterSpacing: 0.5,
-  },
-  aiLabelActive: {
-    color: colors.goldLight,
-    fontWeight: '800',
-  },
 
   // ===== Dashboard 我的 =====
   dashCard: {
     backgroundColor: colors.card,
-    borderRadius: radius.lg,
+    borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.cardBorder,
     padding: spacing.lg,
-    borderTopWidth: 2,
-    borderTopColor: colors.gold,
   },
   dashCardHeader: {
     flexDirection: 'row',

@@ -8,13 +8,25 @@ import SymbolPicker from './SymbolPicker';
  * 左: SymbolPicker  中: 实时价格+涨跌  右: 余额+今日盈亏
  */
 export default function AccountBar({ symbol, onChangeSymbol, markPrice, balance, positions = [] }) {
-  const todayPnl = useMemo(() => {
-    let pnl = 0;
+  const { displayPnl, pnlLabel } = useMemo(() => {
+    let totalPnl = 0;
+    let symbolPnl = 0;
+    let hasSymbolPosition = false;
+
     positions.forEach((p) => {
-      pnl += parseFloat(p.unRealizedProfit || '0');
+      const pnl = parseFloat(p.unRealizedProfit || '0');
+      totalPnl += pnl;
+      if (p.symbol === symbol) {
+        symbolPnl += pnl;
+        hasSymbolPosition = true;
+      }
     });
-    return pnl;
-  }, [positions]);
+
+    return {
+      displayPnl: hasSymbolPosition ? symbolPnl : totalPnl,
+      pnlLabel: hasSymbolPosition ? '当前币对盈亏' : '总持仓盈亏',
+    };
+  }, [positions, symbol]);
 
   const fmtPrice = (v) => {
     if (v == null) return '--';
@@ -34,6 +46,7 @@ export default function AccountBar({ symbol, onChangeSymbol, markPrice, balance,
       <View style={styles.row}>
         <SymbolPicker symbol={symbol} onChangeSymbol={onChangeSymbol} />
         <View style={styles.priceBox}>
+          <Text style={styles.priceLabel}>标记价格</Text>
           <Text style={styles.price}>{fmtPrice(markPrice)}</Text>
         </View>
       </View>
@@ -47,11 +60,11 @@ export default function AccountBar({ symbol, onChangeSymbol, markPrice, balance,
         </View>
         <View style={styles.divider} />
         <View style={styles.statItem}>
-          <Text style={styles.statLabel}>持仓盈亏</Text>
-          <Text style={[styles.statValue, todayPnl != null && {
-            color: todayPnl >= 0 ? colors.greenLight : colors.redLight,
+          <Text style={styles.statLabel}>{pnlLabel}</Text>
+          <Text style={[styles.statValue, displayPnl != null && {
+            color: displayPnl >= 0 ? colors.greenLight : colors.redLight,
           }]}>
-            {fmtUsd(todayPnl)} U
+            {fmtUsd(displayPnl)} U
           </Text>
         </View>
       </View>
@@ -62,7 +75,7 @@ export default function AccountBar({ symbol, onChangeSymbol, markPrice, balance,
 const styles = StyleSheet.create({
   wrap: {
     backgroundColor: colors.card,
-    borderRadius: radius.lg,
+    borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.cardBorder,
     padding: spacing.md,
@@ -74,21 +87,25 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   priceBox: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: spacing.xs,
+    alignItems: 'flex-end',
+    gap: 2,
+  },
+  priceLabel: {
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+    fontWeight: '500',
   },
   price: {
-    fontSize: fontSize.xxl,
-    fontWeight: '900',
-    color: colors.white,
+    fontSize: fontSize.xl,
+    fontWeight: '700',
+    color: colors.text,
     fontVariant: ['tabular-nums'],
   },
   row2: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.surface,
-    borderRadius: radius.md,
+    borderRadius: radius.sm,
     borderWidth: 1,
     borderColor: colors.cardBorder,
     paddingVertical: spacing.sm,
@@ -106,10 +123,10 @@ const styles = StyleSheet.create({
   statLabel: {
     fontSize: fontSize.xs,
     color: colors.textMuted,
-    marginBottom: 2,
+    marginBottom: 3,
   },
   statValue: {
-    fontSize: fontSize.lg,
+    fontSize: fontSize.md,
     fontWeight: '700',
     color: colors.text,
     fontVariant: ['tabular-nums'],

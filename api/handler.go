@@ -734,6 +734,12 @@ func HandleNewsSentimentStatus(c context.Context, ctx *app.RequestContext) {
 	ctx.JSON(http.StatusOK, utils.H{"data": status})
 }
 
+// HandleGetNewsSourceStatus GET /tool/news/sources/status
+func HandleGetNewsSourceStatus(c context.Context, ctx *app.RequestContext) {
+	_ = c
+	ctx.JSON(http.StatusOK, utils.H{"data": GetNewsSourceHealthReport()})
+}
+
 // ========== 爆仓级联策略 ==========
 
 // HandleStartLiqCascade POST /tool/liq-cascade/start

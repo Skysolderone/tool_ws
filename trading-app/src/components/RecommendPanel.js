@@ -15,7 +15,7 @@ const C = {
   cardBg: colors.card,
   cardBorder: colors.cardBorder,
   surface: colors.surface,
-  gridLine: 'rgba(0,229,255,0.06)',
+  gridLine: 'rgba(255,184,77,0.08)',
   text: colors.text,
   textDim: colors.textSecondary,
   accent: colors.purple,

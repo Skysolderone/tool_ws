@@ -17,7 +17,12 @@ const DETAIL_TABS = [
   { key: 'trades', label: '交易记录' },
 ];
 
-export default function PositionPanel({ symbol, positions: externalPositions, onRefreshPositions }) {
+export default function PositionPanel({
+  symbol,
+  positions: externalPositions,
+  liveMarkPrice = null,
+  onRefreshPositions,
+}) {
   const [localPositions, setLocalPositions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [reduceModal, setReduceModal] = useState(null);
@@ -229,11 +234,17 @@ export default function PositionPanel({ symbol, positions: externalPositions, on
     const amt = parseFloat(pos.positionAmt);
     const isLong = amt > 0;
     const entry = parseFloat(pos.entryPrice);
-    const mark = parseFloat(pos.markPrice);
+    const mark = (
+      liveMarkPrice != null
+      && symbol
+      && pos.symbol === symbol
+      && Number.isFinite(liveMarkPrice)
+    ) ? liveMarkPrice : parseFloat(pos.markPrice);
     const liq = parseFloat(pos.liquidationPrice);
     const breakEven = parseFloat(pos.breakEvenPrice || '0');
-    const notional = Math.abs(amt) * mark;
-    const margin = notional / parseFloat(pos.leverage || '1');
+    const notional = Number.isFinite(mark) ? Math.abs(amt) * mark : 0;
+    const lev = Math.max(parseFloat(pos.leverage || '1') || 1, 1);
+    const margin = notional / lev;
 
     switch (detailTab) {
       case 'info':
@@ -435,11 +446,23 @@ export default function PositionPanel({ symbol, positions: externalPositions, on
       ) : (
         filtered.map((pos, idx) => {
           const amt = parseFloat(pos.positionAmt);
-          const pnl = parseFloat(pos.unRealizedProfit);
+          const fallbackPnl = parseFloat(pos.unRealizedProfit);
           const isLong = amt > 0;
           const entry = parseFloat(pos.entryPrice);
-          const mark = parseFloat(pos.markPrice);
-          const pnlPct = entry > 0 ? ((mark - entry) / entry * 100 * (isLong ? 1 : -1)).toFixed(2) : '0.00';
+          const mark = (
+            liveMarkPrice != null
+            && symbol
+            && pos.symbol === symbol
+            && Number.isFinite(liveMarkPrice)
+          ) ? liveMarkPrice : parseFloat(pos.markPrice);
+          const pnl = (Number.isFinite(entry) && entry > 0 && Number.isFinite(mark))
+            ? (mark - entry) * amt
+            : fallbackPnl;
+          const leverage = Math.max(parseFloat(pos.leverage || '1') || 1, 1);
+          const isolatedWallet = parseFloat(pos.isolatedWallet || '0');
+          const initialMargin = (Math.abs(amt) * entry) / leverage;
+          const marginBase = isolatedWallet > 0 ? isolatedWallet : initialMargin;
+          const pnlPct = marginBase > 0 ? ((pnl / marginBase) * 100).toFixed(2) : '0.00';
           const key = posKey(pos, idx);
           const isExpanded = expandedKey === key;
 
@@ -530,7 +553,7 @@ export default function PositionPanel({ symbol, positions: externalPositions, on
                   <View style={styles.summaryRow}>
                     <Text style={styles.summaryItem}>数量 {Math.abs(amt)}</Text>
                     <Text style={styles.summaryItem}>开仓 {entry.toFixed(2)}</Text>
-                    <Text style={styles.summaryItem}>标记 {mark.toFixed(2)}</Text>
+                    <Text style={styles.summaryItem}>标记 {Number.isFinite(mark) ? mark.toFixed(2) : '--'}</Text>
                   </View>
                   <View style={styles.actionRow}>
                     <TouchableOpacity
@@ -637,7 +660,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     backgroundColor: colors.goldBg,
     borderWidth: 1,
-    borderColor: 'rgba(0,229,255,0.3)',
+    borderColor: colors.gold,
   },
   refreshText: {
     color: colors.goldLight,
@@ -754,7 +777,7 @@ const styles = StyleSheet.create({
   detailTabActive: {
     backgroundColor: colors.goldBg,
     borderWidth: 1,
-    borderColor: 'rgba(0,229,255,0.3)',
+    borderColor: colors.gold,
   },
   detailTabLabel: {
     fontSize: fontSize.sm,

@@ -121,7 +121,7 @@ func LoadConfig(configPath string) error {
 			AllowedActions:       []string{"open", "add", "close", "reduce", "set_sl", "set_tp"},
 		},
 		News: NewsConfig{
-			RSSHubBaseURL: "https://rsshub.umzzz.com",
+			RSSHubBaseURL: "https://rsshub.wws741.top",
 		},
 	}
 
@@ -141,7 +141,7 @@ func LoadConfig(configPath string) error {
 	Cfg.News.RSSHubBaseURL = strings.TrimSpace(Cfg.News.RSSHubBaseURL)
 	Cfg.News.RSSHubBaseURL = strings.TrimRight(Cfg.News.RSSHubBaseURL, "/")
 	if Cfg.News.RSSHubBaseURL == "" {
-		Cfg.News.RSSHubBaseURL = "https://rsshub.umzzz.com"
+		Cfg.News.RSSHubBaseURL = "https://rsshub.wws741.top"
 	}
 
 	return nil
