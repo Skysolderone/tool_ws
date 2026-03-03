@@ -18,6 +18,41 @@ import { WebView } from 'react-native-webview';
 import { colors, spacing, radius, fontSize } from '../services/theme';
 import api, { AUTH_TOKEN, WS_NEWS_BASE } from '../services/api';
 
+const FEED_CATEGORY_LABELS = {
+  crypto: '加密',
+  global: '国际',
+  finance: '财经',
+  tech: '科技',
+  science: '科学',
+  visual: '视觉',
+  adult: '成人',
+  telegram: 'TG',
+  other: '其他',
+};
+
+const BASE_FEED_CATEGORY_OVERRIDES = {
+  blockbeats: 'crypto',
+  '0xzx': 'crypto',
+  bbc_world: 'global',
+  aljazeera_all: 'global',
+  guardian_world: 'global',
+  npr_world: 'global',
+  cnbc_world: 'finance',
+  google_reuters_24h: 'finance',
+  reuters_world_us: 'finance',
+  jin10: 'finance',
+  nature_news: 'science',
+  t66y_7: 'adult',
+  huggingface_daily_papers: 'tech',
+  xsijishe_rank_weekly: 'adult',
+  jpxgmn_weekly: 'adult',
+  hackernews_index: 'tech',
+  '36kr_newsflashes': 'tech',
+  '1x_latest_awarded': 'visual',
+  sspai_index: 'tech',
+  pornhub: 'adult',
+};
+
 const BASE_FEED_SOURCES = [
   {
     key: 'blockbeats',
@@ -60,22 +95,6 @@ const BASE_FEED_SOURCES = [
     name: '金十快讯',
   },
   {
-    key: 'hacking8_index',
-    name: 'Hacking8',
-  },
-  {
-    key: 'wsj_zh_cn_world',
-    name: 'WSJ国际',
-  },
-  {
-    key: 'bbc_zhongwen',
-    name: 'BBC中文',
-  },
-  {
-    key: 'gamer_gnn',
-    name: '巴哈姆特GNN',
-  },
-  {
     key: 'nature_news',
     name: 'Nature News',
   },
@@ -84,22 +103,61 @@ const BASE_FEED_SOURCES = [
     name: 't66y(7)',
   },
   {
-    key: 'gov_zhengce_zuixin',
-    name: '国办政策',
-  },
-  {
-    key: 'smzdm_haowen_1',
-    name: '什么值得买',
-  },
-  {
-    key: '500px_tribe_set_dailyshot',
-    name: '500px每日一拍',
-  },
-  {
     key: 'huggingface_daily_papers',
     name: 'Huggingface Papers',
   },
-];
+  {
+    key: 'xsijishe_rank_weekly',
+    name: '司机社周榜',
+  },
+  {
+    key: 'jpxgmn_weekly',
+    name: '极品性感美女周榜',
+  },
+  {
+    key: 'hackernews_index',
+    name: 'Hacker News',
+  },
+  {
+    key: '36kr_newsflashes',
+    name: '36氪快讯',
+  },
+  {
+    key: '1x_latest_awarded',
+    name: '1x 每日获奖',
+  },
+  {
+    key: 'sspai_index',
+    name: '少数派首页',
+  },
+  {
+    key: 'pornhub',
+    name: 'Pornhub - 国产',
+  },
+  {
+    key: 'pornhub_popular_with_women',
+    name: 'Pornhub - 女性向热门',
+  },
+  {
+    key: 'pornhub_korean',
+    name: 'Pornhub - Korean (103)',
+  },
+  {
+    key: 'pornhub_cosplay',
+    name: 'Pornhub - Cosplay (241)',
+  },
+  {
+    key: 'pornhub_asian',
+    name: 'Pornhub - Asian (1)',
+  },
+  {
+    key: 'pornhub_pornstar_cn',
+    name: 'Pornstar - 中文',
+  },
+].map((item) => ({
+  ...item,
+  category: normalizeFeedCategory(item.key, item.name),
+}));
 const BASE_FEED_NAME_OVERRIDES = {
   blockbeats: 'BlockBeats',
   '0xzx': '0xzx',
@@ -111,16 +169,21 @@ const BASE_FEED_NAME_OVERRIDES = {
   google_reuters_24h: 'Reuters24h',
   reuters_world_us: 'Reuters US',
   jin10: '金十快讯',
-  hacking8_index: 'Hacking8',
-  wsj_zh_cn_world: 'WSJ国际',
-  bbc_zhongwen: 'BBC中文',
-  gamer_gnn: '巴哈姆特GNN',
   nature_news: 'Nature News',
   t66y_7: 't66y(7)',
-  gov_zhengce_zuixin: '国办政策',
-  smzdm_haowen_1: '什么值得买',
-  '500px_tribe_set_dailyshot': '500px每日一拍',
   huggingface_daily_papers: 'Huggingface Papers',
+  xsijishe_rank_weekly: '司机社周榜',
+  jpxgmn_weekly: '极品性感美女周榜',
+  hackernews_index: 'Hacker News',
+  '36kr_newsflashes': '36氪快讯',
+  '1x_latest_awarded': '1x 每日获奖',
+  sspai_index: '少数派首页',
+  pornhub: 'Pornhub - 国产',
+  pornhub_popular_with_women: 'Pornhub - 女性向热门',
+  pornhub_korean: 'Pornhub - Korean (103)',
+  pornhub_cosplay: 'Pornhub - Cosplay (241)',
+  pornhub_asian: 'Pornhub - Asian (1)',
+  pornhub_pornstar_cn: 'Pornstar - 中文',
 };
 const BASE_FEED_KEY_SET = new Set(BASE_FEED_SOURCES.map((x) => x.key));
 const WS_RECONNECT_MS = 3000;
@@ -139,6 +202,32 @@ function buildEmptyNewsBySource(feeds) {
 
 function isTelegramFeedKey(key) {
   return String(key || '').startsWith('tg_');
+}
+
+function isPornFeedKey(key) {
+  return String(key || '').startsWith('pornhub');
+}
+
+function inferFeedCategory(key, name) {
+  const k = String(key || '').toLowerCase();
+  const n = String(name || '').toLowerCase();
+  if (isTelegramFeedKey(k)) return 'telegram';
+  if (k.includes('hackernews') || k.includes('huggingface') || k.includes('sspai') || k.includes('36kr')) return 'tech';
+  if (k.includes('reuters') || k.includes('jin10') || k.includes('cnbc') || k.includes('bbc') || k.includes('guardian')) return 'finance';
+  if (k.includes('nature')) return 'science';
+  if (k.includes('1x') || n.includes('photo') || n.includes('摄影') || n.includes('视觉')) return 'visual';
+  if (k.includes('porn') || k.includes('t66y') || k.includes('xsijishe') || k.includes('jpxgmn')) return 'adult';
+  if (k.includes('blockbeats') || k.includes('0xzx')) return 'crypto';
+  return 'other';
+}
+
+function normalizeFeedCategory(key, name) {
+  if (BASE_FEED_CATEGORY_OVERRIDES[key]) return BASE_FEED_CATEGORY_OVERRIDES[key];
+  return inferFeedCategory(key, name);
+}
+
+function formatFeedCategoryLabel(category) {
+  return FEED_CATEGORY_LABELS[category] || FEED_CATEGORY_LABELS.other;
 }
 
 function normalizeFeedDisplayName(key, name) {
@@ -373,6 +462,7 @@ export default function NewsPanel({ onHasNew }) {
   const [wsConnected, setWsConnected] = useState(false);
   const [newsBySource, setNewsBySource] = useState(buildEmptyNewsBySource(BASE_FEED_SOURCES));
   const [activeSourceKey, setActiveSourceKey] = useState(BASE_FEED_SOURCES[0].key);
+  const [activeFeedGroup, setActiveFeedGroup] = useState('main');
   const [selected, setSelected] = useState(null);
   const [showSourceLang, setShowSourceLang] = useState(false);
   const [translationMap, setTranslationMap] = useState({});
@@ -414,7 +504,11 @@ export default function NewsPanel({ onHasNew }) {
         const status = statusByKey.get(feed.key);
         if (!status) return true;
         return !!status.reachable;
-      }).map((feed) => ({ ...feed, name: normalizeFeedDisplayName(feed.key, feed.name) }));
+      }).map((feed) => ({
+        ...feed,
+        name: normalizeFeedDisplayName(feed.key, feed.name),
+        category: normalizeFeedCategory(feed.key, feed.name),
+      }));
 
       const extraSources = items
         .filter((item) => item && item.key && !BASE_FEED_KEY_SET.has(item.key))
@@ -422,6 +516,7 @@ export default function NewsPanel({ onHasNew }) {
         .map((item) => ({
           key: item.key,
           name: normalizeFeedDisplayName(item.key, item.name),
+          category: normalizeFeedCategory(item.key, item.name),
         }));
 
       const nextSources = [...fixedSources, ...extraSources];
@@ -453,6 +548,37 @@ export default function NewsPanel({ onHasNew }) {
     });
     latestTopKeyRef.current = nextTop;
   }, [feedSources]);
+
+  const hasPornFeeds = useMemo(
+    () => feedSources.some((feed) => isPornFeedKey(feed.key)),
+    [feedSources],
+  );
+  const hasMainFeeds = useMemo(
+    () => feedSources.some((feed) => !isPornFeedKey(feed.key)),
+    [feedSources],
+  );
+  const visibleFeedSources = useMemo(() => {
+    if (activeFeedGroup === 'porn') {
+      return feedSources.filter((feed) => isPornFeedKey(feed.key));
+    }
+    return feedSources.filter((feed) => !isPornFeedKey(feed.key));
+  }, [activeFeedGroup, feedSources]);
+
+  useEffect(() => {
+    if (activeFeedGroup === 'porn' && !hasPornFeeds) {
+      setActiveFeedGroup('main');
+      return;
+    }
+    if (activeFeedGroup === 'main' && !hasMainFeeds && hasPornFeeds) {
+      setActiveFeedGroup('porn');
+    }
+  }, [activeFeedGroup, hasMainFeeds, hasPornFeeds]);
+
+  useEffect(() => {
+    if (visibleFeedSources.length === 0) return;
+    if (visibleFeedSources.some((f) => f.key === activeSourceKey)) return;
+    setActiveSourceKey(visibleFeedSources[0].key);
+  }, [activeSourceKey, visibleFeedSources]);
 
   const applyNewsPayload = useCallback((payload = {}) => {
     const nextNewsBySource = buildEmptyNewsBySource(feedSources);
@@ -570,9 +696,41 @@ export default function NewsPanel({ onHasNew }) {
     requestRefresh();
   };
 
-  const activeFeed = feedSources.find((item) => item.key === activeSourceKey) || feedSources[0] || BASE_FEED_SOURCES[0];
+  const activeFeed = visibleFeedSources.find((item) => item.key === activeSourceKey)
+    || visibleFeedSources[0]
+    || feedSources[0]
+    || BASE_FEED_SOURCES[0];
   const activeList = activeFeed ? (newsBySource[activeFeed.key] || []) : [];
   const hiddenCount = BASE_FEED_SOURCES.length - feedSources.length;
+  const showGroupSwitch = hasPornFeeds && hasMainFeeds;
+  const sourceCountByKey = useMemo(() => {
+    const out = {};
+    feedSources.forEach((feed) => {
+      const list = newsBySource[feed.key];
+      out[feed.key] = Array.isArray(list) ? list.length : 0;
+    });
+    return out;
+  }, [feedSources, newsBySource]);
+  const pornFeedCount = useMemo(
+    () => feedSources.filter((feed) => isPornFeedKey(feed.key)).length,
+    [feedSources],
+  );
+  const mainFeedCount = useMemo(
+    () => feedSources.filter((feed) => !isPornFeedKey(feed.key)).length,
+    [feedSources],
+  );
+  const pornItemCount = useMemo(
+    () => feedSources
+      .filter((feed) => isPornFeedKey(feed.key))
+      .reduce((sum, feed) => sum + (sourceCountByKey[feed.key] || 0), 0),
+    [feedSources, sourceCountByKey],
+  );
+  const mainItemCount = useMemo(
+    () => feedSources
+      .filter((feed) => !isPornFeedKey(feed.key))
+      .reduce((sum, feed) => sum + (sourceCountByKey[feed.key] || 0), 0),
+    [feedSources, sourceCountByKey],
+  );
 
   const openExternal = async (url) => {
     if (!url) return;
@@ -748,22 +906,83 @@ export default function NewsPanel({ onHasNew }) {
       ) : (
         <>
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
-          <View style={styles.tabRow}>
-            {feedSources.map((feed) => (
+          {showGroupSwitch ? (
+            <View style={styles.groupRowWrap}>
               <TouchableOpacity
-                key={feed.key}
-                style={[styles.tabBtn, activeSourceKey === feed.key && styles.tabBtnActive]}
-                onPress={() => setActiveSourceKey(feed.key)}
+                style={[styles.groupBtn, activeFeedGroup === 'main' && styles.groupBtnActive]}
+                onPress={() => setActiveFeedGroup('main')}
+                activeOpacity={0.85}
               >
-                <Text style={[styles.tabText, activeSourceKey === feed.key && styles.tabTextActive]}>
-                  {feed.name}
+                <Text style={[styles.groupBtnText, activeFeedGroup === 'main' && styles.groupBtnTextActive]}>
+                  主资讯
                 </Text>
+                <View style={[styles.groupBadge, activeFeedGroup === 'main' && styles.groupBadgeActive]}>
+                  <Text style={[styles.groupBadgeText, activeFeedGroup === 'main' && styles.groupBadgeTextActive]}>
+                    {mainFeedCount}/{mainItemCount}
+                  </Text>
+                </View>
               </TouchableOpacity>
-            ))}
+              <TouchableOpacity
+                style={[styles.groupBtn, activeFeedGroup === 'porn' && styles.groupBtnActive]}
+                onPress={() => setActiveFeedGroup('porn')}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.groupBtnText, activeFeedGroup === 'porn' && styles.groupBtnTextActive]}>
+                  Porn
+                </Text>
+                <View style={[styles.groupBadge, activeFeedGroup === 'porn' && styles.groupBadgeActive]}>
+                  <Text style={[styles.groupBadgeText, activeFeedGroup === 'porn' && styles.groupBadgeTextActive]}>
+                    {pornFeedCount}/{pornItemCount}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+          <View style={styles.tabRowWrap}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.tabRow}
+            >
+              {visibleFeedSources.map((feed) => {
+                const isActive = activeSourceKey === feed.key;
+                const count = sourceCountByKey[feed.key] || 0;
+                const categoryLabel = formatFeedCategoryLabel(feed.category);
+                return (
+                  <TouchableOpacity
+                    key={feed.key}
+                    style={[styles.tabBtn, isActive && styles.tabBtnActive]}
+                    onPress={() => setActiveSourceKey(feed.key)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.tabText, isActive && styles.tabTextActive]} numberOfLines={1}>
+                      {feed.name}
+                    </Text>
+                    <View style={[styles.tabCategoryBadge, isActive && styles.tabCategoryBadgeActive]}>
+                      <Text style={[styles.tabCategoryBadgeText, isActive && styles.tabCategoryBadgeTextActive]}>
+                        {categoryLabel}
+                      </Text>
+                    </View>
+                    <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}>
+                      <Text style={[styles.tabBadgeText, isActive && styles.tabBadgeTextActive]}>
+                        {count}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
           </View>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>{activeFeed.name}</Text>
-            <Text style={styles.sectionCount}>{activeList.length} 条</Text>
+            <View style={styles.sectionLeft}>
+              <Text style={styles.sectionTitle}>{activeFeed.name}</Text>
+              <View style={styles.sectionCategoryBadge}>
+                <Text style={styles.sectionCategoryText}>
+                  {formatFeedCategoryLabel(activeFeed.category)}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.sectionCount}>{activeList.length} 条 · 分组 {visibleFeedSources.length} 源</Text>
           </View>
           {activeList.length === 0 ? (
             <View style={styles.emptyBox}>
@@ -772,7 +991,7 @@ export default function NewsPanel({ onHasNew }) {
           ) : (
             activeList.map((item) => (
               <TouchableOpacity
-                key={`${activeFeed.key}-${item.id}`}
+                key={`${activeFeed.key}-${getNewsItemKey(item)}`}
                 style={styles.newsCard}
                 onPress={() => {
                   setSelected(item);
@@ -785,8 +1004,8 @@ export default function NewsPanel({ onHasNew }) {
                   {getDisplaySummary(item)}
                 </Text>
                 <View style={styles.metaRow}>
-                  <Text style={styles.meta} numberOfLines={1}>{item.source}</Text>
-                  <Text style={styles.meta}>{formatTime(item.pubDate)}</Text>
+                  <Text style={[styles.meta, styles.metaSource]} numberOfLines={1}>{item.source}</Text>
+                  <Text style={[styles.meta, styles.metaTime]}>{formatTime(item.pubDate)}</Text>
                 </View>
               </TouchableOpacity>
             ))
@@ -956,36 +1175,46 @@ const styles = StyleSheet.create({
   newsCard: {
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
-    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    padding: spacing.md,
     marginBottom: spacing.md,
-    minHeight: 98,
-    shadowColor: colors.shadow,
-    shadowRadius: 8,
-    shadowOpacity: 0.3,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
+    minHeight: 94,
   },
   newsTitle: {
     color: colors.white,
     fontSize: fontSize.md,
     fontWeight: '700',
     lineHeight: 20,
-    marginBottom: 8,
+    marginBottom: 6,
   },
   newsSummary: {
     color: colors.textSecondary,
     fontSize: fontSize.sm,
-    lineHeight: 19,
+    lineHeight: 18,
   },
   metaRow: {
-    marginTop: 10,
+    marginTop: 8,
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
   },
   meta: {
     color: colors.textSecondary,
     fontSize: 12,
-    maxWidth: '65%',
+  },
+  metaSource: {
+    maxWidth: '68%',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: radius.pill,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  metaTime: {
+    color: colors.textMuted,
   },
   loadingBox: {
     borderRadius: 16,
@@ -1006,30 +1235,130 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginBottom: 10,
   },
+  groupRowWrap: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  groupBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+  },
+  groupBtnActive: {
+    borderColor: colors.gold,
+    backgroundColor: colors.goldBg,
+  },
+  groupBtnText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  groupBtnTextActive: {
+    color: colors.white,
+  },
+  groupBadge: {
+    minWidth: 44,
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.card,
+    paddingHorizontal: 8,
+    paddingVertical: 1,
+  },
+  groupBadgeActive: {
+    borderColor: colors.gold,
+    backgroundColor: colors.gold,
+  },
+  groupBadgeText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  groupBadgeTextActive: {
+    color: colors.white,
+  },
+  tabRowWrap: {
+    marginBottom: 10,
+  },
   tabRow: {
     flexDirection: 'row',
-    gap: 3,
-    marginBottom: 10,
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    padding: 3,
+    gap: 6,
+    paddingRight: 8,
   },
   tabBtn: {
-    flex: 1,
-    backgroundColor: colors.surface,
-    borderRadius: radius.sm,
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: spacing.xs,
+    gap: 6,
+    minWidth: 92,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 7,
   },
   tabBtnActive: {
     backgroundColor: colors.goldBg,
+    borderColor: colors.gold,
   },
   tabText: {
     color: colors.textSecondary,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
+    maxWidth: 110,
   },
   tabTextActive: {
+    color: colors.white,
+  },
+  tabCategoryBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: radius.pill,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  tabCategoryBadgeActive: {
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  tabCategoryBadgeText: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  tabCategoryBadgeTextActive: {
+    color: colors.white,
+  },
+  tabBadge: {
+    minWidth: 20,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: radius.pill,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    alignItems: 'center',
+  },
+  tabBadgeActive: {
+    backgroundColor: colors.gold,
+    borderColor: colors.gold,
+  },
+  tabBadgeText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  tabBadgeTextActive: {
     color: colors.white,
   },
   sectionHeader: {
@@ -1038,9 +1367,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
+  sectionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 1,
+    marginRight: 8,
+  },
   sectionTitle: {
     color: colors.white,
     fontSize: 14,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  sectionCategoryBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surface,
+  },
+  sectionCategoryText: {
+    color: colors.textSecondary,
+    fontSize: 11,
     fontWeight: '700',
   },
   sectionCount: {

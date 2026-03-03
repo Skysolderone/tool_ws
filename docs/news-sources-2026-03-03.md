@@ -8,7 +8,7 @@
 
 ```json
 "news": {
-  "rsshubBaseUrl": "https://rsshub.umzzz.com",
+  "rsshubBaseUrl": "https://rsshub.wws741.top",
   "telegramChannels": [
     "jin10light"
   ]
@@ -25,16 +25,21 @@
 |---|---|---|
 | `reuters_world_us` | `Reuters US` | `/reuters/world/us` |
 | `jin10` | `金十快讯` | `/jin10` |
-| `hacking8_index` | `Hacking8` | `/hacking8/index` |
-| `wsj_zh_cn_world` | `WSJ国际` | `/wsj/zh-cn/world` |
-| `bbc_zhongwen` | `BBC中文` | `/bbc/zhongwen` |
-| `gamer_gnn` | `巴哈姆特GNN` | `/gamer/gnn` |
 | `nature_news` | `Nature News` | `/nature/news` |
 | `t66y_7` | `t66y(7)` | `/t66y/7` |
-| `gov_zhengce_zuixin` | `国办政策` | `/gov/zhengce/zuixin` |
-| `smzdm_haowen_1` | `什么值得买` | `/smzdm/haowen/1` |
-| `500px_tribe_set_dailyshot` | `500px每日一拍` | `/500px/tribe/set/f5de0b8aa6d54ec486f5e79616418001` |
 | `huggingface_daily_papers` | `Huggingface Papers` | `/huggingface/daily-papers/date` |
+| `xsijishe_rank_weekly` | `司机社周榜` | `/xsijishe/rank/weekly` |
+| `jpxgmn_weekly` | `极品性感美女周榜` | `/jpxgmn/weekly` |
+| `hackernews_index` | `Hacker News` | `/hackernews` |
+| `36kr_newsflashes` | `36氪快讯` | `/36kr/newsflashes` |
+| `1x_latest_awarded` | `1x 每日获奖` | `/1x/latest/awarded` |
+| `sspai_index` | `少数派首页` | `/sspai/index` |
+| `pornhub` | `Pornhub - 国产` | `/pornhub/search/国产` |
+| `pornhub_popular_with_women` | `Pornhub - 女性向热门` | `/pornhub/category/73` |
+| `pornhub_korean` | `Pornhub - Korean (103)` | `/pornhub/category/103` |
+| `pornhub_cosplay` | `Pornhub - Cosplay (241)` | `/pornhub/category/241` |
+| `pornhub_asian` | `Pornhub - Asian (1)` | `/pornhub/category/1` |
+| `pornhub_pornstar_cn` | `Pornstar - 中文` | `/pornhub/pornstar/june-liu/cn/mr` |
 
 说明：最终请求地址为 `news.rsshubBaseUrl + 路由`。
 
@@ -70,5 +75,5 @@
 ### 4.3 频道与实例地址
 
 - https://t.me/jin10light
-- https://rsshub.umzzz.com
+- https://rsshub.wws741.top
 - https://rss.spriple.org

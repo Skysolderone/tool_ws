@@ -210,6 +210,11 @@ func StartNewsSourceHealthMonitor() {
 	})
 }
 
+// StartNewsBackgroundFetcher 启动常驻资讯抓取循环（与客户端连接无关）。
+func StartNewsBackgroundFetcher() {
+	nHub.ensureRunning()
+}
+
 // GetNewsSourceHealthReport 返回最近一次可用性检测结果。
 func GetNewsSourceHealthReport() newsSourceHealthReport {
 	newsHealthState.mu.RLock()
@@ -296,7 +301,7 @@ func cloneNewsSources(in []newsFeedSource) []newsFeedSource {
 func getRSSHubBaseURL(cfg NewsConfig) string {
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.RSSHubBaseURL), "/")
 	if baseURL == "" {
-		baseURL = "https://rsshub.umzzz.com"
+		baseURL = "https://rsshub.wws741.top"
 	}
 	return baseURL
 }
@@ -304,24 +309,6 @@ func getRSSHubBaseURL(cfg NewsConfig) string {
 func buildRSSHubNewsSources(cfg NewsConfig) []newsFeedSource {
 	baseURL := getRSSHubBaseURL(cfg)
 	return []newsFeedSource{
-		{
-			Key:  "bbc_zhongwen",
-			Name: "BBC 中文",
-			URL:  fmt.Sprintf("%s/bbc/zhongwen", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "gamer_gnn",
-			Name: "巴哈姆特 GNN",
-			URL:  fmt.Sprintf("%s/gamer/gnn", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
 		{
 			Key:  "nature_news",
 			Name: "Nature News",
@@ -341,54 +328,9 @@ func buildRSSHubNewsSources(cfg NewsConfig) []newsFeedSource {
 			},
 		},
 		{
-			Key:  "gov_zhengce_zuixin",
-			Name: "国办 最新政策",
-			URL:  fmt.Sprintf("%s/gov/zhengce/zuixin", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "smzdm_haowen_1",
-			Name: "什么值得买 好文",
-			URL:  fmt.Sprintf("%s/smzdm/haowen/1", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "500px_tribe_set_dailyshot",
-			Name: "500px 每日一拍",
-			URL:  fmt.Sprintf("%s/500px/tribe/set/f5de0b8aa6d54ec486f5e79616418001", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
 			Key:  "huggingface_daily_papers",
 			Name: "Huggingface Papers",
 			URL:  fmt.Sprintf("%s/huggingface/daily-papers/date", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "hacking8_index",
-			Name: "Hacking8",
-			URL:  fmt.Sprintf("%s/hacking8/index", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "wsj_zh_cn_world",
-			Name: "WSJ 国际",
-			URL:  fmt.Sprintf("%s/wsj/zh-cn/world", baseURL),
 			Headers: map[string]string{
 				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
 				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
@@ -407,6 +349,114 @@ func buildRSSHubNewsSources(cfg NewsConfig) []newsFeedSource {
 			Key:  "reuters_world_us",
 			Name: "Reuters US",
 			URL:  fmt.Sprintf("%s/reuters/world/us", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "xsijishe_rank_weekly",
+			Name: "司机社周榜",
+			URL:  fmt.Sprintf("%s/xsijishe/rank/weekly", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "jpxgmn_weekly",
+			Name: "极品性感美女周榜",
+			URL:  fmt.Sprintf("%s/jpxgmn/weekly", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "hackernews_index",
+			Name: "Hacker News",
+			URL:  fmt.Sprintf("%s/hackernews", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "36kr_newsflashes",
+			Name: "36氪快讯",
+			URL:  fmt.Sprintf("%s/36kr/newsflashes", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "1x_latest_awarded",
+			Name: "1x 每日获奖",
+			URL:  fmt.Sprintf("%s/1x/latest/awarded", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "sspai_index",
+			Name: "少数派首页",
+			URL:  fmt.Sprintf("%s/sspai/index", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "pornhub",
+			Name: "Pornhub - 国产",
+			URL:  fmt.Sprintf("%s/pornhub/search/%s", baseURL, url.PathEscape("国产")),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "pornhub_popular_with_women",
+			Name: "Pornhub - 女性向热门",
+			URL:  fmt.Sprintf("%s/pornhub/category/73", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "pornhub_korean",
+			Name: "Pornhub - Korean (103)",
+			URL:  fmt.Sprintf("%s/pornhub/category/103", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "pornhub_cosplay",
+			Name: "Pornhub - Cosplay (241)",
+			URL:  fmt.Sprintf("%s/pornhub/category/241", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "pornhub_asian",
+			Name: "Pornhub - Asian (1)",
+			URL:  fmt.Sprintf("%s/pornhub/category/1", baseURL),
+			Headers: map[string]string{
+				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
+				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
+			},
+		},
+		{
+			Key:  "pornhub_pornstar_cn",
+			Name: "Pornstar - 中文",
+			URL:  fmt.Sprintf("%s/pornhub/pornstar/june-liu/cn/mr", baseURL),
 			Headers: map[string]string{
 				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
 				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
@@ -558,15 +608,11 @@ func handleWsNews(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *newsHub) subscribe(client *wsClient) {
+	h.ensureRunning()
+
 	h.mu.Lock()
 	h.clients[client] = true
-	needStart := !h.running
 	last := append([]byte(nil), h.lastMsg...)
-	if needStart {
-		h.running = true
-		h.stopC = make(chan struct{})
-		h.kickC = make(chan struct{}, 1)
-	}
 	total := len(h.clients)
 	h.mu.Unlock()
 
@@ -575,10 +621,6 @@ func (h *newsHub) subscribe(client *wsClient) {
 		case client.sendCh <- last:
 		default:
 		}
-	}
-
-	if needStart {
-		go h.run()
 	}
 
 	log.Printf("[WsNews] Client subscribed (total: %d)", total)
@@ -591,22 +633,21 @@ func (h *newsHub) unsubscribe(client *wsClient) {
 	h.mu.Unlock()
 
 	log.Printf("[WsNews] Client unsubscribed (remaining: %d)", remaining)
+}
 
-	if remaining == 0 {
-		go func() {
-			time.Sleep(30 * time.Second)
-			h.mu.Lock()
-			defer h.mu.Unlock()
-			if len(h.clients) != 0 || !h.running {
-				return
-			}
-			close(h.stopC)
-			h.running = false
-			h.stopC = nil
-			h.kickC = nil
-			log.Printf("[WsNews] Background fetch loop stopped")
-		}()
+func (h *newsHub) ensureRunning() {
+	h.mu.Lock()
+	if h.running {
+		h.mu.Unlock()
+		return
 	}
+	h.running = true
+	h.stopC = make(chan struct{})
+	h.kickC = make(chan struct{}, 1)
+	h.mu.Unlock()
+
+	go h.run()
+	log.Printf("[WsNews] Background fetch loop started")
 }
 
 func (h *newsHub) triggerRefresh() {
