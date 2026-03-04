@@ -98,7 +98,7 @@ export default function App() {
   const [newAddrLabel, setNewAddrLabel] = useState('');
 
   // ===== 懒加载标记 =====
-  const [newsActivated, setNewsActivated] = useState(false);
+  const [newsActivated, setNewsActivated] = useState(true);
   const [hyperActivated, setHyperActivated] = useState(false);
   const [liqActivated, setLiqActivated] = useState(false);
   const [marketActivated, setMarketActivated] = useState(false);

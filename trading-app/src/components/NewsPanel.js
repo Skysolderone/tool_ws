@@ -14,9 +14,18 @@ import {
   StatusBar,
   Platform,
 } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import { WebView } from 'react-native-webview';
 import { colors, spacing, radius, fontSize } from '../services/theme';
 import api, { AUTH_TOKEN, WS_NEWS_BASE } from '../services/api';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 const FEED_CATEGORY_LABELS = {
   crypto: '加密',
@@ -510,6 +519,7 @@ export default function NewsPanel({ onHasNew }) {
   const pingTimerRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const translatingKeysRef = useRef(new Set());
+  const canNotifyRef = useRef(false);
   const mountedRef = useRef(false);
   const closedByUserRef = useRef(false);
   const initializedRef = useRef(false);
@@ -562,6 +572,60 @@ export default function NewsPanel({ onHasNew }) {
       if (nextSources.length > 0) setFeedSources(nextSources);
     } catch (_) {}
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const perm = await Notifications.getPermissionsAsync();
+        let status = perm.status;
+        if (status !== 'granted') {
+          const req = await Notifications.requestPermissionsAsync();
+          status = req.status;
+        }
+        if (!active) return;
+        canNotifyRef.current = status === 'granted';
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('news-alerts', {
+            name: '资讯提醒',
+            importance: Notifications.AndroidImportance.HIGH,
+            sound: 'default',
+            vibrationPattern: [0, 200, 120, 220],
+            lightColor: '#f6c453',
+          });
+        }
+      } catch (_) {
+        if (active) canNotifyRef.current = false;
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const notifyNewsUpdate = useCallback(async (changedKeys, data = {}) => {
+    if (!canNotifyRef.current) return;
+    if (!Array.isArray(changedKeys) || changedKeys.length === 0) return;
+
+    const lines = changedKeys.slice(0, 3).map((key) => {
+      const feed = feedSources.find((x) => x.key === key);
+      const sourceName = feed?.name || key;
+      const first = Array.isArray(data[key]) ? data[key][0] : null;
+      const title = String(first?.title || '新资讯').replace(/\s+/g, ' ').trim();
+      return `${sourceName}: ${title}`;
+    });
+    const suffix = changedKeys.length > 3 ? ` 等${changedKeys.length}个来源` : '';
+
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: '📰 收到新资讯',
+          body: `${lines.join(' | ')}${suffix}`,
+          sound: 'default',
+          data: { type: 'news', sources: changedKeys },
+        },
+        trigger: null,
+      });
+    } catch (_) {}
+  }, [feedSources]);
 
   useEffect(() => {
     loadSourceStatus();
@@ -729,6 +793,7 @@ export default function NewsPanel({ onHasNew }) {
       initializedRef.current = true;
     } else if (changedKeys.length > 0) {
       onHasNew?.(true);
+      notifyNewsUpdate(changedKeys, payload.data || {});
     }
     latestTopKeyRef.current = nextTopKeys;
     setSourceCountByKey((prev) => ({ ...prev, ...nextCounts }));
@@ -761,7 +826,7 @@ export default function NewsPanel({ onHasNew }) {
 
     setLoading(false);
     setRefreshing(false);
-  }, [activeMainSourceKey, activePornSourceKey, feedSources, loadNewsPage, onHasNew, refreshing]);
+  }, [activeMainSourceKey, activePornSourceKey, feedSources, loadNewsPage, notifyNewsUpdate, onHasNew, refreshing]);
 
   const requestRefresh = useCallback(() => {
     setRefreshing(true);
