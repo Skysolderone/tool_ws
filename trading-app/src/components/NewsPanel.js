@@ -755,6 +755,10 @@ export default function NewsPanel({ onHasNew }) {
         },
       }));
       setSourceCountByKey((prev) => ({ ...prev, [key]: total }));
+      if (!append && page === 1) {
+        // 首屏优先展示分页快照，不阻塞在 WS 首包。
+        setLoading(false);
+      }
     } catch (e) {
       setPageStateBySource((prev) => {
         if (prev[key]) return prev;
@@ -772,6 +776,9 @@ export default function NewsPanel({ onHasNew }) {
       });
       if (!append) {
         setError(`分页拉取失败：${e?.message || 'unknown error'}`);
+        if (page === 1) {
+          setLoading(false);
+        }
       }
     } finally {
       if (append) {
@@ -859,7 +866,6 @@ export default function NewsPanel({ onHasNew }) {
     ws.onopen = () => {
       setWsConnected(true);
       clearWsTimers();
-      sendWs({ action: 'refresh' });
       pingTimerRef.current = setInterval(() => {
         sendWs({ action: 'ping' });
       }, WS_PING_MS);

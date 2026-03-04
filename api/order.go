@@ -67,11 +67,11 @@ type ReversePositionReq struct {
 
 // PlaceOrderResult 下单结果，包含主单和可选的止盈止损单
 type PlaceOrderResult struct {
-	Order            *futures.CreateOrderResponse `json:"order"`                       // 主单
-	TakeProfit       *AlgoOrderResponse           `json:"takeProfit,omitempty"`        // 止盈单 (单级，Algo模式兼容)
-	TakeProfits      []*AlgoOrderResponse         `json:"takeProfits,omitempty"`       // 阶梯止盈单列表 (Algo模式兼容)
-	StopLoss         *AlgoOrderResponse           `json:"stopLoss,omitempty"`          // 止损单 (Algo模式兼容)
-	LocalTPSLGroupID string                       `json:"localTpslGroupId,omitempty"`  // 本地TPSL组ID
+	Order            *futures.CreateOrderResponse `json:"order"`                      // 主单
+	TakeProfit       *AlgoOrderResponse           `json:"takeProfit,omitempty"`       // 止盈单 (单级，Algo模式兼容)
+	TakeProfits      []*AlgoOrderResponse         `json:"takeProfits,omitempty"`      // 阶梯止盈单列表 (Algo模式兼容)
+	StopLoss         *AlgoOrderResponse           `json:"stopLoss,omitempty"`         // 止损单 (Algo模式兼容)
+	LocalTPSLGroupID string                       `json:"localTpslGroupId,omitempty"` // 本地TPSL组ID
 }
 
 // ReversePositionResult 一键反手结果
@@ -399,21 +399,28 @@ func createReduceOrder(ctx context.Context, symbol string, side futures.SideType
 		positionSide = futures.PositionSideTypeBoth
 	}
 
-	// 确定限价
+	// 确定限价（按 tickSize 对齐）
 	var price string
+	var err error
 	if len(priceStr) > 0 && priceStr[0] != "" {
-		price = priceStr[0]
+		rawPrice, parseErr := strconv.ParseFloat(priceStr[0], 64)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid reduce price: %w", parseErr)
+		}
+		price, err = normalizePriceForSymbol(ctx, symbol, rawPrice)
+		if err != nil {
+			return nil, fmt.Errorf("normalize reduce price: %w", err)
+		}
 	} else {
 		// 兜底获取当前价格
-		p, err := getCurrentPrice(ctx, symbol, "")
-		if err != nil {
-			return nil, fmt.Errorf("get current price for reduce: %w", err)
+		p, priceErr := getCurrentPrice(ctx, symbol, "")
+		if priceErr != nil {
+			return nil, fmt.Errorf("get current price for reduce: %w", priceErr)
 		}
-		pp, err := getSymbolPricePrecision(ctx, symbol)
+		price, err = normalizePriceForSymbol(ctx, symbol, p)
 		if err != nil {
-			return nil, fmt.Errorf("get price precision: %w", err)
+			return nil, fmt.Errorf("normalize price for reduce: %w", err)
 		}
-		price = formatPrice(p, pp)
 	}
 
 	service := Client.NewCreateOrderService().
@@ -445,19 +452,49 @@ func calcTPSLPrices(entryPrice, stopLossPrice, riskReward float64, isBuy bool) (
 	return
 }
 
-// getSymbolPricePrecision 获取交易对的价格精度
-func getSymbolPricePrecision(ctx context.Context, symbol string) (int, error) {
+// getSymbolPriceRules 获取交易对价格规则（精度 + 最小变动单位）
+func getSymbolPriceRules(ctx context.Context, symbol string) (precision int, tickSize float64, err error) {
 	info, err := getExchangeInfoCached(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("fetch exchange info: %w", err)
+		return 0, 0, fmt.Errorf("fetch exchange info: %w", err)
 	}
 
 	for _, s := range info.Symbols {
 		if s.Symbol == symbol {
-			return s.PricePrecision, nil
+			for _, filter := range s.Filters {
+				if filterType, ok := filter["filterType"].(string); ok && filterType == "PRICE_FILTER" {
+					if tickSizeStr, ok := filter["tickSize"].(string); ok {
+						tickSize, _ = strconv.ParseFloat(tickSizeStr, 64)
+						break
+					}
+				}
+			}
+			return s.PricePrecision, tickSize, nil
 		}
 	}
-	return 0, fmt.Errorf("symbol %s not found", symbol)
+	return 0, 0, fmt.Errorf("symbol %s not found", symbol)
+}
+
+// getSymbolPricePrecision 获取交易对的价格精度
+func getSymbolPricePrecision(ctx context.Context, symbol string) (int, error) {
+	precision, _, err := getSymbolPriceRules(ctx, symbol)
+	return precision, err
+}
+
+// normalizePriceForSymbol 将价格按交易所 tickSize 对齐并按精度格式化，避免 -4014
+func normalizePriceForSymbol(ctx context.Context, symbol string, rawPrice float64) (string, error) {
+	precision, tickSize, err := getSymbolPriceRules(ctx, symbol)
+	if err != nil {
+		return "", err
+	}
+	adjustedPrice := rawPrice
+	if tickSize > 0 {
+		adjustedPrice = roundToStepSize(rawPrice, tickSize)
+	}
+	if adjustedPrice <= 0 {
+		return "", fmt.Errorf("invalid price %.8f after tickSize adjustment %.8f", rawPrice, tickSize)
+	}
+	return formatPrice(adjustedPrice, precision), nil
 }
 
 func getExchangeInfoCached(ctx context.Context) (*futures.ExchangeInfo, error) {
@@ -564,11 +601,15 @@ func PlaceTPSLOrders(ctx context.Context, req PlaceOrderReq, entryPrice float64,
 	}
 
 	// 获取价格和数量精度
-	pricePrecision, err := getSymbolPricePrecision(ctx, req.Symbol)
+	pricePrecision, priceTickSize, err := getSymbolPriceRules(ctx, req.Symbol)
 	if err != nil {
 		return nil, nil, err
 	}
-	slPriceStr := formatPrice(stopLossPrice, pricePrecision)
+	stopLossPriceForOrder := stopLossPrice
+	if priceTickSize > 0 {
+		stopLossPriceForOrder = roundToStepSize(stopLossPriceForOrder, priceTickSize)
+	}
+	slPriceStr := formatPrice(stopLossPriceForOrder, pricePrecision)
 
 	closeSide := futures.SideTypeSell
 	if !isBuy {
@@ -582,7 +623,7 @@ func PlaceTPSLOrders(ctx context.Context, req PlaceOrderReq, entryPrice float64,
 
 	// 如果有阶梯止盈，走 combo 路径
 	if len(req.TPLevels) > 0 {
-		return placeComboTPSL(ctx, req, entryPrice, quantity, stopLossPrice, slDistance, pricePrecision, closeSide, positionSide)
+		return placeComboTPSL(ctx, req, entryPrice, quantity, stopLossPrice, slDistance, pricePrecision, priceTickSize, closeSide, positionSide)
 	}
 
 	// 单级止盈
@@ -601,7 +642,11 @@ func PlaceTPSLOrders(ctx context.Context, req PlaceOrderReq, entryPrice float64,
 		return nil, nil, fmt.Errorf("calculated takeProfitPrice (%.2f) must be below entryPrice (%.2f)", takeProfitPrice, entryPrice)
 	}
 
-	tpPriceStr := formatPrice(takeProfitPrice, pricePrecision)
+	takeProfitPriceForOrder := takeProfitPrice
+	if priceTickSize > 0 {
+		takeProfitPriceForOrder = roundToStepSize(takeProfitPriceForOrder, priceTickSize)
+	}
+	tpPriceStr := formatPrice(takeProfitPriceForOrder, pricePrecision)
 
 	log.Printf("[TPSL] entryPrice=%.4f, stopLoss=%s, takeProfit=%s, riskReward=1:%.1f",
 		entryPrice, slPriceStr, tpPriceStr, req.RiskReward)
@@ -640,11 +685,15 @@ func PlaceTPSLOrders(ctx context.Context, req PlaceOrderReq, entryPrice float64,
 // placeComboTPSL 阶梯止盈止损：多个 TP 级别 + 一个 SL
 // 每个 TP 级别按 percent 拆分数量，SL 使用 closePosition=true 平掉剩余
 func placeComboTPSL(ctx context.Context, req PlaceOrderReq, entryPrice float64, quantity string,
-	stopLossPrice, slDistance float64, pricePrecision int,
+	stopLossPrice, slDistance float64, pricePrecision int, priceTickSize float64,
 	closeSide futures.SideType, positionSide futures.PositionSideType,
 ) (tp *AlgoOrderResponse, sl *AlgoOrderResponse, err error) {
 	isBuy := req.Side == futures.SideTypeBuy
-	slPriceStr := formatPrice(stopLossPrice, pricePrecision)
+	stopLossPriceForOrder := stopLossPrice
+	if priceTickSize > 0 {
+		stopLossPriceForOrder = roundToStepSize(stopLossPriceForOrder, priceTickSize)
+	}
+	slPriceStr := formatPrice(stopLossPriceForOrder, pricePrecision)
 
 	// 验证 tpLevels 总比例
 	var totalPct float64
@@ -676,7 +725,11 @@ func placeComboTPSL(ctx context.Context, req PlaceOrderReq, entryPrice float64, 
 		} else {
 			tpPrice = entryPrice - slDistance*lv.RiskReward
 		}
-		tpPriceStr := formatPrice(tpPrice, pricePrecision)
+		tpPriceForOrder := tpPrice
+		if priceTickSize > 0 {
+			tpPriceForOrder = roundToStepSize(tpPriceForOrder, priceTickSize)
+		}
+		tpPriceStr := formatPrice(tpPriceForOrder, pricePrecision)
 
 		// 计算该级别的数量
 		levelQty := totalQty * lv.Percent / 100

@@ -483,7 +483,6 @@ export default function App() {
             <MonitorEventTimelinePanel
               events={monitorEvents}
               onClear={clearMonitorEvents}
-              notifyConfig={monitorNotifyConfig}
             />
             <SubTabBar
               tabs={MONITOR_SUB_TABS}
@@ -549,7 +548,6 @@ export default function App() {
                       address={item.address}
                       onHasNew={handleHyperHasNew}
                       onMonitorEvent={handleMonitorEvent}
-                      withLiquidationTab={false}
                     />
                   </View>
                 ))}
@@ -634,7 +632,6 @@ export default function App() {
               address={item.address}
               onHasNew={handleHyperHasNew}
               onMonitorEvent={handleMonitorEvent}
-              withLiquidationTab={false}
             />
           ))}
         </View>

@@ -74,51 +74,51 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
     return best?.reason || '';
   }, []);
 
+  const levelToZone = useCallback((lv, type) => ({
+    lower: lv.zoneLow || lv.price,
+    upper: lv.zoneHigh || lv.price,
+    mid: lv.price,
+    type,
+    strength: lv.strength,
+    timeframes: lv.timeframes,
+    touchCount: lv.touchCount,
+    reason: lv.reason || '',
+  }), []);
+
+  const normalizeZone = useCallback((z, levels) => {
+    const lower = Number(z.lower) || 0;
+    const upper = Number(z.upper) || 0;
+    const mid = Number(z.mid) || ((lower + upper) / 2);
+    const distance = currentPrice
+      ? Math.round(((mid - currentPrice) / currentPrice) * 10000) / 100
+      : (Number(z.distance) || 0);
+    const reason = z.reason || findReason(levels, mid);
+    return { ...z, lower, upper, mid, distance, reason };
+  }, [currentPrice, findReason]);
+
+  const supportLevelZones = useMemo(
+    () => supports.map((lv) => normalizeZone(levelToZone(lv, 'SUPPORT'), supports)),
+    [supports, levelToZone, normalizeZone],
+  );
+
+  const resistanceLevelZones = useMemo(
+    () => resistances.map((lv) => normalizeZone(levelToZone(lv, 'RESISTANCE'), resistances)),
+    [resistances, levelToZone, normalizeZone],
+  );
+
   const supportZones = useMemo(() => {
-    const raw = (data?.strongSupportZones?.length ? data.strongSupportZones : supports.map((lv) => ({
-      lower: lv.zoneLow || lv.price,
-      upper: lv.zoneHigh || lv.price,
-      mid: lv.price,
-      type: 'SUPPORT',
-      strength: lv.strength,
-      timeframes: lv.timeframes,
-      touchCount: lv.touchCount,
-      reason: lv.reason || '',
-    })));
-    return raw.map((z) => {
-      const lower = Number(z.lower) || 0;
-      const upper = Number(z.upper) || 0;
-      const mid = Number(z.mid) || ((lower + upper) / 2);
-      const distance = currentPrice
-        ? Math.round(((mid - currentPrice) / currentPrice) * 10000) / 100
-        : (Number(z.distance) || 0);
-      const reason = z.reason || findReason(supports, mid);
-      return { ...z, lower, upper, mid, distance, reason };
-    });
-  }, [data?.strongSupportZones, supports, currentPrice, findReason]);
+    if (data?.strongSupportZones?.length) {
+      return data.strongSupportZones.map((z) => normalizeZone(z, supports));
+    }
+    return supportLevelZones;
+  }, [data?.strongSupportZones, supports, supportLevelZones, normalizeZone]);
 
   const resistanceZones = useMemo(() => {
-    const raw = (data?.strongResistanceZones?.length ? data.strongResistanceZones : resistances.map((lv) => ({
-      lower: lv.zoneLow || lv.price,
-      upper: lv.zoneHigh || lv.price,
-      mid: lv.price,
-      type: 'RESISTANCE',
-      strength: lv.strength,
-      timeframes: lv.timeframes,
-      touchCount: lv.touchCount,
-      reason: lv.reason || '',
-    })));
-    return raw.map((z) => {
-      const lower = Number(z.lower) || 0;
-      const upper = Number(z.upper) || 0;
-      const mid = Number(z.mid) || ((lower + upper) / 2);
-      const distance = currentPrice
-        ? Math.round(((mid - currentPrice) / currentPrice) * 10000) / 100
-        : (Number(z.distance) || 0);
-      const reason = z.reason || findReason(resistances, mid);
-      return { ...z, lower, upper, mid, distance, reason };
-    });
-  }, [data?.strongResistanceZones, resistances, currentPrice, findReason]);
+    if (data?.strongResistanceZones?.length) {
+      return data.strongResistanceZones.map((z) => normalizeZone(z, resistances));
+    }
+    return resistanceLevelZones;
+  }, [data?.strongResistanceZones, resistances, resistanceLevelZones, normalizeZone]);
 
   const matchTf = useCallback((zone) => {
     if (selectedTf === 'all') return true;
@@ -126,18 +126,59 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
     return tfs.some((tf) => String(tf).toLowerCase() === selectedTf);
   }, [selectedTf]);
 
-  const filteredSupportZones = useMemo(
-    () => supportZones.filter((z) => matchTf(z)),
-    [supportZones, matchTf],
-  );
-  const filteredResistanceZones = useMemo(
-    () => resistanceZones.filter((z) => matchTf(z)),
-    [resistanceZones, matchTf],
-  );
+  const sortByDistance = useCallback((zones) => [...zones].sort(
+    (a, b) => Math.abs(Number(a?.distance || 0)) - Math.abs(Number(b?.distance || 0)),
+  ), []);
+
+  const filteredSupportZones = useMemo(() => {
+    const allLevels = supportLevelZones.filter((z) => matchTf(z));
+    if (allLevels.length > 0) return sortByDistance(allLevels);
+    return sortByDistance(supportZones.filter((z) => matchTf(z)));
+  }, [supportLevelZones, supportZones, matchTf, sortByDistance]);
+
+  const filteredResistanceZones = useMemo(() => {
+    const allLevels = resistanceLevelZones.filter((z) => matchTf(z));
+    if (allLevels.length > 0) return sortByDistance(allLevels);
+    return sortByDistance(resistanceZones.filter((z) => matchTf(z)));
+  }, [resistanceLevelZones, resistanceZones, matchTf, sortByDistance]);
 
   const closestSupportZone = filteredSupportZones.length > 0 ? filteredSupportZones[0] : null;
   const closestResistZone = filteredResistanceZones.length > 0 ? filteredResistanceZones[0] : null;
   const hasFilteredZones = filteredSupportZones.length > 0 || filteredResistanceZones.length > 0;
+
+  const getZoneGradeMeta = useCallback((zone) => {
+    const strength = Number(zone?.strength || 0);
+    const touch = Number(zone?.touchCount || 0);
+    const tfs = Array.isArray(zone?.timeframes) ? zone.timeframes.filter(Boolean) : [];
+    const tfCount = tfs.length;
+
+    let grade = 'weak';
+    if (strength >= 3 || touch >= 4) {
+      grade = 'strong';
+    } else if (strength >= 2 || touch >= 2) {
+      grade = 'medium';
+    }
+
+    let label = '弱';
+    let color = colors.textMuted;
+    let trigger = '单周期且触及次数较少';
+    if (grade === 'strong') {
+      label = '强';
+      color = colors.gold;
+      trigger = strength >= 3 ? '跨周期汇合明显' : '同价位反复触及';
+    } else if (grade === 'medium') {
+      label = '中';
+      color = colors.yellow;
+      trigger = strength >= 2 ? '存在多周期确认' : '存在重复触及';
+    }
+
+    return {
+      grade,
+      label,
+      color,
+      explain: `依据: ${trigger}（周期${tfCount}个, 触及${touch}次）`,
+    };
+  }, []);
 
   const renderZone = (zone, isClosest, type) => {
     const isResist = type === 'RESISTANCE';
@@ -151,6 +192,7 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
     const zoneKey = `${zone.lower}-${zone.upper}-${zone.mid}`;
     const isExpanded = !!expandedReasons[zoneKey];
     const reason = zone.reason || '';
+    const gradeMeta = getZoneGradeMeta(zone);
 
     const strengthPct = Math.min((zone.strength || 1) / 4, 1) * 100;
     return (
@@ -166,6 +208,9 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
               {rangeText}
             </Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <View style={[styles.gradeBadge, { borderColor: gradeMeta.color, backgroundColor: `${gradeMeta.color}22` }]}>
+                <Text style={[styles.gradeText, { color: gradeMeta.color }]}>{gradeMeta.label}</Text>
+              </View>
               <Text style={styles.levelStars}>{STARS[zone.strength] || STARS[4]}</Text>
               {reason ? <Text style={styles.reasonToggle}>{isExpanded ? '▾' : '▸'}</Text> : null}
             </View>
@@ -181,6 +226,7 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
             <Text style={styles.levelTF}>{zone.timeframes?.join(' / ')}</Text>
             <Text style={styles.levelTouch}>触及 {zone.touchCount}x</Text>
           </View>
+          <Text style={styles.gradeReason}>{gradeMeta.explain}</Text>
           {isExpanded && reason ? (
             <View style={styles.reasonBox}>
               <Text style={styles.reasonTitle}>
@@ -284,16 +330,18 @@ export default function SupportResistancePanel({ symbol, externalMarkPrice }) {
       {/* 强阻力区间 */}
       {filteredResistanceZones.length > 0 && (
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.red }]}>强阻力区间</Text>
-          {filteredResistanceZones.slice(0, 4).map((z, idx) => renderZone(z, idx === 0, 'RESISTANCE'))}
+          <Text style={[styles.sectionTitle, { color: colors.red }]}>阻力区间（近到远，含强弱）</Text>
+          <Text style={styles.sectionHint}>等级: 强(跨周期/多触及) · 中 · 弱</Text>
+          {filteredResistanceZones.slice(0, 6).map((z, idx) => renderZone(z, idx === 0, 'RESISTANCE'))}
         </View>
       )}
 
       {/* 强支撑区间 */}
       {filteredSupportZones.length > 0 && (
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.green }]}>强支撑区间</Text>
-          {filteredSupportZones.slice(0, 4).map((z, idx) => renderZone(z, idx === 0, 'SUPPORT'))}
+          <Text style={[styles.sectionTitle, { color: colors.green }]}>支撑区间（近到远，含强弱）</Text>
+          <Text style={styles.sectionHint}>等级: 强(跨周期/多触及) · 中 · 弱</Text>
+          {filteredSupportZones.slice(0, 6).map((z, idx) => renderZone(z, idx === 0, 'SUPPORT'))}
         </View>
       )}
 
@@ -467,6 +515,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginBottom: spacing.xs,
   },
+  sectionHint: {
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+    marginBottom: spacing.xs,
+  },
 
   // 级别行
   levelRow: {
@@ -504,6 +557,16 @@ const styles = StyleSheet.create({
     fontSize: fontSize.xs,
     color: colors.gold,
   },
+  gradeBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+  },
+  gradeText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
   strengthTrack: {
     height: 3,
     backgroundColor: colors.divider,
@@ -526,6 +589,11 @@ const styles = StyleSheet.create({
   levelTouch: {
     fontSize: fontSize.xs,
     color: colors.textMuted,
+  },
+  gradeReason: {
+    marginTop: 2,
+    fontSize: 10,
+    color: colors.textSecondary,
   },
   levelRight: {
     marginLeft: spacing.md,

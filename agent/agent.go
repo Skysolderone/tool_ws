@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -23,8 +25,41 @@ import (
 var chatModel *openai.ChatModel
 var chatModelName string
 
-const analyzeOverallTimeout = 55 * time.Second
-const analyzeAsyncTaskTimeout = 2 * time.Minute
+var reChatSymbol = regexp.MustCompile(`\b[A-Z]{2,10}(?:USDT)?\b`)
+
+var chatSymbolStopwords = map[string]struct{}{
+	"POSITION": {}, "POSITIONS": {}, "SIGNAL": {}, "SIGNALS": {}, "NEWS": {}, "MESSAGE": {}, "MESSAGES": {},
+	"BALANCE": {}, "ACCOUNT": {}, "PRICE": {}, "OPEN": {}, "CLOSE": {}, "SET": {}, "STOP": {}, "LOSS": {},
+	"TAKE": {}, "PROFIT": {}, "LONG": {}, "SHORT": {}, "BUY": {}, "SELL": {}, "PLEASE": {}, "HELP": {},
+	"WHAT": {}, "WHEN": {}, "WHERE": {}, "WHO": {}, "WHY": {}, "HOW": {}, "THE": {}, "AND": {}, "FOR": {},
+	"WITH": {}, "THIS": {}, "THAT": {}, "FROM": {}, "YOUR": {}, "ARE": {}, "WILL": {}, "CAN": {}, "SHOULD": {},
+}
+
+const analyzeOverallTimeout = 10 * time.Minute
+const analyzeAsyncTaskTimeout = 10 * time.Minute
+
+func buildAnalyzeSystemPrompt() string {
+	prompt := systemPrompt
+	summary, err := api.GetAgentEvalSummaryForAgent(7)
+	if err != nil || summary == nil {
+		return prompt
+	}
+	if summary.TotalSuggestions <= 0 {
+		return prompt
+	}
+
+	worst := "-"
+	if len(summary.WorstSymbols) > 0 {
+		worst = strings.Join(summary.WorstSymbols, ",")
+	}
+
+	return prompt + fmt.Sprintf(`
+
+## 你的历史表现
+近 7 天命中率：1H %.2f%% / 24H %.2f%%
+表现最差币种：%s
+请在这些币种上更加谨慎。`, summary.HitRate1H, summary.HitRate24H, worst)
+}
 
 // InitAgent 初始化 Eino Agent（在 main.go 中调用）。
 func InitAgent(cfg api.LLMConfig) error {
@@ -80,14 +115,14 @@ func RunAnalysis(ctx context.Context, req AnalysisRequest) (*AnalysisOutput, err
 
 	userMsg := "以下是当前交易数据，请分析并给出建议（严格返回 JSON）：\n" + dataJSON
 	messages := []*schema.Message{
-		schema.SystemMessage(systemPrompt),
+		schema.SystemMessage(buildAnalyzeSystemPrompt()),
 		schema.UserMessage(userMsg),
 	}
 
-	timeout := 60 * time.Second
+	timeout := 10 * time.Minute
 	if strings.Contains(strings.ToLower(chatModelName), "reasoner") {
-		// Cloudflare 回源请求常见等待上限约 100s，reasoner 需要预留收集/解析耗时。
-		timeout = 95 * time.Second
+		// 思考模型响应更慢，统一放宽到 10 分钟。
+		timeout = 10 * time.Minute
 	}
 	llmCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -111,6 +146,94 @@ func RunAnalysis(ctx context.Context, req AnalysisRequest) (*AnalysisOutput, err
 
 	output.Summary = raw
 	log.Printf("[Agent] RunAnalysis parse=fallback_text total=%v", time.Since(analysisStart).Round(time.Millisecond))
+	return &output, nil
+}
+
+type analyzeProgress struct {
+	Phase  string `json:"phase"`
+	Detail string `json:"detail"`
+	Step   int    `json:"step"`
+	Total  int    `json:"total"`
+}
+
+// RunAnalysisStream 执行流式分析，逐 chunk 产出 LLM 文本。
+func RunAnalysisStream(
+	ctx context.Context,
+	req AnalysisRequest,
+	onProgress func(analyzeProgress),
+	onToken func(string),
+) (*AnalysisOutput, error) {
+	if chatModel == nil {
+		return nil, errors.New("agent llm not configured")
+	}
+	analysisStart := time.Now()
+	log.Printf("[Agent] RunAnalysisStream start mode=%s symbols=%v", strings.TrimSpace(req.Mode), req.Symbols)
+
+	collectStart := time.Now()
+	dataJSON, err := collectDataWithProgress(ctx, req, onProgress)
+	if err != nil {
+		log.Printf("[Agent] RunAnalysisStream collectData failed after=%v err=%v", time.Since(collectStart).Round(time.Millisecond), err)
+		return nil, err
+	}
+	log.Printf("[Agent] RunAnalysisStream collectData done after=%v payload_bytes=%d", time.Since(collectStart).Round(time.Millisecond), len(dataJSON))
+
+	userMsg := "以下是当前交易数据，请分析并给出建议（严格返回 JSON）：\n" + dataJSON
+	messages := []*schema.Message{
+		schema.SystemMessage(buildAnalyzeSystemPrompt()),
+		schema.UserMessage(userMsg),
+	}
+
+	timeout := 10 * time.Minute
+	if strings.Contains(strings.ToLower(chatModelName), "reasoner") {
+		timeout = 10 * time.Minute
+	}
+	llmCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	llmStart := time.Now()
+	log.Printf("[Agent] RunAnalysisStream llm start model=%s timeout=%v", chatModelName, timeout)
+	stream, err := chatModel.Stream(llmCtx, messages)
+	if err != nil {
+		log.Printf("[Agent] RunAnalysisStream llm failed after=%v err=%v", time.Since(llmStart).Round(time.Millisecond), err)
+		return nil, err
+	}
+	defer stream.Close()
+
+	var rawBuilder strings.Builder
+	for {
+		chunk, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if errors.Is(recvErr, schema.ErrNoValue) {
+			continue
+		}
+		if recvErr != nil {
+			log.Printf("[Agent] RunAnalysisStream llm recv_failed after=%v err=%v", time.Since(llmStart).Round(time.Millisecond), recvErr)
+			return nil, recvErr
+		}
+		if chunk == nil {
+			continue
+		}
+		if strings.TrimSpace(chunk.Content) == "" {
+			continue
+		}
+		rawBuilder.WriteString(chunk.Content)
+		if onToken != nil {
+			onToken(chunk.Content)
+		}
+	}
+
+	raw := strings.TrimSpace(rawBuilder.String())
+	var output AnalysisOutput
+	if unmarshalAnalysisOutput(raw, &output) == nil {
+		hydratePositionAnalysisFromCollectedData(&output, dataJSON)
+		log.Printf("[Agent] RunAnalysisStream parse=json total=%v actions=%d", time.Since(analysisStart).Round(time.Millisecond), len(output.ActionItems))
+		return &output, nil
+	}
+
+	output.Summary = raw
+	log.Printf("[Agent] RunAnalysisStream parse=fallback_text total=%v", time.Since(analysisStart).Round(time.Millisecond))
 	return &output, nil
 }
 
@@ -241,9 +364,26 @@ func chooseText(values ...string) string {
 }
 
 func collectData(ctx context.Context, req AnalysisRequest) (string, error) {
+	return collectDataWithProgress(ctx, req, nil)
+}
+
+func collectDataWithProgress(ctx context.Context, req AnalysisRequest, onProgress func(analyzeProgress)) (string, error) {
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
 	if mode == "" {
 		mode = "full"
+	}
+
+	const totalSteps = 5
+	emitProgress := func(step int, phase, detail string) {
+		if onProgress == nil {
+			return
+		}
+		onProgress(analyzeProgress{
+			Phase:  phase,
+			Detail: detail,
+			Step:   step,
+			Total:  totalSteps,
+		})
 	}
 
 	data := map[string]any{}
@@ -256,6 +396,7 @@ func collectData(ctx context.Context, req AnalysisRequest) (string, error) {
 		return "", errors.New("invalid mode, should be one of: full|positions|signals|journal|sentiment")
 	}
 
+	emitProgress(1, "positions", "正在获取持仓与余额数据...")
 	if mode == "full" || mode == "positions" {
 		positions, err := collectPositionsData(ctx, symbols)
 		if err != nil {
@@ -263,8 +404,15 @@ func collectData(ctx context.Context, req AnalysisRequest) (string, error) {
 		} else if positions != nil {
 			data["positions"] = positions
 		}
+
+		if balance, err := collectBalanceData(ctx); err != nil {
+			warnings = append(warnings, "账户余额获取失败: "+err.Error())
+		} else if balance != nil {
+			data["balance"] = balance
+		}
 	}
 
+	emitProgress(2, "signals", "正在收集多时间框架信号...")
 	if mode == "full" || mode == "signals" {
 		if signals := collectSignalsData(symbols); signals != nil {
 			data["signals"] = signals
@@ -273,6 +421,7 @@ func collectData(ctx context.Context, req AnalysisRequest) (string, error) {
 		}
 	}
 
+	emitProgress(3, "journal", "正在整理历史交易统计...")
 	if mode == "full" || mode == "journal" {
 		journal, err := collectJournalData(30)
 		if err != nil {
@@ -282,17 +431,23 @@ func collectData(ctx context.Context, req AnalysisRequest) (string, error) {
 		}
 	}
 
+	emitProgress(4, "sentiment", "正在评估市场情绪...")
 	if mode == "full" || mode == "sentiment" {
 		data["sentiment"] = collectSentimentData()
 	}
 
-	// 加入账户余额
-	if mode == "full" || mode == "positions" {
-		if balance, err := collectBalanceData(ctx); err != nil {
-			warnings = append(warnings, "账户余额获取失败: "+err.Error())
-		} else if balance != nil {
-			data["balance"] = balance
+	emitProgress(5, "context", "正在注入历史上下文与新闻摘要...")
+	if !req.Mock {
+		history, err := CollectHistory(5)
+		if err != nil {
+			warnings = append(warnings, "历史分析记录读取失败: "+err.Error())
+		} else if len(history) > 0 {
+			data["recent_analysis_history"] = history
 		}
+	}
+
+	if news := CollectNews(12); len(news) > 0 {
+		data["recent_news"] = news
 	}
 
 	if len(warnings) > 0 {
@@ -367,6 +522,415 @@ func HandleAnalyze(c context.Context, ctx *app.RequestContext) {
 		return
 	}
 	ctx.JSON(http.StatusOK, hertzutils.H{"data": result})
+}
+
+type analyzeSSEEvent struct {
+	Event string
+	Data  any
+}
+
+// HandleAnalyzeStream GET /tool/agent/analyze/stream
+// 通过 SSE 推送数据收集进度与 LLM token 流。
+func HandleAnalyzeStream(c context.Context, ctx *app.RequestContext) {
+	reqID := strconv.FormatInt(time.Now().UnixNano(), 36)
+	req := AnalysisRequest{
+		Mode:    ctx.DefaultQuery("mode", "full"),
+		Symbols: parseSymbolsQuery(ctx.DefaultQuery("symbols", "")),
+	}
+	req.Symbols = normalizeAndDedupeSymbols(req.Symbols)
+	if req.Mode == "" {
+		req.Mode = "full"
+	}
+
+	log.Printf("[Agent][%s] analyze stream start mode=%s symbols=%v", reqID, req.Mode, req.Symbols)
+	if chatModel == nil {
+		ctx.JSON(http.StatusServiceUnavailable, hertzutils.H{"error": "Agent 未配置 LLM"})
+		return
+	}
+
+	start := time.Now()
+	logRecord := &api.AgentAnalysisLog{
+		Mode:        normalizeMode(req.Mode),
+		Source:      api.AgentAnalysisSourceAppManual,
+		Symbols:     strings.Join(req.Symbols, ","),
+		Execute:     false,
+		Status:      api.AgentAnalysisStatusRunning,
+		RequestBody: marshalToString(req),
+	}
+	if err := api.SaveAgentAnalysisLog(logRecord); err != nil {
+		log.Printf("[Agent][%s] analyze stream create_log_failed err=%v", reqID, err)
+	}
+	taskID := logRecord.ID
+
+	ctx.SetStatusCode(http.StatusOK)
+	ctx.SetContentType("text/event-stream")
+	ctx.Response.Header.Set("Cache-Control", "no-cache")
+	ctx.Response.Header.Set("Connection", "keep-alive")
+	ctx.Response.Header.Set("X-Accel-Buffering", "no")
+	ctx.Response.Header.Set("Access-Control-Allow-Origin", "*")
+
+	pr, pw := io.Pipe()
+	ctx.SetBodyStream(pr, -1)
+
+	go func() {
+		defer func() {
+			_ = pw.Close()
+		}()
+
+		writeEvent := func(event string, payload any) bool {
+			b, err := json.Marshal(payload)
+			if err != nil {
+				return false
+			}
+			if _, err = fmt.Fprintf(pw, "event: %s\ndata: %s\n\n", event, string(b)); err != nil {
+				return false
+			}
+			return true
+		}
+		writeKeepalive := func() bool {
+			if _, err := io.WriteString(pw, ":keepalive\n\n"); err != nil {
+				return false
+			}
+			return true
+		}
+
+		events := make(chan analyzeSSEEvent, 256)
+		runCtx, cancel := context.WithTimeout(c, analyzeOverallTimeout)
+		defer cancel()
+
+		go func() {
+			defer close(events)
+			output, err := RunAnalysisStream(
+				runCtx,
+				req,
+				func(p analyzeProgress) {
+					select {
+					case events <- analyzeSSEEvent{Event: "progress", Data: p}:
+					case <-runCtx.Done():
+					}
+				},
+				func(text string) {
+					if strings.TrimSpace(text) == "" {
+						return
+					}
+					select {
+					case events <- analyzeSSEEvent{Event: "token", Data: hertzutils.H{"text": text}}:
+					case <-runCtx.Done():
+					}
+				},
+			)
+
+			durationMs := int64(time.Since(start) / time.Millisecond)
+			if err != nil {
+				log.Printf("[Agent][%s] analyze stream failed after=%v err=%v", reqID, time.Since(start).Round(time.Millisecond), err)
+				if taskID > 0 {
+					_ = api.UpdateAgentAnalysisLog(taskID, map[string]any{
+						"status":         api.AgentAnalysisStatusFailed,
+						"error_message":  err.Error(),
+						"duration_ms":    durationMs,
+						"response_body":  "",
+						"execution_body": "",
+					})
+				}
+				select {
+				case events <- analyzeSSEEvent{Event: "error", Data: hertzutils.H{"message": err.Error()}}:
+				case <-runCtx.Done():
+				}
+				return
+			}
+
+			if output == nil {
+				output = &AnalysisOutput{}
+			}
+			if taskID > 0 {
+				_ = api.UpdateAgentAnalysisLog(taskID, map[string]any{
+					"status":         api.AgentAnalysisStatusSuccess,
+					"error_message":  "",
+					"duration_ms":    durationMs,
+					"response_body":  marshalToString(output),
+					"execution_body": marshalToString(output.Execution),
+				})
+			}
+
+			log.Printf("[Agent][%s] analyze stream done after=%v action_items=%d", reqID, time.Since(start).Round(time.Millisecond), len(output.ActionItems))
+			select {
+			case events <- analyzeSSEEvent{Event: "done", Data: hertzutils.H{"task_id": taskID}}:
+			case <-runCtx.Done():
+			}
+		}()
+
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case ev, ok := <-events:
+				if !ok {
+					return
+				}
+				if !writeEvent(ev.Event, ev.Data) {
+					return
+				}
+			case <-ticker.C:
+				if !writeKeepalive() {
+					return
+				}
+			}
+		}
+	}()
+}
+
+type chatIntent struct {
+	Symbols       []string
+	NeedPositions bool
+	NeedSignals   bool
+	NeedNews      bool
+	NeedBalance   bool
+	NeedSentiment bool
+	NeedJournal   bool
+}
+
+func (i chatIntent) requestedFields() []string {
+	fields := make([]string, 0, 6)
+	if i.NeedPositions {
+		fields = append(fields, "positions")
+	}
+	if i.NeedSignals {
+		fields = append(fields, "signals")
+	}
+	if i.NeedNews {
+		fields = append(fields, "recent_news")
+	}
+	if i.NeedBalance {
+		fields = append(fields, "balance")
+	}
+	if i.NeedSentiment {
+		fields = append(fields, "sentiment")
+	}
+	if i.NeedJournal {
+		fields = append(fields, "journal")
+	}
+	return fields
+}
+
+func detectChatIntent(req ChatRequest) chatIntent {
+	msg := strings.ToLower(strings.TrimSpace(req.Message))
+	intent := chatIntent{
+		Symbols: normalizeAndDedupeSymbols(append(req.Symbols, extractSymbolsFromChatMessage(req.Message)...)),
+	}
+
+	intent.NeedPositions = containsAny(msg, "持仓", "仓位", "position")
+	intent.NeedSignals = containsAny(msg, "信号", "signal", "买", "卖", "开仓", "平仓")
+	intent.NeedNews = containsAny(msg, "新闻", "消息", "news", "事件")
+	intent.NeedBalance = containsAny(msg, "余额", "balance", "资金")
+	intent.NeedSentiment = containsAny(msg, "情绪", "sentiment", "费率", "爆仓", "多空比")
+	intent.NeedJournal = containsAny(msg, "复盘", "journal", "胜率", "回撤", "盈亏比")
+
+	if intent.NeedPositions {
+		intent.NeedBalance = true
+	}
+
+	if !intent.NeedPositions && !intent.NeedSignals && !intent.NeedNews && !intent.NeedBalance && !intent.NeedSentiment && !intent.NeedJournal {
+		intent.NeedPositions = true
+		intent.NeedSignals = true
+		intent.NeedSentiment = true
+		intent.NeedBalance = true
+	}
+
+	return intent
+}
+
+func containsAny(text string, tokens ...string) bool {
+	for _, token := range tokens {
+		if token != "" && strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractSymbolsFromChatMessage(message string) []string {
+	upper := strings.ToUpper(message)
+	rawMatches := reChatSymbol.FindAllString(upper, -1)
+	if len(rawMatches) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(rawMatches))
+	for _, token := range rawMatches {
+		token = strings.TrimSpace(strings.ToUpper(token))
+		if token == "" {
+			continue
+		}
+		if _, blocked := chatSymbolStopwords[token]; blocked {
+			continue
+		}
+		if !strings.HasSuffix(token, "USDT") {
+			token += "USDT"
+		}
+		if token == "USDT" {
+			continue
+		}
+		out = append(out, token)
+	}
+	return normalizeAndDedupeSymbols(out)
+}
+
+func collectChatData(ctx context.Context, intent chatIntent) (string, error) {
+	data := map[string]any{}
+	var warnings []string
+
+	if intent.NeedPositions {
+		positions, err := collectPositionsData(ctx, intent.Symbols)
+		if err != nil {
+			warnings = append(warnings, "持仓数据获取失败: "+err.Error())
+		} else if positions != nil {
+			data["positions"] = positions
+		}
+	}
+
+	if intent.NeedSignals {
+		if signals := collectSignalsData(intent.Symbols); signals != nil {
+			data["signals"] = signals
+		} else {
+			warnings = append(warnings, "推荐信号缓存为空（可能引擎尚未就绪）")
+		}
+	}
+
+	if intent.NeedNews {
+		if news := CollectNews(10); len(news) > 0 {
+			data["recent_news"] = news
+		} else {
+			warnings = append(warnings, "新闻缓存为空（可能服务刚启动）")
+		}
+	}
+
+	if intent.NeedBalance {
+		if balance, err := collectBalanceData(ctx); err != nil {
+			warnings = append(warnings, "账户余额获取失败: "+err.Error())
+		} else if balance != nil {
+			data["balance"] = balance
+		}
+	}
+
+	if intent.NeedSentiment {
+		data["sentiment"] = collectSentimentData()
+	}
+
+	if intent.NeedJournal {
+		journal, err := collectJournalData(30)
+		if err != nil {
+			warnings = append(warnings, "交易日志获取失败: "+err.Error())
+		} else if journal != nil {
+			data["journal"] = journal
+		}
+	}
+
+	if history, err := CollectHistory(3); err != nil {
+		warnings = append(warnings, "历史分析记录读取失败: "+err.Error())
+	} else if len(history) > 0 {
+		data["recent_analysis_history"] = history
+	}
+
+	if len(warnings) > 0 {
+		data["_warnings"] = warnings
+	}
+
+	b, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func unmarshalChatResponse(raw string, out *ChatResponse) error {
+	if err := json.Unmarshal([]byte(raw), out); err == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "```") {
+		trimmed = strings.TrimPrefix(trimmed, "```json")
+		trimmed = strings.TrimPrefix(trimmed, "```")
+		trimmed = strings.TrimSuffix(trimmed, "```")
+		trimmed = strings.TrimSpace(trimmed)
+	}
+	return json.Unmarshal([]byte(trimmed), out)
+}
+
+func trimReply(text string, maxRunes int) string {
+	text = strings.TrimSpace(text)
+	if maxRunes <= 0 || text == "" {
+		return text
+	}
+	rs := []rune(text)
+	if len(rs) <= maxRunes {
+		return text
+	}
+	return strings.TrimSpace(string(rs[:maxRunes]))
+}
+
+// HandleChat POST /tool/agent/chat
+func HandleChat(c context.Context, ctx *app.RequestContext) {
+	start := time.Now()
+	var req ChatRequest
+	if err := ctx.BindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, hertzutils.H{"error": "请求体 JSON 无效"})
+		return
+	}
+	req.Message = strings.TrimSpace(req.Message)
+	req.Symbols = normalizeAndDedupeSymbols(req.Symbols)
+	if req.Message == "" {
+		ctx.JSON(http.StatusBadRequest, hertzutils.H{"error": "message 不能为空"})
+		return
+	}
+	if chatModel == nil {
+		ctx.JSON(http.StatusServiceUnavailable, hertzutils.H{"error": "Agent 未配置 LLM"})
+		return
+	}
+
+	intent := detectChatIntent(req)
+	dataJSON, err := collectChatData(c, intent)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, hertzutils.H{"error": "收集对话数据失败: " + err.Error()})
+		return
+	}
+
+	payload := map[string]any{
+		"question":         req.Message,
+		"symbols":          intent.Symbols,
+		"requested_fields": intent.requestedFields(),
+		"data":             json.RawMessage(dataJSON),
+	}
+	payloadJSON, _ := json.MarshalIndent(payload, "", "  ")
+	messages := []*schema.Message{
+		schema.SystemMessage(chatSystemPrompt),
+		schema.UserMessage("用户问题与上下文数据如下（请严格返回 JSON）：\n" + string(payloadJSON)),
+	}
+
+	llmCtx, cancel := context.WithTimeout(c, 2*time.Minute)
+	defer cancel()
+
+	resp, err := chatModel.Generate(llmCtx, messages)
+	if err != nil {
+		log.Printf("[Agent] chat failed after=%v err=%v", time.Since(start).Round(time.Millisecond), err)
+		ctx.JSON(http.StatusInternalServerError, hertzutils.H{"error": err.Error()})
+		return
+	}
+
+	raw := strings.TrimSpace(resp.Content)
+	out := ChatResponse{}
+	if unmarshalChatResponse(raw, &out) != nil {
+		out.Reply = raw
+	}
+	out.Reply = trimReply(out.Reply, 320)
+	if out.Reply == "" {
+		out.Reply = "当前没有可用数据支持该问题，请稍后重试。"
+	}
+
+	log.Printf("[Agent] chat done after=%v symbols=%v requested=%v actions=%d", time.Since(start).Round(time.Millisecond), intent.Symbols, intent.requestedFields(), len(out.ActionItems))
+	ctx.JSON(http.StatusOK, hertzutils.H{"data": out})
 }
 
 func runAnalyzePipeline(ctx context.Context, reqID string, req AnalysisRequest) (*AnalysisOutput, string, error) {

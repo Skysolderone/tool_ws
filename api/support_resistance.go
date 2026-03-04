@@ -28,7 +28,7 @@ type SRLevel struct {
 	TouchCount int      `json:"touchCount"` // 被触及次数
 	ZoneLow    float64  `json:"zoneLow"`
 	ZoneHigh   float64  `json:"zoneHigh"`
-	Reason     string   `json:"reason"`     // 为什么是支撑/阻力的详细说明
+	Reason     string   `json:"reason"` // 为什么是支撑/阻力的详细说明
 }
 
 // SRZone 强支撑/阻力区间
@@ -83,16 +83,17 @@ type swingPoint struct {
 // tfConfig 时间框架配置
 type tfConfig struct {
 	interval string // "1h", "4h", "1d", "1w"
-	limit    int    // 拉取根数
+	limit    int    // 固定模式=拉取根数；全量模式=单次分页大小
 	period   int    // swing 检测窗口
 	label    string // 显示标签
+	useAll   bool   // 是否分页拉取该周期的全部历史K线
 }
 
 var srTimeframes = []tfConfig{
-	{interval: "1h", limit: 50, period: 5, label: "1h"},
-	{interval: "4h", limit: 48, period: 5, label: "4h"},
-	{interval: "1d", limit: 60, period: 10, label: "1d"},
-	{interval: "1w", limit: 52, period: 5, label: "1w"},
+	{interval: "1h", limit: 300, period: 5, label: "1h"},
+	{interval: "4h", limit: 300, period: 5, label: "4h"},
+	{interval: "1d", limit: 1000, period: 10, label: "1d", useAll: true},
+	{interval: "1w", limit: 1000, period: 5, label: "1w", useAll: true},
 }
 
 // GetSRLevels 计算支撑/阻力位（主入口）
@@ -189,11 +190,19 @@ func fetchMultiTimeframeKlines(ctx context.Context, symbol string) (map[string][
 		wg.Add(1)
 		go func(tf tfConfig) {
 			defer wg.Done()
-			klines, err := Client.NewKlinesService().
-				Symbol(symbol).
-				Interval(tf.interval).
-				Limit(tf.limit).
-				Do(ctx)
+			var (
+				klines []*futures.Kline
+				err    error
+			)
+			if tf.useAll {
+				klines, err = fetchAllKlinesByInterval(ctx, symbol, tf.interval, tf.limit)
+			} else {
+				klines, err = Client.NewKlinesService().
+					Symbol(symbol).
+					Interval(tf.interval).
+					Limit(tf.limit).
+					Do(ctx)
+			}
 			if err != nil {
 				mu.Lock()
 				if firstErr == nil {
@@ -226,6 +235,64 @@ func fetchMultiTimeframeKlines(ctx context.Context, symbol string) (map[string][
 	}())
 
 	return result, nil
+}
+
+// fetchAllKlinesByInterval 通过 EndTime 回溯分页获取指定周期的全部历史K线。
+func fetchAllKlinesByInterval(ctx context.Context, symbol, interval string, pageLimit int) ([]*futures.Kline, error) {
+	if pageLimit <= 0 || pageLimit > 1500 {
+		pageLimit = 1000
+	}
+
+	var (
+		endTime int64
+		chunks  [][]*futures.Kline
+	)
+	for {
+		req := Client.NewKlinesService().
+			Symbol(symbol).
+			Interval(interval).
+			Limit(pageLimit)
+		if endTime > 0 {
+			req = req.EndTime(endTime)
+		}
+
+		klines, err := req.Do(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(klines) == 0 {
+			break
+		}
+
+		chunks = append(chunks, klines)
+		if len(klines) < pageLimit {
+			break
+		}
+
+		oldestOpen := klines[0].OpenTime
+		if oldestOpen <= 0 {
+			break
+		}
+		nextEnd := oldestOpen - 1
+		if endTime > 0 && nextEnd >= endTime {
+			break
+		}
+		endTime = nextEnd
+	}
+
+	if len(chunks) == 0 {
+		return nil, nil
+	}
+
+	total := 0
+	for _, chunk := range chunks {
+		total += len(chunk)
+	}
+	out := make([]*futures.Kline, 0, total)
+	for i := len(chunks) - 1; i >= 0; i-- {
+		out = append(out, chunks[i]...)
+	}
+	return out, nil
 }
 
 // detectSwingLevels 在一组 K 线中检测 swing high/low
@@ -445,6 +512,10 @@ func mergeAndRankLevels(allSwings []swingPoint, currentPrice, tolerancePercent f
 			if visited[j] {
 				continue
 			}
+			// 支撑/阻力分别聚类，避免高低点混合后误分类。
+			if allSwings[j].isHigh != allSwings[i].isHigh {
+				continue
+			}
 			if allSwings[j].price-allSwings[i].price > tolerance*2 {
 				break // 超过容差范围，后面的都不会在范围内
 			}
@@ -545,22 +616,66 @@ func mergeAndRankLevels(allSwings []swingPoint, currentPrice, tolerancePercent f
 	})
 
 	supports := make([]SRLevel, 0, len(supportRanked))
-	for _, r := range supportRanked {
-		supports = append(supports, r.level)
-	}
 	resistances := make([]SRLevel, 0, len(resistanceRanked))
-	for _, r := range resistanceRanked {
-		resistances = append(resistances, r.level)
+	maxLevels := 8
+	selectTopWithCoverage := func(ranked []rankedLevel, maxCount int) []SRLevel {
+		if len(ranked) == 0 || maxCount <= 0 {
+			return nil
+		}
+		levelHasTF := func(level SRLevel, tf string) bool {
+			for _, it := range level.Timeframes {
+				if strings.EqualFold(it, tf) {
+					return true
+				}
+			}
+			return false
+		}
+
+		out := make([]SRLevel, 0, minInt(len(ranked), maxCount))
+		used := make([]bool, len(ranked))
+		targetTFs := []string{"1h", "4h", "1d", "1w"}
+
+		// 第一轮：尽量保证每个周期至少有一个候选。
+		for _, tf := range targetTFs {
+			if len(out) >= maxCount {
+				break
+			}
+			bestIdx := -1
+			bestDist := math.MaxFloat64
+			bestScore := -1.0
+			for i, r := range ranked {
+				if used[i] || !levelHasTF(r.level, tf) {
+					continue
+				}
+				dist := math.Abs(r.level.Distance)
+				if bestIdx == -1 || dist < bestDist || (dist == bestDist && r.score > bestScore) {
+					bestIdx = i
+					bestDist = dist
+					bestScore = r.score
+				}
+			}
+			if bestIdx >= 0 {
+				out = append(out, ranked[bestIdx].level)
+				used[bestIdx] = true
+			}
+		}
+
+		// 第二轮：按原始评分顺序补满。
+		for i, r := range ranked {
+			if len(out) >= maxCount {
+				break
+			}
+			if used[i] {
+				continue
+			}
+			out = append(out, r.level)
+			used[i] = true
+		}
+		return out
 	}
 
-	// 限制返回数量
-	maxLevels := 8
-	if len(supports) > maxLevels {
-		supports = supports[:maxLevels]
-	}
-	if len(resistances) > maxLevels {
-		resistances = resistances[:maxLevels]
-	}
+	supports = selectTopWithCoverage(supportRanked, maxLevels)
+	resistances = selectTopWithCoverage(resistanceRanked, maxLevels)
 
 	return supports, resistances
 }

@@ -27,15 +27,19 @@ const C = {
   warn: colors.yellow,
   warnBg: colors.yellowBg,
 };
-// 单币分析可能接近 100s，上层网关有超时限制，这里给前端更长窗口。
-const ANALYZE_TIMEOUT_MS = 210000;
+// 思考模型响应较慢，前端等待窗口放宽到 10 分钟。
+const ANALYZE_TIMEOUT_MS = 600000;
 const RAW_POSITION_TIMEOUT_MS = 15000;
 const ANALYZE_MODE = 'positions';
 const AGENT_LOG_LIMIT = 30;
 const AGENT_LOG_POLL_MS = 1500;
+const AGENT_EVAL_DAYS = 7;
+const STREAM_PREVIEW_MAX = 320;
+const CHAT_TIMEOUT_MS = 120000;
 
 export default function AIAnalysisPanel() {
   const [loading, setLoading] = useState(false);
+  const [panelMode, setPanelMode] = useState('analysis');
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [rawPositionData, setRawPositionData] = useState(null);
@@ -49,10 +53,22 @@ export default function AIAnalysisPanel() {
   const [analysisLogs, setAnalysisLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState(null);
+  const [evalSummary, setEvalSummary] = useState(null);
+  const [evalLoading, setEvalLoading] = useState(false);
+  const [evalError, setEvalError] = useState(null);
   const [activeTaskId, setActiveTaskId] = useState(null);
+  const [streamProgress, setStreamProgress] = useState(null);
+  const [streamText, setStreamText] = useState('');
+  const [streamMode, setStreamMode] = useState('');
+  const [chatInput, setChatInput] = useState('');
+  const [chatSymbols, setChatSymbols] = useState('');
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatLoading, setChatLoading] = useState(false);
   const analyzeAbortRef = useRef(null);
   const rawPositionAbortRef = useRef(null);
   const logsAbortRef = useRef(null);
+  const evalAbortRef = useRef(null);
+  const chatAbortRef = useRef(null);
   const requestIdRef = useRef(0);
 
   const actionItems = useMemo(() => data?.action_items || [], [data]);
@@ -60,6 +76,11 @@ export default function AIAnalysisPanel() {
   const rawPositionItems = useMemo(() => rawPositionData?.items || [], [rawPositionData]);
   const execution = data?.execution;
   const currentTaskLabel = activeTaskId ? `#${activeTaskId}` : '';
+  const streamPreview = useMemo(() => {
+    if (!streamText) return '';
+    if (streamText.length <= STREAM_PREVIEW_MAX) return streamText;
+    return streamText.slice(streamText.length - STREAM_PREVIEW_MAX);
+  }, [streamText]);
 
   const loadAnalysisLogs = useCallback(async (requestOptions = {}) => {
     setLogsLoading(true);
@@ -74,6 +95,23 @@ export default function AIAnalysisPanel() {
     } finally {
       if (!requestOptions?.signal?.aborted) {
         setLogsLoading(false);
+      }
+    }
+  }, []);
+
+  const loadEvaluationSummary = useCallback(async (requestOptions = {}) => {
+    setEvalLoading(true);
+    try {
+      const res = await api.getAgentEvaluation(AGENT_EVAL_DAYS, requestOptions);
+      const payload = res?.data ?? res;
+      setEvalSummary(payload && typeof payload === 'object' ? payload : null);
+      setEvalError(null);
+    } catch (e) {
+      if (requestOptions?.signal?.aborted) return;
+      setEvalError(e.message);
+    } finally {
+      if (!requestOptions?.signal?.aborted) {
+        setEvalLoading(false);
       }
     }
   }, []);
@@ -114,6 +152,9 @@ export default function AIAnalysisPanel() {
     const logController = new AbortController();
     logsAbortRef.current = logController;
     loadAnalysisLogs({ signal: logController.signal });
+    const evalController = new AbortController();
+    evalAbortRef.current = evalController;
+    loadEvaluationSummary({ signal: evalController.signal });
     return () => {
       active = false;
       if (analyzeAbortRef.current) {
@@ -125,8 +166,14 @@ export default function AIAnalysisPanel() {
       if (logsAbortRef.current) {
         logsAbortRef.current.abort();
       }
+      if (evalAbortRef.current) {
+        evalAbortRef.current.abort();
+      }
+      if (chatAbortRef.current) {
+        chatAbortRef.current.abort();
+      }
     };
-  }, [loadAnalysisLogs]);
+  }, [loadAnalysisLogs, loadEvaluationSummary]);
 
   const actionStats = useMemo(() => {
     const total = actionItems.length;
@@ -140,6 +187,26 @@ export default function AIAnalysisPanel() {
   );
   const selectedCount = selectedActionItems.length;
   const executionEnabled = !!policy?.enable_execution;
+  const evalView = useMemo(() => {
+    const source = evalSummary || {};
+    const num = (value, fallback = 0) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    };
+
+    return {
+      totalSuggestions: num(source.total_suggestions ?? source.totalAdvices, 0),
+      hitRate1H: num(source.hit_rate_1h, 0),
+      hitRate4H: num(source.hit_rate_4h, 0),
+      hitRate24H: num(source.hit_rate_24h ?? source.hitRate, 0),
+      avgPnl1H: num(source.avg_pnl_1h, 0),
+      avgPnl24H: num(source.avg_pnl_24h ?? source.avgPnlUsdt, 0),
+      bestMode: String(source.best_mode ?? source.bestMode ?? '-').trim() || '-',
+      worstSymbols: Array.isArray(source.worst_symbols ?? source.worstSymbols)
+        ? (source.worst_symbols ?? source.worstSymbols).filter(Boolean)
+        : [],
+    };
+  }, [evalSummary]);
 
   const fetchRawPositionSnapshot = useCallback(async (requestId) => {
     if (rawPositionAbortRef.current) {
@@ -190,6 +257,47 @@ export default function AIAnalysisPanel() {
     throw new Error(`分析超时（>${Math.round(timeoutMs / 1000)}s），当前状态: ${lastStatus || 'UNKNOWN'}`);
   }, []);
 
+  const runAgentByPolling = useCallback(async ({
+    normalizedSymbols,
+    requestId,
+    signal,
+    timeoutMs,
+  }) => {
+    const submitRes = await api.analyzeAgentAsync(
+      {
+        mode: ANALYZE_MODE,
+        symbols: normalizedSymbols,
+      },
+      { signal },
+    );
+    const submitData = submitRes?.data ?? submitRes;
+    const taskId = Number(submitData?.task_id || 0);
+    if (!Number.isFinite(taskId) || taskId <= 0) {
+      throw new Error('异步任务创建失败：未返回 task_id');
+    }
+    if (requestId !== requestIdRef.current) return null;
+    setActiveTaskId(taskId);
+    await loadAnalysisLogs();
+
+    const taskRecord = await waitForAgentTask(taskId, {
+      signal,
+      timeoutMs,
+    });
+    if (requestId !== requestIdRef.current) return null;
+    await loadAnalysisLogs();
+    setActiveTaskId(null);
+
+    const taskStatus = String(taskRecord?.status || '').toUpperCase();
+    if (taskStatus !== 'SUCCESS') {
+      throw new Error(taskRecord?.errorMessage || `分析任务失败（${taskStatus || 'UNKNOWN'}）`);
+    }
+    const result = safeJSONParse(taskRecord?.responseBody, null);
+    if (!result || typeof result !== 'object') {
+      throw new Error('分析任务完成，但结果为空');
+    }
+    return result;
+  }, [loadAnalysisLogs, waitForAgentTask]);
+
   const runAgent = useCallback(async ({ symbols }) => {
     if (analyzeAbortRef.current) {
       analyzeAbortRef.current.abort();
@@ -216,38 +324,79 @@ export default function AIAnalysisPanel() {
     setRawPositionError(null);
     setRawPositionData(null);
     setActiveTaskId(null);
+    setStreamMode('sse');
+    setStreamProgress({
+      phase: 'connect',
+      detail: '正在建立流式连接...',
+      step: 0,
+      total: 5,
+    });
+    setStreamText('');
     try {
-      const submitRes = await api.analyzeAgentAsync(
-        {
-          mode: ANALYZE_MODE,
-          symbols: normalizedSymbols,
-        },
-        { signal: controller.signal },
-      );
-      const submitData = submitRes?.data ?? submitRes;
-      const taskId = Number(submitData?.task_id || 0);
-      if (!Number.isFinite(taskId) || taskId <= 0) {
-        throw new Error('异步任务创建失败：未返回 task_id');
+      let usedFallback = false;
+      let result = null;
+      try {
+        const streamRes = await api.analyzeAgentStream(
+          {
+            mode: ANALYZE_MODE,
+            symbols: normalizedSymbols,
+          },
+          {
+            onProgress: (progress) => {
+              if (requestId !== requestIdRef.current) return;
+              if (!progress || typeof progress !== 'object') return;
+              setStreamProgress({
+                phase: String(progress.phase || ''),
+                detail: String(progress.detail || ''),
+                step: Number(progress.step || 0),
+                total: Number(progress.total || 5),
+              });
+            },
+            onToken: (text) => {
+              if (requestId !== requestIdRef.current) return;
+              if (!text) return;
+              setStreamText((prev) => `${prev}${text}`);
+            },
+            onDone: (payload) => {
+              if (requestId !== requestIdRef.current) return;
+              const taskId = Number(payload?.task_id || 0);
+              if (Number.isFinite(taskId) && taskId > 0) {
+                setActiveTaskId(taskId);
+              }
+            },
+          },
+          { signal: controller.signal },
+        );
+        if (requestId !== requestIdRef.current) return;
+        result = parseStreamAnalysis(streamRes?.rawText);
+        if (!result || typeof result !== 'object') {
+          throw new Error('流式分析结果为空');
+        }
+      } catch (streamErr) {
+        if (controller.signal.aborted) {
+          throw streamErr;
+        }
+        usedFallback = true;
+        if (requestId !== requestIdRef.current) return;
+        setStreamMode('poll');
+        setStreamProgress({
+          phase: 'fallback',
+          detail: `流式连接失败，改用轮询：${streamErr?.message || 'unknown error'}`,
+          step: 0,
+          total: 5,
+        });
+        result = await runAgentByPolling({
+          normalizedSymbols,
+          requestId,
+          signal: controller.signal,
+          timeoutMs,
+        });
       }
-      if (requestId !== requestIdRef.current) return;
-      setActiveTaskId(taskId);
-      await loadAnalysisLogs();
 
-      const taskRecord = await waitForAgentTask(taskId, {
-        signal: controller.signal,
-        timeoutMs,
-      });
-      if (requestId !== requestIdRef.current) return;
-      await loadAnalysisLogs();
-      setActiveTaskId(null);
-
-      const taskStatus = String(taskRecord?.status || '').toUpperCase();
-      if (taskStatus !== 'SUCCESS') {
-        throw new Error(taskRecord?.errorMessage || `分析任务失败（${taskStatus || 'UNKNOWN'}）`);
-      }
-      const result = safeJSONParse(taskRecord?.responseBody, null);
-      if (!result || typeof result !== 'object') {
-        throw new Error('分析任务完成，但结果为空');
+      if (requestId !== requestIdRef.current || !result) return;
+      if (!usedFallback) {
+        await loadAnalysisLogs();
+        setActiveTaskId(null);
       }
 
       setData(result);
@@ -255,6 +404,9 @@ export default function AIAnalysisPanel() {
         normalizedSymbols.length > 0 ? normalizedSymbols.join(', ') : '全部持仓'
       );
       setError(null);
+      setStreamProgress(null);
+      setStreamMode('');
+      await loadEvaluationSummary();
       await fetchRawPositionSnapshot(requestId);
     } catch (e) {
       if (requestId !== requestIdRef.current) return;
@@ -270,10 +422,11 @@ export default function AIAnalysisPanel() {
       }
       if (requestId === requestIdRef.current) {
         setActiveTaskId(null);
+        setStreamMode('');
         setLoading(false);
       }
     }
-  }, [fetchRawPositionSnapshot, loadAnalysisLogs, waitForAgentTask]);
+  }, [fetchRawPositionSnapshot, loadAnalysisLogs, loadEvaluationSummary, runAgentByPolling]);
 
   const onAnalyzePress = () => {
     const raw = String(targetSymbol || '').trim();
@@ -400,70 +553,236 @@ export default function AIAnalysisPanel() {
     loadAnalysisLogs({ signal: controller.signal });
   }, [loadAnalysisLogs]);
 
+  const onRefreshEval = useCallback(() => {
+    if (evalAbortRef.current) {
+      evalAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    evalAbortRef.current = controller;
+    loadEvaluationSummary({ signal: controller.signal });
+  }, [loadEvaluationSummary]);
+
+  const onChatSend = useCallback(async () => {
+    const message = String(chatInput || '').trim();
+    if (!message || chatLoading) return;
+
+    const rawSymbols = String(chatSymbols || '').trim();
+    let symbols = [];
+    if (rawSymbols) {
+      symbols = parseSymbolsInput(rawSymbols);
+      if (!symbols.length) {
+        Alert.alert('参数错误', '对话上下文币种格式无效，请输入如 BTCUSDT,ETH。');
+        return;
+      }
+      setChatSymbols(symbols.join(', '));
+    }
+
+    if (chatAbortRef.current) {
+      chatAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, CHAT_TIMEOUT_MS);
+
+    const userEntry = {
+      id: `u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      role: 'user',
+      text: message,
+      actionItems: [],
+    };
+    setChatMessages((prev) => [...prev, userEntry]);
+    setChatInput('');
+    setChatLoading(true);
+    setError(null);
+
+    try {
+      const res = await api.chatAgent(
+        {
+          message,
+          symbols,
+        },
+        { signal: controller.signal },
+      );
+      const payload = res?.data ?? res;
+      const assistantEntry = {
+        id: `a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        role: 'assistant',
+        text: String(payload?.reply || '').trim() || '暂无可用回复。',
+        actionItems: Array.isArray(payload?.action_items) ? payload.action_items : [],
+      };
+      setChatMessages((prev) => [...prev, assistantEntry]);
+    } catch (e) {
+      if (controller.signal.aborted) {
+        setError(timedOut ? `对话超时（>${Math.round(CHAT_TIMEOUT_MS / 1000)}s），请重试。` : '对话已取消。');
+      } else {
+        setError(e.message);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      if (chatAbortRef.current === controller) {
+        chatAbortRef.current = null;
+      }
+      setChatLoading(false);
+    }
+  }, [chatInput, chatLoading, chatSymbols]);
+
+  const onClearChat = useCallback(() => {
+    if (chatAbortRef.current) {
+      chatAbortRef.current.abort();
+    }
+    setChatMessages([]);
+    setChatInput('');
+    setError(null);
+  }, []);
+
   return (
     <ScrollView style={s.root} contentContainerStyle={s.content}>
       <View style={s.headerCard}>
         <Text style={s.title}>Agent 智能分析</Text>
-        <Text style={s.subtitle}>不会自动分析，仅在点击按钮时分析（可指定代币或全部持仓）</Text>
-        <View style={s.symbolRow}>
-          <TextInput
-            style={s.symbolInput}
-            value={targetSymbol}
-            onChangeText={setTargetSymbol}
-            placeholder="输入代币，如 BTCUSDT,ETH 或 SOL；留空=全部持仓"
-            placeholderTextColor={C.textDim}
-            autoCapitalize="characters"
-            autoCorrect={false}
-          />
-          <View style={s.symbolHintWrap}>
-            <Text style={s.symbolHint}>当前分析: {analyzedSymbol || '未分析'}</Text>
-          </View>
-        </View>
-        <View style={s.policyCard}>
-          <Text style={s.policyTitle}>执行策略</Text>
-          {policyLoading && <Text style={s.policyText}>加载中...</Text>}
-          {!policyLoading && !!policyError && (
-            <Text style={[s.policyText, { color: C.danger }]}>策略读取失败: {policyError}</Text>
-          )}
-          {!policyLoading && !policyError && !!policy && (
-            <>
-              <Text style={s.policyText}>模板: {policy.profile || 'custom'}</Text>
-              {!!policy.description && <Text style={s.policyText}>说明: {policy.description}</Text>}
-              <Text style={s.policyText}>执行开关: {executionEnabled ? '开启' : '关闭'}</Text>
-              <Text style={s.policyText}>单次上限: {policy.max_actions_per_request || 0}</Text>
-              <Text style={s.policyText}>
-                动作白名单: {(policy.allowed_actions || []).join(', ') || '-'}
-              </Text>
-              <Text style={s.policyText}>
-                币种白名单: {(policy.allowed_symbols || []).join(', ') || '不限制'}
-              </Text>
-            </>
-          )}
-        </View>
-        <View style={s.btnRow}>
-          <TouchableOpacity style={s.primaryBtn} onPress={onAnalyzePress} disabled={loading}>
-            <Text style={s.primaryBtnText}>{loading ? '分析中...' : '使用Agent分析'}</Text>
+        <View style={s.modeRow}>
+          <TouchableOpacity
+            style={[s.modeBtn, panelMode === 'analysis' ? s.modeBtnActive : null]}
+            onPress={() => setPanelMode('analysis')}
+            disabled={loading || chatLoading}
+          >
+            <Text style={[s.modeBtnText, panelMode === 'analysis' ? s.modeBtnTextActive : null]}>分析模式</Text>
           </TouchableOpacity>
-          {loading ? (
-            <TouchableOpacity style={s.cancelBtn} onPress={onCancelAnalyze}>
-              <Text style={s.cancelBtnText}>取消分析</Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={[s.dangerBtn, (!executionEnabled || policyLoading) ? s.btnDisabled : null]}
-              onPress={onExecutePress}
-              disabled={policyLoading || !executionEnabled}
-            >
-              <Text style={s.dangerBtnText}>{executionEnabled ? '执行建议下单' : '执行已禁用'}</Text>
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity
+            style={[s.modeBtn, panelMode === 'chat' ? s.modeBtnActive : null]}
+            onPress={() => setPanelMode('chat')}
+            disabled={loading || chatLoading}
+          >
+            <Text style={[s.modeBtnText, panelMode === 'chat' ? s.modeBtnTextActive : null]}>对话模式</Text>
+          </TouchableOpacity>
         </View>
+
+        {panelMode === 'analysis' ? (
+          <>
+            <Text style={s.subtitle}>不会自动分析，仅在点击按钮时分析（可指定代币或全部持仓）</Text>
+            <View style={s.symbolRow}>
+              <TextInput
+                style={s.symbolInput}
+                value={targetSymbol}
+                onChangeText={setTargetSymbol}
+                placeholder="输入代币，如 BTCUSDT,ETH 或 SOL；留空=全部持仓"
+                placeholderTextColor={C.textDim}
+                autoCapitalize="characters"
+                autoCorrect={false}
+              />
+              <View style={s.symbolHintWrap}>
+                <Text style={s.symbolHint}>当前分析: {analyzedSymbol || '未分析'}</Text>
+              </View>
+            </View>
+            <View style={s.policyCard}>
+              <Text style={s.policyTitle}>执行策略</Text>
+              {policyLoading && <Text style={s.policyText}>加载中...</Text>}
+              {!policyLoading && !!policyError && (
+                <Text style={[s.policyText, { color: C.danger }]}>策略读取失败: {policyError}</Text>
+              )}
+              {!policyLoading && !policyError && !!policy && (
+                <>
+                  <Text style={s.policyText}>模板: {policy.profile || 'custom'}</Text>
+                  {!!policy.description && <Text style={s.policyText}>说明: {policy.description}</Text>}
+                  <Text style={s.policyText}>执行开关: {executionEnabled ? '开启' : '关闭'}</Text>
+                  <Text style={s.policyText}>单次上限: {policy.max_actions_per_request || 0}</Text>
+                  <Text style={s.policyText}>
+                    动作白名单: {(policy.allowed_actions || []).join(', ') || '-'}
+                  </Text>
+                  <Text style={s.policyText}>
+                    币种白名单: {(policy.allowed_symbols || []).join(', ') || '不限制'}
+                  </Text>
+                </>
+              )}
+            </View>
+            <View style={s.btnRow}>
+              <TouchableOpacity style={s.primaryBtn} onPress={onAnalyzePress} disabled={loading}>
+                <Text style={s.primaryBtnText}>{loading ? '分析中...' : '使用Agent分析'}</Text>
+              </TouchableOpacity>
+              {loading ? (
+                <TouchableOpacity style={s.cancelBtn} onPress={onCancelAnalyze}>
+                  <Text style={s.cancelBtnText}>取消分析</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={[s.dangerBtn, (!executionEnabled || policyLoading) ? s.btnDisabled : null]}
+                  onPress={onExecutePress}
+                  disabled={policyLoading || !executionEnabled}
+                >
+                  <Text style={s.dangerBtnText}>{executionEnabled ? '执行建议下单' : '执行已禁用'}</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </>
+        ) : (
+          <>
+            <Text style={s.subtitle}>输入自然语言问题，Agent 会按需抓取持仓/信号/新闻等数据后回复。</Text>
+            <View style={s.symbolRow}>
+              <TextInput
+                style={s.symbolInput}
+                value={chatSymbols}
+                onChangeText={setChatSymbols}
+                placeholder="可选：对话上下文币种，如 BTCUSDT,ETH"
+                placeholderTextColor={C.textDim}
+                autoCapitalize="characters"
+                autoCorrect={false}
+              />
+            </View>
+            <View style={s.btnRow}>
+              <TouchableOpacity
+                style={[s.cancelBtn, chatLoading ? s.btnDisabled : null]}
+                onPress={onClearChat}
+                disabled={chatLoading}
+              >
+                <Text style={s.cancelBtnText}>清空对话</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
       </View>
 
+      {panelMode === 'analysis' && (
+        <>
       {loading && (
         <View style={s.card}>
           <ActivityIndicator size="large" color={C.primary} />
-          <Text style={s.loadingText}>正在等待 Agent 异步任务{currentTaskLabel ? ` ${currentTaskLabel}` : ''}，请稍候...</Text>
+          <Text style={s.loadingText}>
+            {streamMode === 'poll'
+              ? `正在等待 Agent 异步任务${currentTaskLabel ? ` ${currentTaskLabel}` : ''}，请稍候...`
+              : '正在进行流式分析，请稍候...'}
+          </Text>
+          {!!streamProgress?.detail && (
+            <Text style={s.loadingHint}>{streamProgress.detail}</Text>
+          )}
+          {streamMode !== 'poll' && (
+            <View style={s.progressWrap}>
+              <View style={s.progressTrack}>
+                <View
+                  style={[
+                    s.progressFill,
+                    {
+                      width: `${Math.max(
+                        0,
+                        Math.min(
+                          100,
+                          (Number(streamProgress?.step || 0) / Math.max(1, Number(streamProgress?.total || 5))) * 100,
+                        ),
+                      )}%`,
+                    },
+                  ]}
+                />
+              </View>
+              <Text style={s.progressText}>
+                进度 {Number(streamProgress?.step || 0)}/{Number(streamProgress?.total || 5)}
+              </Text>
+            </View>
+          )}
+          {!!streamPreview && streamMode !== 'poll' && (
+            <Text style={s.streamPreview}>{streamPreview}</Text>
+          )}
           <Text style={s.loadingHint}>reasoner 模型可能需要 1-3 分钟；若不想等待可点击上方“取消分析”。</Text>
         </View>
       )}
@@ -513,6 +832,36 @@ export default function AIAnalysisPanel() {
             </View>
           );
         })}
+      </View>
+
+      <View style={s.card}>
+        <View style={s.logHeaderRow}>
+          <Text style={s.cardTitle}>Agent评估（近{AGENT_EVAL_DAYS}天）</Text>
+          <TouchableOpacity style={s.logRefreshBtn} onPress={onRefreshEval} disabled={evalLoading}>
+            <Text style={[s.logRefreshText, evalLoading ? s.btnDisabled : null]}>{evalLoading ? '刷新中...' : '刷新'}</Text>
+          </TouchableOpacity>
+        </View>
+        {!!evalError && (
+          <Text style={[s.emptyText, { color: C.warn }]}>评估加载失败: {evalError}</Text>
+        )}
+        {!evalError && (
+          <>
+            <View style={s.statsRow}>
+              <Text style={s.statText}>建议总数: {evalView.totalSuggestions}</Text>
+              <Text style={s.statText}>命中率 1H: {formatPct(evalView.hitRate1H)}</Text>
+              <Text style={s.statText}>命中率 4H: {formatPct(evalView.hitRate4H)}</Text>
+              <Text style={s.statText}>命中率 24H: {formatPct(evalView.hitRate24H)}</Text>
+            </View>
+            <View style={s.statsRow}>
+              <Text style={s.statText}>平均收益 1H: {formatSignedPct(evalView.avgPnl1H)}</Text>
+              <Text style={s.statText}>平均收益 24H: {formatSignedPct(evalView.avgPnl24H)}</Text>
+              <Text style={s.statText}>最佳模式: {evalView.bestMode}</Text>
+            </View>
+            <Text style={s.statText}>
+              最差币种: {evalView.worstSymbols.length > 0 ? evalView.worstSymbols.join(', ') : '-'}
+            </Text>
+          </>
+        )}
       </View>
 
       {!!data && !loading && (
@@ -648,6 +997,75 @@ export default function AIAnalysisPanel() {
           )}
         </>
       )}
+        </>
+      )}
+
+      {panelMode === 'chat' && (
+        <>
+          {!!error && !chatLoading && (
+            <View style={s.card}>
+              <Text style={s.errorTitle}>请求失败</Text>
+              <Text style={s.errorText}>{error}</Text>
+            </View>
+          )}
+
+          <View style={s.card}>
+            <View style={s.chatHeaderRow}>
+              <Text style={s.cardTitle}>对话记录</Text>
+              {chatLoading && (
+                <View style={s.chatLoadingWrap}>
+                  <ActivityIndicator size="small" color={C.primary} />
+                  <Text style={s.chatLoadingText}>Agent 回复中...</Text>
+                </View>
+              )}
+            </View>
+            {chatMessages.length === 0 && (
+              <Text style={s.emptyText}>暂无对话。示例：当前 BTC 仓位风险大吗？是否要先减仓？</Text>
+            )}
+            {chatMessages.map((msg) => (
+              <View
+                key={msg.id}
+                style={[
+                  s.chatBubble,
+                  msg.role === 'user' ? s.chatBubbleUser : s.chatBubbleAssistant,
+                ]}
+              >
+                <Text style={s.chatRole}>{msg.role === 'user' ? '你' : 'Agent'}</Text>
+                <Text style={s.chatText}>{msg.text}</Text>
+                {(msg.actionItems || []).length > 0 && (
+                  <View style={s.chatActionWrap}>
+                    {(msg.actionItems || []).map((it, idx) => (
+                      <Text key={`${msg.id}-act-${idx}`} style={s.chatActionText}>
+                        - {it.symbol || '--'} · {it.action || '--'} · {it.detail || '-'}
+                      </Text>
+                    ))}
+                  </View>
+                )}
+              </View>
+            ))}
+          </View>
+
+          <View style={s.card}>
+            <Text style={s.cardTitle}>发送问题</Text>
+            <TextInput
+              style={s.chatInput}
+              value={chatInput}
+              onChangeText={setChatInput}
+              placeholder="例如：结合我的持仓和最近新闻，给出今天的风险控制建议。"
+              placeholderTextColor={C.textDim}
+              multiline
+              editable={!chatLoading}
+            />
+            <TouchableOpacity
+              style={[s.primaryBtn, (!chatInput.trim() || chatLoading) ? s.btnDisabled : null]}
+              onPress={onChatSend}
+              disabled={!chatInput.trim() || chatLoading}
+            >
+              <Text style={s.primaryBtnText}>{chatLoading ? '发送中...' : '发送'}</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      )}
     </ScrollView>
   );
 }
@@ -672,6 +1090,34 @@ const s = StyleSheet.create({
   title: {
     color: C.primary,
     fontSize: fontSize.lg,
+    fontWeight: '900',
+  },
+  modeRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+    marginBottom: spacing.xs,
+  },
+  modeBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: radius.sm,
+    paddingVertical: 8,
+    alignItems: 'center',
+    backgroundColor: C.bg,
+  },
+  modeBtnActive: {
+    borderColor: C.primary,
+    backgroundColor: C.primaryBg,
+  },
+  modeBtnText: {
+    color: C.textDim,
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+  },
+  modeBtnTextActive: {
+    color: C.primary,
     fontWeight: '900',
   },
   subtitle: {
@@ -809,6 +1255,37 @@ const s = StyleSheet.create({
     color: C.textDim,
     fontSize: fontSize.xs,
     textAlign: 'center',
+  },
+  progressWrap: {
+    gap: 6,
+    marginTop: 4,
+  },
+  progressTrack: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: C.bg,
+    borderWidth: 1,
+    borderColor: C.border,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: C.primary,
+  },
+  progressText: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+    textAlign: 'center',
+  },
+  streamPreview: {
+    color: C.text,
+    fontSize: fontSize.xs,
+    lineHeight: 18,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    backgroundColor: C.bg,
   },
   errorTitle: {
     color: C.danger,
@@ -1103,6 +1580,65 @@ const s = StyleSheet.create({
     fontSize: fontSize.xs,
     fontWeight: '700',
   },
+  chatHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  chatLoadingWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  chatLoadingText: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+  },
+  chatBubble: {
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    gap: 4,
+  },
+  chatBubbleUser: {
+    borderColor: C.primary,
+    backgroundColor: C.primaryBg,
+  },
+  chatBubbleAssistant: {
+    borderColor: C.border,
+    backgroundColor: C.bg,
+  },
+  chatRole: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+  },
+  chatText: {
+    color: C.text,
+    fontSize: fontSize.sm,
+    lineHeight: 21,
+  },
+  chatActionWrap: {
+    marginTop: 2,
+    gap: 2,
+  },
+  chatActionText: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+    lineHeight: 18,
+  },
+  chatInput: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: radius.sm,
+    backgroundColor: C.bg,
+    color: C.text,
+    minHeight: 88,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    fontSize: fontSize.sm,
+    textAlignVertical: 'top',
+  },
 });
 
 function getActionKey(item, idx) {
@@ -1169,6 +1705,35 @@ function safeJSONParse(text, fallback) {
   }
 }
 
+function parseStreamAnalysis(rawText) {
+  const raw = String(rawText || '').trim();
+  if (!raw) return null;
+
+  const direct = safeJSONParse(raw, null);
+  if (direct && typeof direct === 'object') return direct;
+
+  const cleaned = raw
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  const fenced = safeJSONParse(cleaned, null);
+  if (fenced && typeof fenced === 'object') return fenced;
+
+  return {
+    summary: raw,
+    position_analysis: [],
+    signal_evaluation: [],
+    journal_review: {
+      patterns: [],
+      weaknesses: [],
+      strengths: [],
+      suggestion: '',
+    },
+    action_items: [],
+  };
+}
+
 function formatTimestamp(value) {
   const ts = Date.parse(String(value || ''));
   if (!Number.isFinite(ts)) return '--';
@@ -1179,6 +1744,19 @@ function formatLogSource(source) {
   if (source === 'DAILY_AUTO') return '每日自动';
   if (source === 'APP_MANUAL') return 'App手动';
   return source || '--';
+}
+
+function formatPct(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '--';
+  return `${n.toFixed(2)}%`;
+}
+
+function formatSignedPct(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '--';
+  if (n === 0) return '0.00%';
+  return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
 }
 
 function formatPrice(value) {

@@ -64,6 +64,31 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 		req.PositionSide = futures.PositionSideTypeBoth
 	}
 
+	// 规范化价格字段，按 tickSize 对齐，避免交易所返回 -1111/-4014。
+	// 前端 LIMIT 下单会直接传 markPrice，部分币种（如 ADA）可能小数位或步长不合法。
+	if req.Price != "" {
+		rawPrice, parseErr := strconv.ParseFloat(req.Price, 64)
+		if parseErr != nil {
+			return fail("PLACE_ORDER", fmt.Errorf("invalid price: %w", parseErr))
+		}
+		normalizedPrice, precErr := normalizePriceForSymbol(ctx, req.Symbol, rawPrice)
+		if precErr != nil {
+			return fail("PLACE_ORDER", fmt.Errorf("normalize price: %w", precErr))
+		}
+		req.Price = normalizedPrice
+	}
+	if req.StopPrice != "" {
+		rawStopPrice, parseErr := strconv.ParseFloat(req.StopPrice, 64)
+		if parseErr != nil {
+			return fail("PLACE_ORDER", fmt.Errorf("invalid stopPrice: %w", parseErr))
+		}
+		normalizedStopPrice, precErr := normalizePriceForSymbol(ctx, req.Symbol, rawStopPrice)
+		if precErr != nil {
+			return fail("PLACE_ORDER", fmt.Errorf("normalize stopPrice: %w", precErr))
+		}
+		req.StopPrice = normalizedStopPrice
+	}
+
 	// DryRun 模拟交易模式：不实际下单，用虚拟资金撮合
 	if IsDryRun() {
 		qtyStr, qtyErr := calculateQuantityFromUSDT(ctx, req)
@@ -539,12 +564,10 @@ func reduceOrderViaWs(ctx context.Context, symbol string, side futures.SideType,
 		return nil, fmt.Errorf("get current price for reduce order: %w", priceErr)
 	}
 
-	// 获取价格精度
-	pricePrecision, ppErr := getSymbolPricePrecision(ctx, symbol)
+	priceStr, ppErr := normalizePriceForSymbol(ctx, symbol, price)
 	if ppErr != nil {
-		return nil, fmt.Errorf("get price precision: %w", ppErr)
+		return nil, fmt.Errorf("normalize reduce price: %w", ppErr)
 	}
-	priceStr := formatPrice(price, pricePrecision)
 
 	wsClient := GetWsClient()
 	if wsClient != nil {
@@ -639,12 +662,11 @@ func ensureOrderFilled(ctx context.Context, symbol string, orderID int64, side f
 					log.Printf("[OrderTimeout] Get price failed: %v", priceErr)
 					return
 				}
-				pricePrecision, ppErr := getSymbolPricePrecision(ctx, symbol)
+				priceStr, ppErr := normalizePriceForSymbol(ctx, symbol, price)
 				if ppErr != nil {
-					log.Printf("[OrderTimeout] Get price precision failed: %v", ppErr)
+					log.Printf("[OrderTimeout] Normalize price failed: %v", ppErr)
 					return
 				}
-				priceStr := formatPrice(price, pricePrecision)
 
 				svc := Client.NewCreateOrderService().
 					Symbol(symbol).

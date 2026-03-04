@@ -23,6 +23,7 @@ const (
 	newsHealthCheckInterval  = time.Hour
 	newsPageSizeDefault      = 20
 	newsPageSizeMax          = 200
+	newsHistoryMaxPerSource  = 5000
 	hyperInfoURL             = "https://api.hyperliquid.xyz/info"
 	hyperWSURL               = "wss://api.hyperliquid.xyz/ws"
 	hyperPingInterval        = 30 * time.Second
@@ -83,6 +84,14 @@ type newsPageResult struct {
 	HasMore    bool       `json:"hasMore"`
 	Items      []newsItem `json:"items"`
 	UpdatedAt  int64      `json:"updatedAt"`
+}
+
+// NewsDigest 面向 Agent 的新闻摘要结构。
+type NewsDigest struct {
+	Source    string    `json:"source"`
+	Title     string    `json:"title"`
+	Summary   string    `json:"summary"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type newsHub struct {
@@ -230,6 +239,7 @@ func StartNewsSourceHealthMonitor() {
 
 // StartNewsBackgroundFetcher 启动常驻资讯抓取循环（与客户端连接无关）。
 func StartNewsBackgroundFetcher() {
+	preloadNewsSnapshotFromRedis()
 	nHub.ensureRunning()
 }
 
@@ -257,6 +267,8 @@ func GetNewsPage(sourceKey string, page, pageSize int) newsPageResult {
 	if pageSize > newsPageSizeMax {
 		pageSize = newsPageSizeMax
 	}
+
+	ensureNewsSnapshotLoaded()
 
 	newsSnapshotState.mu.RLock()
 	fullList := append([]newsItem(nil), newsSnapshotState.data[sourceKey]...)
@@ -294,6 +306,61 @@ func GetNewsPage(sourceKey string, page, pageSize int) newsPageResult {
 		Items:      items,
 		UpdatedAt:  updatedAt,
 	}
+}
+
+// GetRecentNews 合并资讯快照并按时间倒序返回最近新闻摘要。
+func GetRecentNews(limit int) []NewsDigest {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	ensureNewsSnapshotLoaded()
+
+	newsSnapshotState.mu.RLock()
+	snapshot := make(map[string][]newsItem, len(newsSnapshotState.data))
+	for key, list := range newsSnapshotState.data {
+		snapshot[key] = append([]newsItem(nil), list...)
+	}
+	updatedAt := newsSnapshotState.updatedAt
+	newsSnapshotState.mu.RUnlock()
+
+	if len(snapshot) == 0 {
+		return nil
+	}
+
+	digests := make([]NewsDigest, 0, limit*2)
+	for sourceKey, list := range snapshot {
+		for _, item := range list {
+			title := strings.TrimSpace(item.Title)
+			if title == "" {
+				continue
+			}
+
+			tsMillis := parseNewsTime(item.PubDate)
+			if tsMillis <= 0 {
+				tsMillis = updatedAt
+			}
+			ts := time.UnixMilli(tsMillis)
+
+			digests = append(digests, NewsDigest{
+				Source:    strings.TrimSpace(sourceKey),
+				Title:     title,
+				Summary:   trimRunes(strings.TrimSpace(item.Summary), 200),
+				Timestamp: ts,
+			})
+		}
+	}
+
+	sort.SliceStable(digests, func(i, j int) bool {
+		return digests[i].Timestamp.After(digests[j].Timestamp)
+	})
+	if len(digests) > limit {
+		digests = digests[:limit]
+	}
+	return digests
 }
 
 func runNewsSourceHealthMonitor() {
@@ -778,17 +845,20 @@ func (h *newsHub) run() {
 }
 
 func (h *newsHub) fetchAndBroadcast() {
-	data, failures, err := fetchNewsSnapshot()
+	latest, failures, err := fetchNewsSnapshot()
+	existing, _ := cloneNewsSnapshot()
+	merged := mergeNewsSnapshots(existing, latest, newsHistoryMaxPerSource)
 	payload := newsPayload{
 		Channel:  "news",
-		Data:     data,
+		Data:     merged,
 		Failures: failures,
 		Time:     time.Now().UnixMilli(),
 	}
 	if err != nil {
 		payload.Error = err.Error()
 	}
-	storeNewsSnapshot(data, payload.Time)
+	storeNewsSnapshot(merged, payload.Time)
+	persistNewsSnapshotToRedis(merged, payload.Time)
 
 	raw, marshalErr := json.Marshal(payload)
 	if marshalErr != nil {
@@ -822,6 +892,60 @@ func storeNewsSnapshot(data map[string][]newsItem, updatedAt int64) {
 	newsSnapshotState.data = cloned
 	newsSnapshotState.updatedAt = updatedAt
 	newsSnapshotState.mu.Unlock()
+}
+
+func cloneNewsSnapshot() (map[string][]newsItem, int64) {
+	newsSnapshotState.mu.RLock()
+	defer newsSnapshotState.mu.RUnlock()
+
+	out := make(map[string][]newsItem, len(newsSnapshotState.data))
+	for key, list := range newsSnapshotState.data {
+		out[key] = append([]newsItem(nil), list...)
+	}
+	return out, newsSnapshotState.updatedAt
+}
+
+func ensureNewsSnapshotLoaded() {
+	newsSnapshotState.mu.RLock()
+	empty := len(newsSnapshotState.data) == 0
+	newsSnapshotState.mu.RUnlock()
+	if !empty {
+		return
+	}
+	preloadNewsSnapshotFromRedis()
+}
+
+func mergeNewsSnapshots(existing, latest map[string][]newsItem, maxPerSource int) map[string][]newsItem {
+	out := make(map[string][]newsItem, len(existing)+len(latest))
+
+	for key, list := range existing {
+		cp := append([]newsItem(nil), list...)
+		if maxPerSource > 0 && len(cp) > maxPerSource {
+			cp = cp[:maxPerSource]
+		}
+		out[key] = cp
+	}
+
+	for key, list := range latest {
+		current := out[key]
+		if len(list) == 0 {
+			if current == nil {
+				out[key] = []newsItem{}
+			}
+			continue
+		}
+
+		combined := make([]newsItem, 0, len(list)+len(current))
+		combined = append(combined, list...)
+		combined = append(combined, current...)
+		normalized := normalizeNewsList(combined)
+		if maxPerSource > 0 && len(normalized) > maxPerSource {
+			normalized = normalized[:maxPerSource]
+		}
+		out[key] = normalized
+	}
+
+	return out
 }
 
 func fetchNewsSnapshot() (map[string][]newsItem, []string, error) {
@@ -1003,6 +1127,18 @@ func cleanXMLText(raw string) string {
 	text = html.UnescapeString(text)
 	text = strings.Join(strings.Fields(text), " ")
 	return text
+}
+
+func trimRunes(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || s == "" {
+		return s
+	}
+	rs := []rune(s)
+	if len(rs) <= max {
+		return s
+	}
+	return strings.TrimSpace(string(rs[:max]))
 }
 
 func chooseValue(values ...string) string {

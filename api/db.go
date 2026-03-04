@@ -74,6 +74,7 @@ func autoMigrateSchema() error {
 		&VarSnapshot{},
 		&StrategyAllocation{},
 		&AgentEvaluationRecord{},
+		&AgentTuneLog{},
 	)
 }
 

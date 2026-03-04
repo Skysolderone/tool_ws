@@ -47,10 +47,10 @@ const (
 	recMinTakeProfitDistancePct = 1.2
 	recFallbackTakeProfitPct    = 3.0
 	recMinRiskReward            = 1.6
-	recMinConfidence            = 30
-	recStrongConfidence         = 70
-	recMediumConfidence         = 45
-	recConfirmRounds            = 2
+	recMinConfidence            = 24
+	recStrongConfidence         = 65
+	recMediumConfidence         = 38
+	recConfirmRounds            = 1
 	recVolStrongRatio           = 2.0
 	recVolMediumRatio           = 1.5
 	recTrendStrength            = 1.0
@@ -58,9 +58,15 @@ const (
 	recNearSRDistance           = 0.8
 	recStrongSRDistance         = 0.4
 	recFundingStrongThreshold   = 0.0003
+	recSignalTTL                = 3 * time.Minute
+	recSignalDriftPct           = 0.35
+	recLiveMinRiskReward        = 1.3
+	recPriceFreshTTL            = 10 * time.Second
+	recPriceFetchTimeout        = 2 * time.Second
+	recPriceRuleFetchTimeout    = 2 * time.Second
 )
 
-const recSignalCooldown = 60 * time.Minute
+const recSignalCooldown = 30 * time.Minute
 
 // ========== 数据结构 ==========
 
@@ -304,6 +310,7 @@ func rebuildFinalCache() {
 			items = append(items, *item)
 		}
 	}
+	items = filterValidRecommendItems(context.Background(), items, now, false)
 
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].Confidence > items[j].Confidence
@@ -358,6 +365,7 @@ func HandleRecommendScan(c context.Context, ctx *app.RequestContext) {
 	// 从缓存返回
 	finalCache.RLock()
 	resp := finalCache.resp
+	cachedAt := finalCache.updatedAt
 	finalCache.RUnlock()
 
 	if resp == nil {
@@ -366,7 +374,18 @@ func HandleRecommendScan(c context.Context, ctx *app.RequestContext) {
 		return
 	}
 
-	ctx.JSON(http.StatusOK, utils.H{"data": resp})
+	scannedAt := parseRecommendScannedAt(resp.ScannedAt, cachedAt)
+	filteredItems := filterValidRecommendItems(c, resp.Items, scannedAt, true)
+	if len(filteredItems) == 0 && time.Since(scannedAt) > recSignalTTL {
+		log.Printf("[Recommend] Cache stale at %s, fallback to realtime scan", scannedAt.Format(time.RFC3339))
+		handleRealtimeScan(c, ctx, defaultScanSymbols)
+		return
+	}
+
+	filteredResp := *resp
+	filteredResp.Items = filteredItems
+	filteredResp.Count = len(filteredItems)
+	ctx.JSON(http.StatusOK, utils.H{"data": filteredResp})
 }
 
 // handleRealtimeScan 实时扫描（指定 symbols 时或缓存未就绪时使用）
@@ -411,6 +430,7 @@ func handleRealtimeScan(c context.Context, ctx *app.RequestContext, symbols []st
 			items = append(items, *res.item)
 		}
 	}
+	items = filterValidRecommendItems(scanCtx, items, now, false)
 
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].Confidence > items[j].Confidence
@@ -787,6 +807,12 @@ func mergeTimeframes(symbol string) *RecommendItem {
 		}
 	}
 	takeProfit, reasons = applyTakeProfitGuard(direction, entry, stopLoss, takeProfit, srData, reasons)
+	now := time.Now()
+	if ok, reason := validateRecommendSignal(direction, entry, stopLoss, takeProfit, entry, 0, now, now); !ok {
+		log.Printf("[Recommend] Drop invalid signal %s %s: reason=%s entry=%.4f sl=%.4f tp=%.4f",
+			symbol, direction, reason, entry, stopLoss, takeProfit)
+		return nil
+	}
 
 	// 最终得分：多TF加权平均 + 一致性 + SR + funding，满分约 13
 	total := avgScore + alignBonus + srScore + fundingScore
@@ -938,6 +964,205 @@ func applyTakeProfitGuard(direction string, entry, stopLoss, takeProfit float64,
 	}
 	reasons = append(reasons, fmt.Sprintf("防护策略：盈亏比 %.2f 偏低，已提升到至少 1:%.1f", rr, recMinRiskReward))
 	return takeProfit, reasons
+}
+
+func parseRecommendScannedAt(scannedAt string, fallback time.Time) time.Time {
+	if t, err := time.Parse(time.RFC3339, scannedAt); err == nil && !t.IsZero() {
+		return t
+	}
+	if !fallback.IsZero() {
+		return fallback
+	}
+	return time.Now()
+}
+
+func filterValidRecommendItems(ctx context.Context, items []RecommendItem, generatedAt time.Time, allowREST bool) []RecommendItem {
+	if len(items) == 0 {
+		return items
+	}
+
+	now := time.Now()
+	if generatedAt.IsZero() {
+		generatedAt = now
+	}
+
+	valid := make([]RecommendItem, 0, len(items))
+	for _, item := range items {
+		mark := resolveRecommendMarkPrice(ctx, item.Symbol, item.Entry, allowREST)
+		tickSize := loadRecommendTickSize(ctx, item.Symbol, allowREST)
+		ok, reason := validateRecommendSignal(
+			item.Direction,
+			item.Entry,
+			item.StopLoss,
+			item.TakeProfit,
+			mark,
+			tickSize,
+			generatedAt,
+			now,
+		)
+		if !ok {
+			log.Printf("[Recommend] Filtered signal %s %s reason=%s age=%s entry=%.4f mark=%.4f sl=%.4f tp=%.4f",
+				item.Symbol,
+				item.Direction,
+				reason,
+				now.Sub(generatedAt).Round(time.Second),
+				item.Entry,
+				mark,
+				item.StopLoss,
+				item.TakeProfit,
+			)
+			continue
+		}
+		valid = append(valid, item)
+	}
+	return valid
+}
+
+func resolveRecommendMarkPrice(ctx context.Context, symbol string, fallback float64, allowREST bool) float64 {
+	if price, ok := loadFreshCachedPrice(symbol); ok {
+		return price
+	}
+	if !allowREST || Client == nil {
+		return fallback
+	}
+
+	parent := ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	reqCtx, cancel := context.WithTimeout(parent, recPriceFetchTimeout)
+	defer cancel()
+
+	prices, err := Client.NewListPricesService().Symbol(symbol).Do(reqCtx)
+	if err != nil || len(prices) == 0 {
+		return fallback
+	}
+	price, err := strconv.ParseFloat(prices[0].Price, 64)
+	if err != nil || price <= 0 {
+		return fallback
+	}
+	GetPriceCache().UpdatePrice(symbol, price)
+	return price
+}
+
+func loadFreshCachedPrice(symbol string) (float64, bool) {
+	cache := GetPriceCache()
+	cache.mu.RLock()
+	data, ok := cache.prices[symbol]
+	cache.mu.RUnlock()
+	if !ok || data == nil || data.MarkPrice <= 0 {
+		return 0, false
+	}
+	if time.Since(data.LastUpdate) > recPriceFreshTTL {
+		return 0, false
+	}
+	return data.MarkPrice, true
+}
+
+func loadRecommendTickSize(ctx context.Context, symbol string, allowNetwork bool) float64 {
+	if !allowNetwork || Client == nil {
+		return 0
+	}
+	parent := ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ruleCtx, cancel := context.WithTimeout(parent, recPriceRuleFetchTimeout)
+	defer cancel()
+
+	_, tickSize, err := getSymbolPriceRules(ruleCtx, symbol)
+	if err != nil || tickSize <= 0 {
+		return 0
+	}
+	return tickSize
+}
+
+func normalizeSignalPrice(price, tickSize float64) float64 {
+	if price <= 0 {
+		return price
+	}
+	if tickSize <= 0 {
+		return price
+	}
+	return roundToStepSize(price, tickSize)
+}
+
+func validateRecommendSignal(direction string, entry, stopLoss, takeProfit, markPrice, tickSize float64, generatedAt, now time.Time) (bool, string) {
+	if direction != "LONG" && direction != "SHORT" {
+		return false, "invalid_direction"
+	}
+	if entry <= 0 || stopLoss <= 0 || takeProfit <= 0 {
+		return false, "invalid_price_values"
+	}
+
+	if !generatedAt.IsZero() {
+		if age := now.Sub(generatedAt); age > recSignalTTL {
+			return false, fmt.Sprintf("signal_ttl_exceeded(%s)", age.Round(time.Second))
+		}
+	}
+
+	entry = normalizeSignalPrice(entry, tickSize)
+	stopLoss = normalizeSignalPrice(stopLoss, tickSize)
+	takeProfit = normalizeSignalPrice(takeProfit, tickSize)
+	if markPrice <= 0 {
+		markPrice = entry
+	}
+	markPrice = normalizeSignalPrice(markPrice, tickSize)
+
+	if entry <= 0 || stopLoss <= 0 || takeProfit <= 0 || markPrice <= 0 {
+		return false, "invalid_normalized_prices"
+	}
+
+	driftRatio := recSignalDriftPct / 100
+
+	switch direction {
+	case "LONG":
+		if !(stopLoss < entry && entry < takeProfit) {
+			return false, "invalid_long_sl_entry_tp_relation"
+		}
+		if markPrice > entry*(1+driftRatio) {
+			return false, "long_entry_drift_too_far"
+		}
+		risk := markPrice - stopLoss
+		reward := takeProfit - markPrice
+		if risk <= 0 {
+			return false, "long_mark_at_or_below_stop_loss"
+		}
+		if reward <= 0 {
+			return false, "long_take_profit_already_passed"
+		}
+		if reward/risk < recLiveMinRiskReward {
+			return false, "long_live_rr_too_low"
+		}
+		stopBuffer := tickSize
+		if markPrice <= stopLoss+stopBuffer {
+			return false, "long_near_stop_loss"
+		}
+	case "SHORT":
+		if !(takeProfit < entry && entry < stopLoss) {
+			return false, "invalid_short_tp_entry_sl_relation"
+		}
+		if markPrice < entry*(1-driftRatio) {
+			return false, "short_entry_drift_too_far"
+		}
+		risk := stopLoss - markPrice
+		reward := markPrice - takeProfit
+		if risk <= 0 {
+			return false, "short_mark_at_or_above_stop_loss"
+		}
+		if reward <= 0 {
+			return false, "short_take_profit_already_passed"
+		}
+		if reward/risk < recLiveMinRiskReward {
+			return false, "short_live_rr_too_low"
+		}
+		stopBuffer := tickSize
+		if markPrice >= stopLoss-stopBuffer {
+			return false, "short_near_stop_loss"
+		}
+	}
+
+	return true, ""
 }
 
 // ========== 市场情绪 ==========

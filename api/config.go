@@ -30,12 +30,23 @@ type AgentConfig struct {
 	MaxActionsPerRequest int      `json:"max_actions_per_request"` // 单次最多执行多少条建议
 	AllowedActions       []string `json:"allowed_actions"`         // 允许执行的动作白名单
 	AllowedSymbols       []string `json:"allowed_symbols"`         // 允许执行的交易对白名单，空=不限制
+	BlockedSymbols       []string `json:"blocked_symbols"`         // 自动调参生成的黑名单（内存态）
 }
 
 // NewsConfig 资讯源配置
 type NewsConfig struct {
 	RSSHubBaseURL    string   `json:"rsshubBaseUrl"`    // RSSHub 实例地址
 	TelegramChannels []string `json:"telegramChannels"` // Telegram 频道用户名或 t.me 链接
+}
+
+// RedisConfig Redis 缓存配置（可选）。
+type RedisConfig struct {
+	Enabled            bool   `json:"enabled"`
+	Addr               string `json:"addr"`
+	Password           string `json:"password"`
+	DB                 int    `json:"db"`
+	KeyPrefix          string `json:"keyPrefix"`
+	SnapshotTTLSeconds int    `json:"snapshotTTLSeconds"`
 }
 
 // Config 应用配置
@@ -48,6 +59,7 @@ type Config struct {
 	LLM             LLMConfig             `json:"llm"`
 	Agent           AgentConfig           `json:"agent"`
 	News            NewsConfig            `json:"news"`
+	Redis           RedisConfig           `json:"redis"`
 	Risk            RiskConfig            `json:"risk"`
 	PortfolioRisk   PortfolioRiskConfig   `json:"portfolioRisk"`
 	Notify          NotifyConfig          `json:"notify"`
@@ -123,6 +135,13 @@ func LoadConfig(configPath string) error {
 		News: NewsConfig{
 			RSSHubBaseURL: "https://rsshub.wws741.top",
 		},
+		Redis: RedisConfig{
+			Enabled:            false,
+			Addr:               "127.0.0.1:6379",
+			DB:                 0,
+			KeyPrefix:          "tool:",
+			SnapshotTTLSeconds: 86400,
+		},
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -142,6 +161,11 @@ func LoadConfig(configPath string) error {
 	Cfg.News.RSSHubBaseURL = strings.TrimRight(Cfg.News.RSSHubBaseURL, "/")
 	if Cfg.News.RSSHubBaseURL == "" {
 		Cfg.News.RSSHubBaseURL = "https://rsshub.wws741.top"
+	}
+	Cfg.Redis.Addr = strings.TrimSpace(Cfg.Redis.Addr)
+	Cfg.Redis.KeyPrefix = strings.TrimSpace(Cfg.Redis.KeyPrefix)
+	if Cfg.Redis.KeyPrefix == "" {
+		Cfg.Redis.KeyPrefix = "tool:"
 	}
 
 	return nil

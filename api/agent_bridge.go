@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -132,4 +133,41 @@ func GetJournalMetrics(days int) (*JournalResponse, error) {
 // GetMarketSentiment 导出市场情绪，供 agent 包调用。
 func GetMarketSentiment() MarketSentiment {
 	return calcMarketSentiment()
+}
+
+// GetAgentEvalSummaryForAgent 导出 Agent 评估汇总，供 prompt 动态注入使用。
+func GetAgentEvalSummaryForAgent(days int) (*AgentEvalSummary, error) {
+	return GetAgentEvalSummary(days)
+}
+
+// GetNewsForAgent 提供给 Agent 的新闻摘要（最近 24 小时，优先核心加密源）。
+func GetNewsForAgent(limit int) []NewsDigest {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	items := GetRecentNews(limit * 3)
+	if len(items) == 0 {
+		return nil
+	}
+
+	cutoff := time.Now().Add(-24 * time.Hour)
+	out := make([]NewsDigest, 0, limit)
+	for _, item := range items {
+		src := strings.ToLower(strings.TrimSpace(item.Source))
+		if src != "blockbeats" && src != "0xzx" {
+			continue
+		}
+		if item.Timestamp.IsZero() || item.Timestamp.Before(cutoff) {
+			continue
+		}
+		out = append(out, item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
 }

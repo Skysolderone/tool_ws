@@ -76,13 +76,6 @@ function pad2(v) {
   return String(v).padStart(2, '0');
 }
 
-function fmtUtcTime(ms) {
-  const t = toNumber(ms);
-  if (t <= 0) return '-';
-  const d = new Date(t);
-  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())} UTC`;
-}
-
 function fmtLocalTime(ms) {
   const t = toNumber(ms);
   if (t <= 0) return '-';
@@ -104,16 +97,6 @@ function fmtUtcBucketStart(ms, mode = 'h1') {
     return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
   }
   return `${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:00`;
-}
-
-function fmtLocalBucketStart(ms, mode = 'h1') {
-  const t = toNumber(ms);
-  if (t <= 0) return '-';
-  const d = new Date(t);
-  if (mode === 'day') {
-    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-  }
-  return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:00`;
 }
 
 function fmtHour(ms) {

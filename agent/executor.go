@@ -23,8 +23,8 @@ const (
 	defaultOpenLev  = 5
 	defaultAddUSDT  = 3.0
 	// 基础止损/止盈百分比（1x 杠杆），实际值 = base / leverage，下限 0.3%
-	baseSLPct = 0.05
-	baseTPPct = 0.05
+	baseSLPct  = 0.05
+	baseTPPct  = 0.05
 	minSLTPPct = 0.003
 )
 
@@ -593,6 +593,7 @@ type execPolicy struct {
 	maxActions      int
 	allowedActions  map[string]struct{}
 	allowedSymbols  map[string]struct{}
+	blockedSymbols  map[string]struct{}
 }
 
 func buildExecPolicy() execPolicy {
@@ -602,6 +603,7 @@ func buildExecPolicy() execPolicy {
 		maxActions:      cfg.MaxActionsPerRequest,
 		allowedActions:  make(map[string]struct{}),
 		allowedSymbols:  make(map[string]struct{}),
+		blockedSymbols:  make(map[string]struct{}),
 	}
 
 	for _, a := range cfg.AllowedActions {
@@ -619,6 +621,13 @@ func buildExecPolicy() execPolicy {
 		}
 		p.allowedSymbols[s] = struct{}{}
 	}
+	for _, s := range cfg.BlockedSymbols {
+		s = strings.ToUpper(strings.TrimSpace(s))
+		if s == "" {
+			continue
+		}
+		p.blockedSymbols[s] = struct{}{}
+	}
 
 	return p
 }
@@ -629,6 +638,9 @@ func (p execPolicy) validate(action, symbol string) error {
 	}
 	if _, ok := p.allowedActions[action]; !ok {
 		return fmt.Errorf("action %s not allowed", action)
+	}
+	if _, blocked := p.blockedSymbols[symbol]; blocked {
+		return fmt.Errorf("symbol %s is blocked by auto-tune", symbol)
 	}
 	if len(p.allowedSymbols) > 0 {
 		if _, ok := p.allowedSymbols[symbol]; !ok {

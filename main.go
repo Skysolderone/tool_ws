@@ -28,6 +28,7 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 	api.InitNewsSourcesFromConfig(api.Cfg.News)
+	api.InitNewsSnapshotRedis(api.Cfg.Redis)
 
 	api.InitClient(*cfgPath)
 
@@ -116,8 +117,8 @@ func main() {
 	h := server.New(
 		server.WithHostPorts(addr),
 		server.WithReadTimeout(15*time.Second),
-		// Agent 分析接口可能耗时接近 55s；写超时过短会被网关放大成 504。
-		server.WithWriteTimeout(90*time.Second),
+		// Agent 思考模型分析可能需要更长时间，放宽写超时到 10 分钟。
+		server.WithWriteTimeout(10*time.Minute),
 		server.WithIdleTimeout(60*time.Second),
 		server.WithKeepAliveTimeout(60*time.Second),
 		server.WithExitWaitTime(20*time.Second),
@@ -201,6 +202,8 @@ func main() {
 		apiGroup.GET("/recommend/analyze", api.HandleRecommendAnalyze)
 		apiGroup.POST("/agent/analyze", agent.HandleAnalyze)
 		apiGroup.GET("/agent/analyze", agent.HandleAnalyze)
+		apiGroup.GET("/agent/analyze/stream", agent.HandleAnalyzeStream)
+		apiGroup.POST("/agent/chat", agent.HandleChat)
 		apiGroup.POST("/agent/execute", agent.HandleExecute)
 		apiGroup.GET("/agent/log", agent.HandleLog)
 		apiGroup.GET("/agent/logs", agent.HandleLogs)

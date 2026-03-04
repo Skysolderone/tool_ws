@@ -52,6 +52,10 @@ export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = 
   const [showTemplates, setShowTemplates] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [templateName, setTemplateName] = useState('');
+  const [openOrders, setOpenOrders] = useState([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState('');
+  const [ordersUpdatedAt, setOrdersUpdatedAt] = useState('');
 
   const markPrice = externalMarkPrice;
 
@@ -66,6 +70,37 @@ export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = 
     setTemplates(list);
     await AsyncStorage.setItem(TEMPLATES_KEY, JSON.stringify(list));
   };
+
+  const fetchOpenOrders = useCallback(async (showLoading = false) => {
+    if (!symbol) {
+      setOpenOrders([]);
+      setOrdersError('');
+      return;
+    }
+    if (showLoading) setOrdersLoading(true);
+    try {
+      const res = await api.getOrders(symbol);
+      const raw = Array.isArray(res?.data) ? res.data : [];
+      const active = raw.filter((o) => {
+        const st = String(o?.status || '').toUpperCase();
+        return st === '' || st === 'NEW' || st === 'PARTIALLY_FILLED';
+      });
+      active.sort((a, b) => Number(b?.updateTime || 0) - Number(a?.updateTime || 0));
+      setOpenOrders(active);
+      setOrdersError('');
+      setOrdersUpdatedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }));
+    } catch (e) {
+      setOrdersError(e.message || '加载挂单失败');
+    } finally {
+      if (showLoading) setOrdersLoading(false);
+    }
+  }, [symbol]);
+
+  useEffect(() => {
+    fetchOpenOrders(true);
+    const timer = setInterval(() => fetchOpenOrders(false), 5000);
+    return () => clearInterval(timer);
+  }, [fetchOpenOrders]);
 
   // 实时计算
   const tpslPreview = useMemo(() => {
@@ -227,12 +262,42 @@ export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = 
     try {
       const data = await api.placeOrder(req);
       setResult(data.data);
+      fetchOpenOrders(false);
       Alert.alert('下单成功', `订单ID: ${data.data?.order?.orderId || 'N/A'}`);
     } catch (e) {
       Alert.alert('下单失败', e.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleCancelOrder = async (order) => {
+    const orderId = order?.orderId ?? order?.orderID ?? 0;
+    const orderSymbol = String(order?.symbol || symbol || '').toUpperCase();
+    if (!orderId || !orderSymbol) return;
+    try {
+      await api.cancelOrder(orderSymbol, orderId);
+      fetchOpenOrders(false);
+    } catch (e) {
+      Alert.alert('撤单失败', e.message || '未知错误');
+    }
+  };
+
+  const formatOrderQty = (order) => {
+    const orig = Number(order?.origQuantity ?? order?.origQty ?? 0);
+    const exec = Number(order?.executedQuantity ?? order?.executedQty ?? 0);
+    const left = Math.max(orig - exec, 0);
+    if (!Number.isFinite(left)) return '--';
+    if (left >= 1) return left.toFixed(3);
+    return left.toFixed(5);
+  };
+
+  const formatOrderPrice = (order) => {
+    const p = Number(order?.price || order?.stopPrice || 0);
+    if (!Number.isFinite(p) || p <= 0) return '--';
+    if (p >= 1000) return p.toFixed(2);
+    if (p >= 1) return p.toFixed(4);
+    return p.toFixed(6);
   };
 
   // 阶梯止盈管理
@@ -637,6 +702,53 @@ export default function OrderPanel({ symbol, externalMarkPrice, walletBalance = 
           )}
         </View>
       )}
+
+      {/* === 当前挂单 === */}
+      <View style={styles.ordersSection}>
+        <View style={styles.ordersHead}>
+          <Text style={styles.ordersTitle}>当前挂单 ({openOrders.length})</Text>
+          <TouchableOpacity style={styles.ordersRefreshBtn} onPress={() => fetchOpenOrders(true)}>
+            <Text style={styles.ordersRefreshText}>刷新</Text>
+          </TouchableOpacity>
+        </View>
+        {ordersUpdatedAt ? (
+          <Text style={styles.ordersUpdateText}>最近更新 {ordersUpdatedAt}</Text>
+        ) : null}
+        {!!ordersError && <Text style={styles.ordersErrorText}>{ordersError}</Text>}
+        {ordersLoading ? (
+          <View style={styles.ordersLoading}>
+            <ActivityIndicator size="small" color={colors.gold} />
+          </View>
+        ) : openOrders.length === 0 ? (
+          <Text style={styles.ordersEmptyText}>暂无挂单</Text>
+        ) : (
+          openOrders.slice(0, 8).map((order) => {
+            const sideText = String(order?.side || '').toUpperCase() === 'BUY' ? '买' : '卖';
+            const sideColor = sideText === '买' ? colors.greenLight : colors.redLight;
+            const id = order?.orderId ?? order?.orderID ?? 0;
+            return (
+              <View key={String(id)} style={styles.orderRow}>
+                <View style={styles.orderMain}>
+                  <View style={styles.orderTop}>
+                    <Text style={[styles.orderSide, { color: sideColor }]}>{sideText}</Text>
+                    <Text style={styles.orderType}>{order?.type || '-'}</Text>
+                    <Text style={styles.orderStatus}>{order?.status || '-'}</Text>
+                  </View>
+                  <Text style={styles.orderMeta}>
+                    价格 {formatOrderPrice(order)} | 数量 {formatOrderQty(order)}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.cancelBtnMini}
+                  onPress={() => handleCancelOrder(order)}
+                >
+                  <Text style={styles.cancelBtnMiniText}>撤单</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })
+        )}
+      </View>
 
       {/* === 保存模板弹窗 === */}
       <Modal visible={savingTemplate} animationType="fade" transparent>
@@ -1091,6 +1203,105 @@ const styles = StyleSheet.create({
   resultText: {
     color: colors.text,
     fontSize: fontSize.sm,
+  },
+
+  // 挂单列表
+  ordersSection: {
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+  },
+  ordersHead: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  ordersTitle: {
+    color: colors.textSecondary,
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+  },
+  ordersRefreshBtn: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surface,
+  },
+  ordersRefreshText: {
+    color: colors.gold,
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+  },
+  ordersUpdateText: {
+    marginTop: 4,
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+  },
+  ordersLoading: {
+    marginTop: spacing.sm,
+    alignItems: 'center',
+  },
+  ordersErrorText: {
+    marginTop: spacing.xs,
+    color: colors.redLight,
+    fontSize: fontSize.xs,
+  },
+  ordersEmptyText: {
+    marginTop: spacing.sm,
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+  },
+  orderRow: {
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surface,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  orderMain: {
+    flex: 1,
+  },
+  orderTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginBottom: 2,
+  },
+  orderSide: {
+    fontSize: fontSize.sm,
+    fontWeight: '800',
+  },
+  orderType: {
+    fontSize: fontSize.xs,
+    color: colors.textSecondary,
+  },
+  orderStatus: {
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+  },
+  orderMeta: {
+    fontSize: fontSize.xs,
+    color: colors.textSecondary,
+  },
+  cancelBtnMini: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: 'rgba(255,59,92,0.4)',
+    backgroundColor: colors.redBg,
+  },
+  cancelBtnMiniText: {
+    color: colors.redLight,
+    fontSize: fontSize.xs,
+    fontWeight: '700',
   },
 
   // 弹窗

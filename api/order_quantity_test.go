@@ -17,7 +17,7 @@ func TestCalculateQuantity_Basic(t *testing.T) {
 	price := 43000.0
 
 	notionalValue := usdtAmount * leverage // 50 USDT 总持仓价值
-	quantity := notionalValue / price       // 0.00116279... BTC
+	quantity := notionalValue / price      // 0.00116279... BTC
 
 	expected := 0.00116279
 	if math.Abs(quantity-expected) > 0.00001 {
@@ -108,6 +108,12 @@ func TestRoundToStepSize(t *testing.T) {
 			expected: 0.0011,
 		},
 		{
+			name:     "价格步长 0.0005（ADA 常见）",
+			quantity: 0.761234,
+			stepSize: 0.0005,
+			expected: 0.761,
+		},
+		{
 			name:     "小数步长 0.00001",
 			quantity: 0.00116279,
 			stepSize: 0.00001,
@@ -190,15 +196,52 @@ func TestFormatQuantity(t *testing.T) {
 	}
 }
 
+func TestFormatPrice(t *testing.T) {
+	tests := []struct {
+		name      string
+		price     float64
+		precision int
+		expected  string
+	}{
+		{
+			name:      "ADA price truncate to 4 decimals",
+			price:     0.76123456,
+			precision: 4,
+			expected:  "0.7612",
+		},
+		{
+			name:      "BTC keep 2 decimals",
+			price:     67234.5678,
+			precision: 2,
+			expected:  "67234.57",
+		},
+		{
+			name:      "remove trailing zeros",
+			price:     100.1000,
+			precision: 4,
+			expected:  "100.1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatPrice(tt.price, tt.precision)
+			if got != tt.expected {
+				t.Errorf("formatPrice(%v, %d) = %q, want %q", tt.price, tt.precision, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestCalculateQuantity_RealScenarios(t *testing.T) {
 	// 真实场景测试
 	scenarios := []struct {
-		name      string
-		usdt      float64
-		leverage  float64
-		price     float64
-		stepSize  float64
-		precision int
+		name       string
+		usdt       float64
+		leverage   float64
+		price      float64
+		stepSize   float64
+		precision  int
 		wantApprox float64
 	}{
 		{
@@ -302,8 +345,8 @@ func TestPlaceOrderReq_WithQuoteQuantity(t *testing.T) {
 		Symbol:        "BTCUSDT",
 		Side:          "BUY",
 		OrderType:     "MARKET",
-		QuoteQuantity: "5",      // 5 USDT 保证金
-		Leverage:      10,       // 10x 杠杆
+		QuoteQuantity: "5", // 5 USDT 保证金
+		Leverage:      10,  // 10x 杠杆
 	}
 
 	if req.QuoteQuantity != "5" {
@@ -319,33 +362,33 @@ func TestPlaceOrderReq_WithQuoteQuantity(t *testing.T) {
 func TestNotionalValue_Calculation(t *testing.T) {
 	// 验证名义价值（总持仓价值）的计算
 	tests := []struct {
-		name            string
-		margin          float64
-		leverage        float64
+		name             string
+		margin           float64
+		leverage         float64
 		expectedNotional float64
 	}{
 		{
-			name:            "5 USDT × 10x",
-			margin:          5,
-			leverage:        10,
+			name:             "5 USDT × 10x",
+			margin:           5,
+			leverage:         10,
 			expectedNotional: 50,
 		},
 		{
-			name:            "10 USDT × 5x",
-			margin:          10,
-			leverage:        5,
+			name:             "10 USDT × 5x",
+			margin:           10,
+			leverage:         5,
 			expectedNotional: 50,
 		},
 		{
-			name:            "100 USDT × 1x",
-			margin:          100,
-			leverage:        1,
+			name:             "100 USDT × 1x",
+			margin:           100,
+			leverage:         1,
 			expectedNotional: 100,
 		},
 		{
-			name:            "1 USDT × 125x",
-			margin:          1,
-			leverage:        125,
+			name:             "1 USDT × 125x",
+			margin:           1,
+			leverage:         125,
 			expectedNotional: 125,
 		},
 	}

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { colors, fontSize, radius, spacing } from '../services/theme';
 
@@ -14,20 +14,6 @@ const SEVERITY_OPTIONS = [
   { key: 'critical', label: '危险' },
   { key: 'warn', label: '警告' },
   { key: 'info', label: '提示' },
-];
-
-const DEFAULT_NOTIFY_CONFIG = Object.freeze({
-  warnPopup: false,
-  warnVibrate: false,
-  criticalPopup: true,
-  criticalVibrate: true,
-});
-
-const NOTIFY_TOGGLE_OPTIONS = [
-  { key: 'warnPopup', label: 'Warn弹窗' },
-  { key: 'warnVibrate', label: 'Warn震动' },
-  { key: 'criticalPopup', label: 'Critical弹窗' },
-  { key: 'criticalVibrate', label: 'Critical震动' },
 ];
 
 function toNum(value) {
@@ -68,30 +54,12 @@ function eventMeta(evt = {}) {
   return parts.join(' | ');
 }
 
-export default function MonitorEventTimelinePanel({ events = [], onClear, notifyConfig, onNotifyConfigChange }) {
+export default function MonitorEventTimelinePanel({ events = [], onClear }) {
   const [sourceFilter, setSourceFilter] = useState('all');
   const [severityFilter, setSeverityFilter] = useState('all');
   const [symbolInput, setSymbolInput] = useState('');
-  const effectiveNotify = {
-    ...DEFAULT_NOTIFY_CONFIG,
-    ...(notifyConfig || {}),
-  };
 
   const symbolFilter = (symbolInput || '').trim().toUpperCase();
-
-  const toggleNotify = useCallback((key) => {
-    if (!onNotifyConfigChange) return;
-    onNotifyConfigChange((prev) => {
-      const current = {
-        ...DEFAULT_NOTIFY_CONFIG,
-        ...(prev || {}),
-      };
-      return {
-        ...current,
-        [key]: !current[key],
-      };
-    });
-  }, [onNotifyConfigChange]);
 
   const filtered = useMemo(() => {
     return (events || []).filter((evt) => {
@@ -137,26 +105,6 @@ export default function MonitorEventTimelinePanel({ events = [], onClear, notify
           </TouchableOpacity>
         ))}
       </View>
-
-      {onNotifyConfigChange ? (
-        <View style={styles.notifyWrap}>
-          <Text style={styles.notifyTitle}>通知路由</Text>
-          <View style={styles.filterRow}>
-            {NOTIFY_TOGGLE_OPTIONS.map((opt) => {
-              const active = !!effectiveNotify[opt.key];
-              return (
-                <TouchableOpacity
-                  key={opt.key}
-                  style={[styles.chip, active && styles.chipActive]}
-                  onPress={() => toggleNotify(opt.key)}
-                >
-                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{opt.label}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-      ) : null}
 
       <TextInput
         style={styles.symbolInput}
@@ -264,14 +212,6 @@ const styles = StyleSheet.create({
   },
   chipTextActive: {
     color: colors.blueLight,
-  },
-  notifyWrap: {
-    marginBottom: spacing.xs,
-  },
-  notifyTitle: {
-    color: colors.textMuted,
-    fontSize: fontSize.xs,
-    marginBottom: 4,
   },
   symbolInput: {
     marginTop: 2,

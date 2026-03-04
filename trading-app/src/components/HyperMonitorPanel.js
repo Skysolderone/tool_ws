@@ -10,22 +10,13 @@ import {
   Alert,
 } from 'react-native';
 import { colors, spacing, radius, fontSize } from '../services/theme';
-import api, { AUTH_TOKEN, WS_HYPER_MONITOR_BASE, WS_LIQUIDATION_BASE } from '../services/api';
+import api, { AUTH_TOKEN, WS_HYPER_MONITOR_BASE } from '../services/api';
 
 const DEFAULT_ADDRESS = '0x15a4f009bb324a3fb9e36137136b201e3fe0dfdb';
 const FOLLOW_SYMBOL = 'BTCUSDT';
 const SNAPSHOT_REFRESH_MS = 30000;
 const WS_RECONNECT_MS = 3000;
 const WS_PING_MS = 30000;
-const EMPTY_LIQ_STATS = Object.freeze({
-  daily: [],
-  h4: [],
-  h1: [],
-  timezone: 'UTC',
-  updatedAt: 0,
-  startedAt: 0,
-  lastEventTime: 0,
-});
 
 function toNumber(value) {
   const n = Number(value);
@@ -55,27 +46,6 @@ function fmtTime(ms) {
     second: '2-digit',
     hour12: false,
   });
-}
-
-function pad2(v) {
-  return String(v).padStart(2, '0');
-}
-
-function fmtUtcTime(ms) {
-  const t = toNumber(ms);
-  if (t <= 0) return '-';
-  const d = new Date(t);
-  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())} UTC`;
-}
-
-function fmtUtcBucketStart(ms, mode = 'h1') {
-  const t = toNumber(ms);
-  if (t <= 0) return '-';
-  const d = new Date(t);
-  if (mode === 'day') {
-    return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
-  }
-  return `${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:00`;
 }
 
 function shortHash(hash = '') {
@@ -171,7 +141,6 @@ export default function HyperMonitorPanel({
   address = DEFAULT_ADDRESS,
   onHasNew,
   onMonitorEvent,
-  withLiquidationTab = false,
 }) {
   const [activeCard, setActiveCard] = useState('orders');
   const [loading, setLoading] = useState(true);
@@ -179,9 +148,6 @@ export default function HyperMonitorPanel({
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState(0);
   const [wsConnected, setWsConnected] = useState(false);
-  const [liqWsConnected, setLiqWsConnected] = useState(false);
-  const [liqError, setLiqError] = useState('');
-  const [liquidationStats, setLiquidationStats] = useState(EMPTY_LIQ_STATS);
 
   const [openOrders, setOpenOrders] = useState([]);
   const [historyOrders, setHistoryOrders] = useState([]);
@@ -195,9 +161,6 @@ export default function HyperMonitorPanel({
   const wsRef = useRef(null);
   const pingTimerRef = useRef(null);
   const reconnectTimerRef = useRef(null);
-  const liqWsRef = useRef(null);
-  const liqPingTimerRef = useRef(null);
-  const liqReconnectTimerRef = useRef(null);
   const mountedRef = useRef(false);
   const closedByUserRef = useRef(false);
 
@@ -224,8 +187,6 @@ export default function HyperMonitorPanel({
     setLastUpdated(0);
     setFollowEnabled(false);
     setFollowCount(0);
-    setLiqError('');
-    setLiquidationStats(EMPTY_LIQ_STATS);
   }, [address]);
 
   const pushEvents = useCallback((items = []) => {
@@ -364,17 +325,6 @@ export default function HyperMonitorPanel({
     }
   }, []);
 
-  const clearLiqWsTimers = useCallback(() => {
-    if (liqPingTimerRef.current) {
-      clearInterval(liqPingTimerRef.current);
-      liqPingTimerRef.current = null;
-    }
-    if (liqReconnectTimerRef.current) {
-      clearTimeout(liqReconnectTimerRef.current);
-      liqReconnectTimerRef.current = null;
-    }
-  }, []);
-
   const sendWs = useCallback((payload) => {
     if (!wsRef.current || wsRef.current.readyState !== 1) return;
     wsRef.current.send(JSON.stringify(payload));
@@ -383,15 +333,6 @@ export default function HyperMonitorPanel({
   const requestSnapshot = useCallback(() => {
     sendWs({ action: 'snapshot' });
   }, [sendWs]);
-
-  const sendLiqWs = useCallback((payload) => {
-    if (!liqWsRef.current || liqWsRef.current.readyState !== 1) return;
-    liqWsRef.current.send(JSON.stringify(payload));
-  }, []);
-
-  const requestLiqSnapshot = useCallback(() => {
-    sendLiqWs({ action: 'snapshot' });
-  }, [sendLiqWs]);
 
   const fetchFollowStatus = useCallback(async () => {
     try {
@@ -561,78 +502,14 @@ export default function HyperMonitorPanel({
     requestSnapshot,
   ]);
 
-  const connectLiqWs = useCallback(() => {
-    if (!mountedRef.current) return;
-    if (liqWsRef.current && (liqWsRef.current.readyState === 0 || liqWsRef.current.readyState === 1)) return;
-
-    const ws = new WebSocket(`${WS_LIQUIDATION_BASE}?token=${AUTH_TOKEN}`);
-    liqWsRef.current = ws;
-
-    ws.onopen = () => {
-      setLiqWsConnected(true);
-      setLiqError('');
-      clearLiqWsTimers();
-      requestLiqSnapshot();
-      liqPingTimerRef.current = setInterval(() => {
-        sendLiqWs({ action: 'ping' });
-      }, WS_PING_MS);
-    };
-
-    ws.onmessage = (event) => {
-      let msg;
-      try {
-        msg = JSON.parse(event.data);
-      } catch (_) {
-        return;
-      }
-      if (!msg || typeof msg !== 'object') return;
-      if (msg.channel === 'pong' || msg.method === 'pong' || msg.action === 'pong') return;
-
-      if (msg.channel === 'liquidationStats') {
-        const stats = msg.stats || {};
-        setLiquidationStats({
-          daily: Array.isArray(stats.daily) ? stats.daily : [],
-          h4: Array.isArray(stats.h4) ? stats.h4 : [],
-          h1: Array.isArray(stats.h1) ? stats.h1 : [],
-          timezone: String(msg.timezone || 'UTC'),
-          updatedAt: toNumber(msg.t || Date.now()),
-          startedAt: toNumber(msg.startedAt || 0),
-          lastEventTime: toNumber(msg.lastEventTime || 0),
-        });
-        setLiqError('');
-      }
-    };
-
-    ws.onerror = () => {
-      setLiqWsConnected(false);
-      setLiqError('强平统计流连接异常');
-    };
-
-    ws.onclose = () => {
-      setLiqWsConnected(false);
-      clearLiqWsTimers();
-      liqWsRef.current = null;
-      if (!mountedRef.current || closedByUserRef.current) return;
-      liqReconnectTimerRef.current = setTimeout(() => {
-        connectLiqWs();
-      }, WS_RECONNECT_MS);
-    };
-  }, [clearLiqWsTimers, requestLiqSnapshot, sendLiqWs]);
-
   useEffect(() => {
     mountedRef.current = true;
     closedByUserRef.current = false;
     connectWs();
-    if (withLiquidationTab) {
-      connectLiqWs();
-    }
     void fetchFollowStatus();
 
     const snapshotTimer = setInterval(() => {
       requestSnapshot();
-      if (withLiquidationTab) {
-        requestLiqSnapshot();
-      }
     }, SNAPSHOT_REFRESH_MS);
     const followStatusTimer = setInterval(() => {
       void fetchFollowStatus();
@@ -644,37 +521,23 @@ export default function HyperMonitorPanel({
       clearInterval(snapshotTimer);
       clearInterval(followStatusTimer);
       clearWsTimers();
-      clearLiqWsTimers();
       if (wsRef.current) {
         try {
           wsRef.current.close();
         } catch (_) {}
         wsRef.current = null;
       }
-      if (liqWsRef.current) {
-        try {
-          liqWsRef.current.close();
-        } catch (_) {}
-        liqWsRef.current = null;
-      }
     };
   }, [
-    clearLiqWsTimers,
     clearWsTimers,
-    connectLiqWs,
     connectWs,
-    requestLiqSnapshot,
     requestSnapshot,
     fetchFollowStatus,
-    withLiquidationTab,
   ]);
 
   const onRefresh = () => {
     setRefreshing(true);
     requestSnapshot();
-    if (withLiquidationTab) {
-      requestLiqSnapshot();
-    }
     void fetchFollowStatus();
   };
 
@@ -747,12 +610,6 @@ export default function HyperMonitorPanel({
     return { filled, canceled, rejected };
   }, [sortedHistoryOrders]);
 
-  const latestLiqStats = useMemo(() => ({
-    day: liquidationStats.daily?.[0] || null,
-    h4: liquidationStats.h4?.[0] || null,
-    h1: liquidationStats.h1?.[0] || null,
-  }), [liquidationStats]);
-
   return (
     <View style={styles.card}>
       <View style={styles.header}>
@@ -780,24 +637,16 @@ export default function HyperMonitorPanel({
         >
           <Text style={[styles.tabText, activeCard === 'fills' && styles.tabTextActive]}>成交行为</Text>
         </TouchableOpacity>
-        {withLiquidationTab ? (
-          <TouchableOpacity
-            style={[styles.tabBtn, activeCard === 'liquidation' && styles.tabBtnActive]}
-            onPress={() => setActiveCard('liquidation')}
-          >
-            <Text style={[styles.tabText, activeCard === 'liquidation' && styles.tabTextActive]}>强平统计</Text>
-          </TouchableOpacity>
-        ) : null}
       </View>
 
-      {loading && (!withLiquidationTab || activeCard !== 'liquidation') ? (
+      {loading ? (
         <View style={styles.loadingBox}>
           <ActivityIndicator color={colors.gold} />
           <Text style={styles.loadingText}>监控数据加载中...</Text>
         </View>
       ) : (
         <>
-          {(activeCard !== 'liquidation' || !withLiquidationTab) && error ? <Text style={styles.errorText}>{error}</Text> : null}
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
           {activeCard === 'orders' ? (
             <>
@@ -966,43 +815,6 @@ export default function HyperMonitorPanel({
                 </ScrollView>
               )}
             </>
-          ) : withLiquidationTab ? (
-            <View style={styles.liqCard}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>Binance 强平统计（UTC）</Text>
-                <Text style={styles.sectionCount}>{liqWsConnected ? '在线' : '重连中'}</Text>
-              </View>
-              <Text style={styles.liqHint}>
-                统计粒度: 每天 / 每4小时 / 每1小时 | 最近推送: {fmtUtcTime(liquidationStats.updatedAt)} | 最近强平: {fmtUtcTime(liquidationStats.lastEventTime)}
-              </Text>
-              {liqError ? <Text style={styles.errorText}>{liqError}</Text> : null}
-
-              <View style={styles.liqSummaryRow}>
-                <View style={styles.liqSummaryItem}>
-                  <Text style={styles.liqSummaryTitle}>UTC 日</Text>
-                  <Text style={styles.liqSummaryRange}>{fmtUtcBucketStart(latestLiqStats.day?.startTime, 'day')}</Text>
-                  <Text style={styles.liqSummaryValue}>${fmtUsd(latestLiqStats.day?.totalNotional)}</Text>
-                  <Text style={styles.liqSummarySub}>笔数: {toNumber(latestLiqStats.day?.totalCount)}</Text>
-                  <Text style={styles.liqSummarySub}>BUY/SELL: {toNumber(latestLiqStats.day?.buyCount)}/{toNumber(latestLiqStats.day?.sellCount)}</Text>
-                </View>
-
-                <View style={styles.liqSummaryItem}>
-                  <Text style={styles.liqSummaryTitle}>UTC 4H</Text>
-                  <Text style={styles.liqSummaryRange}>{fmtUtcBucketStart(latestLiqStats.h4?.startTime, 'h4')}</Text>
-                  <Text style={styles.liqSummaryValue}>${fmtUsd(latestLiqStats.h4?.totalNotional)}</Text>
-                  <Text style={styles.liqSummarySub}>笔数: {toNumber(latestLiqStats.h4?.totalCount)}</Text>
-                  <Text style={styles.liqSummarySub}>BUY/SELL: {toNumber(latestLiqStats.h4?.buyCount)}/{toNumber(latestLiqStats.h4?.sellCount)}</Text>
-                </View>
-
-                <View style={styles.liqSummaryItem}>
-                  <Text style={styles.liqSummaryTitle}>UTC 1H</Text>
-                  <Text style={styles.liqSummaryRange}>{fmtUtcBucketStart(latestLiqStats.h1?.startTime, 'h1')}</Text>
-                  <Text style={styles.liqSummaryValue}>${fmtUsd(latestLiqStats.h1?.totalNotional)}</Text>
-                  <Text style={styles.liqSummarySub}>笔数: {toNumber(latestLiqStats.h1?.totalCount)}</Text>
-                  <Text style={styles.liqSummarySub}>BUY/SELL: {toNumber(latestLiqStats.h1?.buyCount)}/{toNumber(latestLiqStats.h1?.sellCount)}</Text>
-                </View>
-              </View>
-            </View>
           ) : null}
         </>
       )}
@@ -1094,53 +906,6 @@ const styles = StyleSheet.create({
     color: colors.redLight,
     fontSize: fontSize.sm,
     marginBottom: spacing.md,
-  },
-  liqCard: {
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-  },
-  liqHint: {
-    color: colors.textMuted,
-    fontSize: fontSize.xs,
-    marginBottom: spacing.sm,
-  },
-  liqSummaryRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  liqSummaryItem: {
-    flex: 1,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-    backgroundColor: colors.card,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.sm,
-  },
-  liqSummaryTitle: {
-    color: colors.white,
-    fontSize: fontSize.xs,
-    fontWeight: '700',
-  },
-  liqSummaryRange: {
-    color: colors.textMuted,
-    fontSize: fontSize.xs,
-    marginTop: 2,
-  },
-  liqSummaryValue: {
-    color: colors.goldLight,
-    fontSize: fontSize.lg,
-    fontWeight: '800',
-    marginTop: spacing.xs,
-  },
-  liqSummarySub: {
-    color: colors.textSecondary,
-    fontSize: fontSize.xs,
-    marginTop: 2,
   },
   followCard: {
     borderRadius: radius.lg,

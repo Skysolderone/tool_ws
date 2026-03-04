@@ -76,6 +76,32 @@ func GetAgentAnalysisLogs(limit int, status string, execute *bool) ([]AgentAnaly
 	return records, nil
 }
 
+// GetRecentAnalysisSummaries 查询最近成功分析记录摘要（按创建时间倒序）。
+// 仅返回 Agent 侧构建上下文所需字段，避免读取无关大字段。
+func GetRecentAnalysisSummaries(limit int) ([]AgentAnalysisLog, error) {
+	if DB == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 20 {
+		limit = 20
+	}
+
+	var records []AgentAnalysisLog
+	err := DB.Model(&AgentAnalysisLog{}).
+		Select("mode", "symbols", "response_body", "execution_body", "created_at").
+		Where("status = ?", AgentAnalysisStatusSuccess).
+		Order("created_at DESC").
+		Limit(limit).
+		Find(&records).Error
+	if err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
 // GetAgentAnalysisLogByID 按 ID 查询单条 Agent 分析日志。
 func GetAgentAnalysisLogByID(id uint) (*AgentAnalysisLog, error) {
 	if DB == nil || id == 0 {

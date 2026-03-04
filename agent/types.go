@@ -10,6 +10,18 @@ type AnalysisRequest struct {
 	ActionItems []ActionItem `json:"action_items,omitempty"` // 可选：执行指定动作；为空时执行本次分析动作
 }
 
+// ChatRequest 自然语言对话请求。
+type ChatRequest struct {
+	Message string   `json:"message"`
+	Symbols []string `json:"symbols,omitempty"`
+}
+
+// ChatResponse 自然语言对话响应。
+type ChatResponse struct {
+	Reply       string       `json:"reply"`
+	ActionItems []ActionItem `json:"action_items,omitempty"`
+}
+
 // AnalysisOutput Agent 最终输出。
 type AnalysisOutput struct {
 	Summary          string           `json:"summary"`
@@ -17,6 +29,7 @@ type AnalysisOutput struct {
 	SignalEvaluation []SignalEval     `json:"signal_evaluation"`
 	JournalReview    JournalInsight   `json:"journal_review"`
 	ActionItems      []ActionItem     `json:"action_items"`
+	NewsImpact       []NewsImpactItem `json:"news_impact,omitempty"`
 	Execution        *ExecutionResult `json:"execution,omitempty"`
 }
 
@@ -72,4 +85,23 @@ type ExecutionResult struct {
 	Failed    int               `json:"failed"`
 	Skipped   int               `json:"skipped"`
 	Results   []ActionExecution `json:"results"`
+}
+
+// NewsImpactItem 新闻影响分析。
+type NewsImpactItem struct {
+	Title    string `json:"title"`
+	Impact   string `json:"impact"`   // bullish|bearish|neutral
+	Affected string `json:"affected"` // 受影响币种
+	Comment  string `json:"comment"`
+}
+
+// HistorySummary 历史分析摘要（用于注入上下文）。
+type HistorySummary struct {
+	Date            string         `json:"date"`
+	Summary         string         `json:"summary"`
+	ActionItems     []ActionItem   `json:"action_items,omitempty"`
+	Executed        bool           `json:"executed"`
+	ExecutionResult map[string]int `json:"execution_result,omitempty"`
+	Mode            string         `json:"mode,omitempty"`
+	Symbols         []string       `json:"symbols,omitempty"`
 }

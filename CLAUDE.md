@@ -65,6 +65,7 @@ cd trading-app && eas build --platform android --profile preview --local  # 打 
 | `api/ws_liquidation_stats.go` | 爆仓统计 WS |
 | `api/strategy_link.go` | 跨策略联动规则（触发源→动作，带冷却期） |
 | `websocket/` | 币安 WS-FAPI 客户端封装（Ed25519 签名下单） |
+| `agent/` | LLM Agent 逻辑（AI 分析） |
 | `cmd/proxy_server/` | 独立币安 API 反代服务（port 10087） |
 
 ## 前端架构
@@ -121,3 +122,6 @@ trading-app/
 - 市场告警规则持久化到 `data/ws-monitor/` 目录下 JSON 文件（原子写：临时文件 + rename）
 - 策略联动规则（`strategy_link.go`）：触发源 `rsi_buy/rsi_sell/liq_spike/funding_high` → 动作 `start_grid/close_position/reduce_position` 等，带冷却期防重复
 - 价格数据流：币安 aggTrade WS → 后端 priceHub 广播 → App 客户端（App 不直连币安，解决网络问题）
+- `make main` 会 SSH 部署到远程服务器 `wws` 并重启服务，非部署场景勿用
+- 不要提交敏感文件：`config.json`、`*.pem`
+- 前端 lint（`npm run lint`）检查 Git 冲突标记和行尾空白

@@ -11,6 +11,7 @@ type AgentExecutionPolicy struct {
 	MaxActionsPerRequest int      `json:"max_actions_per_request"` // 单次最多执行多少条建议
 	AllowedActions       []string `json:"allowed_actions"`         // 允许动作白名单（小写）
 	AllowedSymbols       []string `json:"allowed_symbols"`         // 允许交易对白名单（大写）
+	BlockedSymbols       []string `json:"blocked_symbols"`         // 禁止交易对黑名单（大写）
 	Description          string   `json:"description"`             // 策略说明
 }
 
@@ -25,6 +26,7 @@ func ResolveAgentExecutionPolicy() AgentExecutionPolicy {
 	p := AgentExecutionPolicy{
 		Profile:         profile,
 		AllowedSymbols:  normalizeSymbols(cfg.AllowedSymbols),
+		BlockedSymbols:  normalizeSymbols(cfg.BlockedSymbols),
 		AllowedActions:  nil,
 		Description:     "",
 		EnableExecution: false,

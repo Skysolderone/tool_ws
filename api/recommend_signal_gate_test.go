@@ -16,11 +16,11 @@ func TestUpdateSignalStateConfirmationAndCooldown(t *testing.T) {
 
 	now := time.Unix(1700000000, 0)
 
-	if updateSignalState("BTCUSDT", "LONG", now) {
-		t.Fatal("first round should not pass confirmation gate")
+	if !updateSignalState("BTCUSDT", "LONG", now) {
+		t.Fatal("aggressive mode should publish on first round")
 	}
-	if !updateSignalState("BTCUSDT", "LONG", now.Add(1*time.Minute)) {
-		t.Fatal("second round with same direction should pass confirmation gate")
+	if updateSignalState("BTCUSDT", "LONG", now.Add(1*time.Minute)) {
+		t.Fatal("same direction inside cooldown should be blocked")
 	}
 	if updateSignalState("BTCUSDT", "LONG", now.Add(2*time.Minute)) {
 		t.Fatal("same direction inside cooldown should be blocked")
@@ -35,20 +35,20 @@ func TestUpdateSignalStateResetAndDirectionSwitch(t *testing.T) {
 
 	now := time.Unix(1700001000, 0)
 
-	if updateSignalState("ETHUSDT", "LONG", now) {
-		t.Fatal("first round should not pass confirmation gate")
+	if !updateSignalState("ETHUSDT", "LONG", now) {
+		t.Fatal("aggressive mode should publish on first round")
 	}
 	if updateSignalState("ETHUSDT", "", now.Add(1*time.Minute)) {
 		t.Fatal("empty direction should reset and never publish")
 	}
 	if updateSignalState("ETHUSDT", "LONG", now.Add(2*time.Minute)) {
-		t.Fatal("reset should clear streak; this round should still be blocked")
+		t.Fatal("same direction should still be blocked by cooldown after reset")
 	}
 
-	if updateSignalState("ETHUSDT", "SHORT", now.Add(3*time.Minute)) {
-		t.Fatal("new direction first round should be blocked")
+	if !updateSignalState("ETHUSDT", "SHORT", now.Add(3*time.Minute)) {
+		t.Fatal("direction switch should pass immediately in aggressive mode")
 	}
-	if !updateSignalState("ETHUSDT", "SHORT", now.Add(4*time.Minute)) {
-		t.Fatal("new direction second round should pass")
+	if updateSignalState("ETHUSDT", "SHORT", now.Add(4*time.Minute)) {
+		t.Fatal("same new direction inside cooldown should be blocked")
 	}
 }
