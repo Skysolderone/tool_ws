@@ -21,6 +21,8 @@ import (
 const (
 	newsRefreshInterval      = 5 * time.Second
 	newsHealthCheckInterval  = time.Hour
+	newsPageSizeDefault      = 20
+	newsPageSizeMax          = 200
 	hyperInfoURL             = "https://api.hyperliquid.xyz/info"
 	hyperWSURL               = "wss://api.hyperliquid.xyz/ws"
 	hyperPingInterval        = 30 * time.Second
@@ -70,6 +72,17 @@ type newsSourceHealthReport struct {
 	Sources              []newsSourceHealthItem `json:"sources"`
 	ReachableSourceCount int                    `json:"reachableSourceCount"`
 	TotalSourceCount     int                    `json:"totalSourceCount"`
+}
+
+type newsPageResult struct {
+	Source     string     `json:"source"`
+	Page       int        `json:"page"`
+	PageSize   int        `json:"pageSize"`
+	Total      int        `json:"total"`
+	TotalPages int        `json:"totalPages"`
+	HasMore    bool       `json:"hasMore"`
+	Items      []newsItem `json:"items"`
+	UpdatedAt  int64      `json:"updatedAt"`
 }
 
 type newsHub struct {
@@ -183,6 +196,11 @@ var (
 		mu     sync.RWMutex
 		report newsSourceHealthReport
 	}
+	newsSnapshotState struct {
+		mu        sync.RWMutex
+		data      map[string][]newsItem
+		updatedAt int64
+	}
 
 	// hyperMonitor 客户端注册表：address -> []*wsClient
 	// 跟单事件通过此注册表广播给正在监控同一地址的所有前端
@@ -225,6 +243,57 @@ func GetNewsSourceHealthReport() newsSourceHealthReport {
 		report.Sources = append([]newsSourceHealthItem(nil), report.Sources...)
 	}
 	return report
+}
+
+// GetNewsPage 按资讯源分页返回快照数据（由后台抓取循环持续更新）。
+func GetNewsPage(sourceKey string, page, pageSize int) newsPageResult {
+	sourceKey = strings.TrimSpace(sourceKey)
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = newsPageSizeDefault
+	}
+	if pageSize > newsPageSizeMax {
+		pageSize = newsPageSizeMax
+	}
+
+	newsSnapshotState.mu.RLock()
+	fullList := append([]newsItem(nil), newsSnapshotState.data[sourceKey]...)
+	updatedAt := newsSnapshotState.updatedAt
+	newsSnapshotState.mu.RUnlock()
+
+	total := len(fullList)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	start := (page - 1) * pageSize
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	items := []newsItem{}
+	if start < end {
+		items = append(items, fullList[start:end]...)
+	}
+
+	return newsPageResult{
+		Source:     sourceKey,
+		Page:       page,
+		PageSize:   pageSize,
+		Total:      total,
+		TotalPages: totalPages,
+		HasMore:    end < total,
+		Items:      items,
+		UpdatedAt:  updatedAt,
+	}
 }
 
 func runNewsSourceHealthMonitor() {
@@ -719,6 +788,7 @@ func (h *newsHub) fetchAndBroadcast() {
 	if err != nil {
 		payload.Error = err.Error()
 	}
+	storeNewsSnapshot(data, payload.Time)
 
 	raw, marshalErr := json.Marshal(payload)
 	if marshalErr != nil {
@@ -740,6 +810,18 @@ func (h *newsHub) fetchAndBroadcast() {
 		default:
 		}
 	}
+}
+
+func storeNewsSnapshot(data map[string][]newsItem, updatedAt int64) {
+	cloned := make(map[string][]newsItem, len(data))
+	for key, list := range data {
+		cloned[key] = append([]newsItem(nil), list...)
+	}
+
+	newsSnapshotState.mu.Lock()
+	newsSnapshotState.data = cloned
+	newsSnapshotState.updatedAt = updatedAt
+	newsSnapshotState.mu.Unlock()
 }
 
 func fetchNewsSnapshot() (map[string][]newsItem, []string, error) {
@@ -951,10 +1033,6 @@ func normalizeNewsList(list []newsItem) []newsItem {
 	sort.SliceStable(deduped, func(i, j int) bool {
 		return parseNewsTime(deduped[i].PubDate) > parseNewsTime(deduped[j].PubDate)
 	})
-
-	if len(deduped) > 20 {
-		return deduped[:20]
-	}
 	return deduped
 }
 

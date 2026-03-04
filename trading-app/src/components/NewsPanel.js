@@ -201,6 +201,7 @@ const BASE_FEED_KEY_SET = new Set(BASE_FEED_SOURCES.map((x) => x.key));
 const WS_RECONNECT_MS = 3000;
 const WS_PING_MS = 30000;
 const SOURCE_STATUS_REFRESH_MS = 60 * 60 * 1000;
+const NEWS_PAGE_SIZE = 20;
 const TRANSLATE_ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
 const TRANSLATE_MAX_CHARS = 1800;
 const TRANSLATE_BATCH_LIMIT = 12;
@@ -208,6 +209,13 @@ const TRANSLATE_BATCH_LIMIT = 12;
 function buildEmptyNewsBySource(feeds) {
   return feeds.reduce((acc, feed) => {
     acc[feed.key] = [];
+    return acc;
+  }, {});
+}
+
+function buildEmptySourceCount(feeds) {
+  return feeds.reduce((acc, feed) => {
+    acc[feed.key] = 0;
     return acc;
   }, {});
 }
@@ -422,6 +430,18 @@ function getNewsItemKey(item) {
   return `${item?.link || item?.id || item?.title || '-'}::${item?.pubDate || '-'}`;
 }
 
+function mergeNewsPageItems(prevItems, nextItems) {
+  const out = Array.isArray(prevItems) ? [...prevItems] : [];
+  const seen = new Set(out.map((item) => getNewsItemKey(item)));
+  (Array.isArray(nextItems) ? nextItems : []).forEach((item) => {
+    const key = getNewsItemKey(item);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(item);
+  });
+  return out;
+}
+
 function containsChinese(text) {
   return /[\u4e00-\u9fff]/.test(text || '');
 }
@@ -474,6 +494,10 @@ export default function NewsPanel({ onHasNew }) {
   const [error, setError] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
   const [newsBySource, setNewsBySource] = useState(buildEmptyNewsBySource(BASE_FEED_SOURCES));
+  const [sourceCountByKey, setSourceCountByKey] = useState(buildEmptySourceCount(BASE_FEED_SOURCES));
+  const [pageStateBySource, setPageStateBySource] = useState({});
+  const [sourceLoadingByKey, setSourceLoadingByKey] = useState({});
+  const [sourceLoadingMoreByKey, setSourceLoadingMoreByKey] = useState({});
   const defaultMainFeed = BASE_FEED_SOURCES.find((feed) => !isPornFeedKey(feed.key)) || BASE_FEED_SOURCES[0];
   const defaultPornFeed = BASE_FEED_SOURCES.find((feed) => isPornFeedKey(feed.key)) || BASE_FEED_SOURCES[0];
   const [activeMainSourceKey, setActiveMainSourceKey] = useState(defaultMainFeed?.key || BASE_FEED_SOURCES[0].key);
@@ -553,6 +577,34 @@ export default function NewsPanel({ onHasNew }) {
       });
       return next;
     });
+    setSourceCountByKey((prev) => {
+      const next = buildEmptySourceCount(feedSources);
+      feedSources.forEach((feed) => {
+        next[feed.key] = prev[feed.key] || 0;
+      });
+      return next;
+    });
+    setPageStateBySource((prev) => {
+      const next = {};
+      feedSources.forEach((feed) => {
+        if (prev[feed.key]) next[feed.key] = prev[feed.key];
+      });
+      return next;
+    });
+    setSourceLoadingByKey((prev) => {
+      const next = {};
+      feedSources.forEach((feed) => {
+        if (prev[feed.key]) next[feed.key] = prev[feed.key];
+      });
+      return next;
+    });
+    setSourceLoadingMoreByKey((prev) => {
+      const next = {};
+      feedSources.forEach((feed) => {
+        if (prev[feed.key]) next[feed.key] = prev[feed.key];
+      });
+      return next;
+    });
     setActiveMainSourceKey((prev) => {
       const mainFeeds = feedSources.filter((f) => !isPornFeedKey(f.key));
       if (mainFeeds.some((f) => f.key === prev)) return prev;
@@ -579,32 +631,124 @@ export default function NewsPanel({ onHasNew }) {
     [feedSources],
   );
 
-  const applyNewsPayload = useCallback((payload = {}) => {
-    const nextNewsBySource = buildEmptyNewsBySource(feedSources);
-    feedSources.forEach((feed) => {
-      nextNewsBySource[feed.key] = Array.isArray(payload.data?.[feed.key]) ? payload.data[feed.key] : [];
-    });
+  const loadNewsPage = useCallback(async (sourceKey, page = 1, { append = false } = {}) => {
+    const key = String(sourceKey || '').trim();
+    if (!key) return;
 
+    if (append) {
+      setSourceLoadingMoreByKey((prev) => ({ ...prev, [key]: true }));
+    } else {
+      setSourceLoadingByKey((prev) => ({ ...prev, [key]: true }));
+    }
+
+    try {
+      const res = await api.getNewsPage({
+        source: key,
+        page,
+        pageSize: NEWS_PAGE_SIZE,
+      });
+      const payload = res?.data || res || {};
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      const total = Number.isFinite(payload.total) ? payload.total : items.length;
+      const totalPages = Number.isFinite(payload.totalPages)
+        ? payload.totalPages
+        : (total > 0 ? Math.ceil(total / NEWS_PAGE_SIZE) : 0);
+      const hasMore = typeof payload.hasMore === 'boolean'
+        ? payload.hasMore
+        : page < totalPages;
+
+      setNewsBySource((prev) => ({
+        ...prev,
+        [key]: append
+          ? mergeNewsPageItems(prev[key] || [], items)
+          : items,
+      }));
+      setPageStateBySource((prev) => ({
+        ...prev,
+        [key]: {
+          page,
+          pageSize: NEWS_PAGE_SIZE,
+          total,
+          totalPages,
+          hasMore,
+          updatedAt: Number.isFinite(payload.updatedAt) ? payload.updatedAt : 0,
+        },
+      }));
+      setSourceCountByKey((prev) => ({ ...prev, [key]: total }));
+    } catch (e) {
+      setPageStateBySource((prev) => {
+        if (prev[key]) return prev;
+        return {
+          ...prev,
+          [key]: {
+            page: 0,
+            pageSize: NEWS_PAGE_SIZE,
+            total: 0,
+            totalPages: 0,
+            hasMore: false,
+            updatedAt: 0,
+          },
+        };
+      });
+      if (!append) {
+        setError(`分页拉取失败：${e?.message || 'unknown error'}`);
+      }
+    } finally {
+      if (append) {
+        setSourceLoadingMoreByKey((prev) => ({ ...prev, [key]: false }));
+      } else {
+        setSourceLoadingByKey((prev) => ({ ...prev, [key]: false }));
+      }
+    }
+  }, []);
+
+  const applyNewsPayload = useCallback((payload = {}) => {
+    const nextCounts = {};
     const nextTopKeys = {};
+    let totalCount = 0;
+
     feedSources.forEach((feed) => {
-      const top = (nextNewsBySource[feed.key] || [])[0];
+      const list = Array.isArray(payload.data?.[feed.key]) ? payload.data[feed.key] : [];
+      nextCounts[feed.key] = list.length;
+      totalCount += list.length;
+      const top = list[0];
       nextTopKeys[feed.key] = top ? `${top.link || top.id || top.title || '-'}::${top.pubDate || '-'}` : '';
     });
 
-    if (!initializedRef.current) {
-      initializedRef.current = true;
-    } else {
-      const hasNew = feedSources.some((feed) => {
-        const prevKey = latestTopKeyRef.current[feed.key] || '';
-        const nextKey = nextTopKeys[feed.key] || '';
+    const prevTopKeys = latestTopKeyRef.current;
+    const changedKeys = feedSources
+      .map((feed) => feed.key)
+      .filter((key) => {
+        const prevKey = prevTopKeys[key] || '';
+        const nextKey = nextTopKeys[key] || '';
         return prevKey && nextKey && prevKey !== nextKey;
       });
-      if (hasNew) onHasNew?.(true);
+
+    const isFirstPayload = !initializedRef.current;
+    if (isFirstPayload) {
+      initializedRef.current = true;
+    } else if (changedKeys.length > 0) {
+      onHasNew?.(true);
     }
     latestTopKeyRef.current = nextTopKeys;
+    setSourceCountByKey((prev) => ({ ...prev, ...nextCounts }));
 
-    setNewsBySource(nextNewsBySource);
-    const totalCount = Object.values(nextNewsBySource).reduce((sum, list) => sum + list.length, 0);
+    const shouldReloadKeys = new Set();
+    if (isFirstPayload || refreshing) {
+      if (activeMainSourceKey) shouldReloadKeys.add(activeMainSourceKey);
+      if (activePornSourceKey) shouldReloadKeys.add(activePornSourceKey);
+    } else {
+      if (activeMainSourceKey && changedKeys.includes(activeMainSourceKey)) {
+        shouldReloadKeys.add(activeMainSourceKey);
+      }
+      if (activePornSourceKey && changedKeys.includes(activePornSourceKey)) {
+        shouldReloadKeys.add(activePornSourceKey);
+      }
+    }
+    shouldReloadKeys.forEach((key) => {
+      loadNewsPage(key, 1);
+    });
+
     if (payload.error) {
       setError(`拉取失败：${payload.error}`);
     } else if (totalCount === 0) {
@@ -617,7 +761,7 @@ export default function NewsPanel({ onHasNew }) {
 
     setLoading(false);
     setRefreshing(false);
-  }, [feedSources, onHasNew]);
+  }, [activeMainSourceKey, activePornSourceKey, feedSources, loadNewsPage, onHasNew, refreshing]);
 
   const requestRefresh = useCallback(() => {
     setRefreshing(true);
@@ -703,17 +847,11 @@ export default function NewsPanel({ onHasNew }) {
     || null;
   const activeMainList = activeMainFeed ? (newsBySource[activeMainFeed.key] || []) : [];
   const activePornList = activePornFeed ? (newsBySource[activePornFeed.key] || []) : [];
+  const activeMainPageState = activeMainFeed ? pageStateBySource[activeMainFeed.key] : null;
+  const activePornPageState = activePornFeed ? pageStateBySource[activePornFeed.key] : null;
   const hiddenCount = BASE_FEED_SOURCES.length - feedSources.length;
   const hasMainFeeds = mainFeedSources.length > 0;
   const hasPornFeeds = pornFeedSources.length > 0;
-  const sourceCountByKey = useMemo(() => {
-    const out = {};
-    feedSources.forEach((feed) => {
-      const list = newsBySource[feed.key];
-      out[feed.key] = Array.isArray(list) ? list.length : 0;
-    });
-    return out;
-  }, [feedSources, newsBySource]);
   const pornFeedCount = useMemo(
     () => feedSources.filter((feed) => isPornFeedKey(feed.key)).length,
     [feedSources],
@@ -734,6 +872,31 @@ export default function NewsPanel({ onHasNew }) {
       .reduce((sum, feed) => sum + (sourceCountByKey[feed.key] || 0), 0),
     [feedSources, sourceCountByKey],
   );
+
+  useEffect(() => {
+    if (!activeMainFeed) return;
+    const key = activeMainFeed.key;
+    if (pageStateBySource[key]) return;
+    if (sourceLoadingByKey[key] || sourceLoadingMoreByKey[key]) return;
+    loadNewsPage(key, 1);
+  }, [activeMainFeed, loadNewsPage, pageStateBySource, sourceLoadingByKey, sourceLoadingMoreByKey]);
+
+  useEffect(() => {
+    if (!activePornFeed) return;
+    const key = activePornFeed.key;
+    if (pageStateBySource[key]) return;
+    if (sourceLoadingByKey[key] || sourceLoadingMoreByKey[key]) return;
+    loadNewsPage(key, 1);
+  }, [activePornFeed, loadNewsPage, pageStateBySource, sourceLoadingByKey, sourceLoadingMoreByKey]);
+
+  const loadNextPage = useCallback((sourceKey) => {
+    const key = String(sourceKey || '').trim();
+    if (!key) return;
+    const pageInfo = pageStateBySource[key];
+    if (!pageInfo?.hasMore) return;
+    if (sourceLoadingByKey[key] || sourceLoadingMoreByKey[key]) return;
+    loadNewsPage(key, (pageInfo.page || 1) + 1, { append: true });
+  }, [loadNewsPage, pageStateBySource, sourceLoadingByKey, sourceLoadingMoreByKey]);
 
   const openExternal = async (url) => {
     if (!url) return;
@@ -784,6 +947,8 @@ export default function NewsPanel({ onHasNew }) {
     selectedTranslate && (selectedTranslate.titleZh || selectedTranslate.summaryZh)
   );
   const selectedSourceLangLabel = languageLabel(selectedTranslate?.sourceLang || 'en');
+  const selectedFeedKey = String(selected?.__feedKey || '');
+  const selectedIsPornFeed = isPornFeedKey(selectedFeedKey);
 
   const getPlainSummary = useCallback(
     (item) => {
@@ -874,8 +1039,21 @@ export default function NewsPanel({ onHasNew }) {
   );
 
   const renderFeedSection = useCallback(
-    ({ panelTitle, panelCountText, feedList, activeFeed, onSelectSource, items, emptyText = '暂无资讯' }) => {
+    ({
+      panelTitle,
+      panelCountText,
+      feedList,
+      activeFeed,
+      onSelectSource,
+      items,
+      pageInfo,
+      loadingSource,
+      loadingMore,
+      onLoadMore,
+      emptyText = '暂无资讯',
+    }) => {
       if (!activeFeed) return null;
+      const totalCount = sourceCountByKey[activeFeed.key] || pageInfo?.total || 0;
       return (
         <View style={styles.feedBlock}>
           <View style={styles.feedBlockHeader}>
@@ -926,33 +1104,56 @@ export default function NewsPanel({ onHasNew }) {
                 </Text>
               </View>
             </View>
-            <Text style={styles.sectionCount}>{items.length} 条 · 分组 {feedList.length} 源</Text>
+            <Text style={styles.sectionCount}>
+              已加载 {items.length} / {totalCount} 条 · 分组 {feedList.length} 源
+            </Text>
           </View>
-          {items.length === 0 ? (
+          {loadingSource && items.length === 0 ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator color={colors.gold} />
+              <Text style={styles.loadingText}>分页加载中...</Text>
+            </View>
+          ) : items.length === 0 ? (
             <View style={styles.emptyBox}>
               <Text style={styles.emptyText}>{emptyText}</Text>
             </View>
           ) : (
-            items.map((item) => (
-              <TouchableOpacity
-                key={`${activeFeed.key}-${getNewsItemKey(item)}`}
-                style={styles.newsCard}
-                onPress={() => {
-                  setSelected(item);
-                  setShowSourceLang(false);
-                }}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.newsTitle} numberOfLines={2}>{getDisplayTitle(item)}</Text>
-                <Text style={styles.newsSummary} numberOfLines={2}>
-                  {getDisplaySummary(item)}
-                </Text>
-                <View style={styles.metaRow}>
-                  <Text style={[styles.meta, styles.metaSource]} numberOfLines={1}>{item.source}</Text>
-                  <Text style={[styles.meta, styles.metaTime]}>{formatTime(item.pubDate)}</Text>
-                </View>
-              </TouchableOpacity>
-            ))
+            <>
+              {items.map((item) => (
+                <TouchableOpacity
+                  key={`${activeFeed.key}-${getNewsItemKey(item)}`}
+                  style={styles.newsCard}
+                  onPress={() => {
+                    setSelected({ ...item, __feedKey: activeFeed.key });
+                    setShowSourceLang(false);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.newsTitle} numberOfLines={2}>{getDisplayTitle(item)}</Text>
+                  <Text style={styles.newsSummary} numberOfLines={2}>
+                    {getDisplaySummary(item)}
+                  </Text>
+                  <View style={styles.metaRow}>
+                    <Text style={[styles.meta, styles.metaSource]} numberOfLines={1}>{item.source}</Text>
+                    <Text style={[styles.meta, styles.metaTime]}>{formatTime(item.pubDate)}</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+              {pageInfo?.hasMore ? (
+                <TouchableOpacity
+                  style={[styles.loadMoreBtn, loadingMore && styles.loadMoreBtnDisabled]}
+                  onPress={() => onLoadMore(activeFeed.key)}
+                  activeOpacity={0.8}
+                  disabled={loadingMore}
+                >
+                  <Text style={styles.loadMoreBtnText}>
+                    {loadingMore ? '加载中...' : `加载更多 (${items.length}/${totalCount})`}
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <Text style={styles.loadMoreHint}>已加载全部 {items.length} 条</Text>
+              )}
+            </>
           )}
         </View>
       );
@@ -1015,6 +1216,10 @@ export default function NewsPanel({ onHasNew }) {
             activeFeed: activeMainFeed,
             onSelectSource: setActiveMainSourceKey,
             items: activeMainList,
+            pageInfo: activeMainPageState,
+            loadingSource: !!sourceLoadingByKey[activeMainFeed?.key],
+            loadingMore: !!sourceLoadingMoreByKey[activeMainFeed?.key],
+            onLoadMore: loadNextPage,
             emptyText: '暂无主资讯',
           }) : null}
           {hasPornFeeds ? renderFeedSection({
@@ -1024,6 +1229,10 @@ export default function NewsPanel({ onHasNew }) {
             activeFeed: activePornFeed,
             onSelectSource: setActivePornSourceKey,
             items: activePornList,
+            pageInfo: activePornPageState,
+            loadingSource: !!sourceLoadingByKey[activePornFeed?.key],
+            loadingMore: !!sourceLoadingMoreByKey[activePornFeed?.key],
+            onLoadMore: loadNextPage,
             emptyText: '暂无 Porn 资讯',
           }) : null}
           {!hasMainFeeds && !hasPornFeeds ? (
@@ -1036,7 +1245,7 @@ export default function NewsPanel({ onHasNew }) {
 
       {/* ===== 纯文本详情弹窗（BlockBeats 等无 HTML 的源） ===== */}
       <Modal
-        visible={!!selected && !selectedHasHtml}
+        visible={!!selected && !selectedIsPornFeed && !selectedHasHtml}
         transparent
         animationType="slide"
         onRequestClose={() => setSelected(null)}
@@ -1085,9 +1294,61 @@ export default function NewsPanel({ onHasNew }) {
         </View>
       </Modal>
 
+      {/* ===== Porn 源站内播放（直接打开原站链接，允许 JS/视频播放） ===== */}
+      <Modal
+        visible={!!selected && selectedIsPornFeed}
+        animationType="slide"
+        onRequestClose={() => setSelected(null)}
+      >
+        <SafeAreaView style={styles.articleContainer}>
+          <View style={styles.articleHeader}>
+            <TouchableOpacity style={styles.articleBackBtn} onPress={() => setSelected(null)}>
+              <Text style={styles.articleBackText}>✕ 返回</Text>
+            </TouchableOpacity>
+            <Text style={styles.articleHeaderTitle} numberOfLines={1}>
+              {selected?.source || '站内播放'}
+            </Text>
+            <View style={styles.articleHeaderActions}>
+              {selected?.link ? (
+                <TouchableOpacity
+                  style={styles.articleExternalBtn}
+                  onPress={() => openExternal(selected.link)}
+                >
+                  <Text style={styles.articleExternalText}>浏览器</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          </View>
+          {selected?.link ? (
+            <WebView
+              originWhitelist={['*']}
+              source={{ uri: selected.link }}
+              style={styles.articleWebView}
+              javaScriptEnabled
+              domStorageEnabled
+              allowsInlineMediaPlayback
+              allowsFullscreenVideo
+              mediaPlaybackRequiresUserAction={false}
+              setSupportMultipleWindows={false}
+              sharedCookiesEnabled
+              thirdPartyCookiesEnabled
+              startInLoadingState
+              onShouldStartLoadWithRequest={(request) => (
+                !!request?.url
+                && (request.url.startsWith('http://') || request.url.startsWith('https://'))
+              )}
+            />
+          ) : (
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyText}>该条目缺少可播放链接</Text>
+            </View>
+          )}
+        </SafeAreaView>
+      </Modal>
+
       {/* ===== HTML 富文本详情（0xzx 等含 HTML 的源 — 本地渲染，无需跳转） ===== */}
       <Modal
-        visible={!!selected && selectedHasHtml}
+        visible={!!selected && !selectedIsPornFeed && selectedHasHtml}
         animationType="slide"
         onRequestClose={() => setSelected(null)}
       >
@@ -1465,6 +1726,30 @@ const styles = StyleSheet.create({
   sectionCount: {
     color: colors.textSecondary,
     fontSize: 12,
+  },
+  loadMoreBtn: {
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.goldBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  loadMoreBtnDisabled: {
+    opacity: 0.75,
+  },
+  loadMoreBtnText: {
+    color: colors.goldLight,
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+  },
+  loadMoreHint: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    textAlign: 'center',
+    marginBottom: spacing.md,
   },
   emptyBox: {
     borderRadius: 16,

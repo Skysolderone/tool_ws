@@ -235,6 +235,7 @@ func main() {
 		apiGroup.POST("/news-sentiment/stop", api.HandleStopNewsSentiment)
 		apiGroup.GET("/news-sentiment/status", api.HandleNewsSentimentStatus)
 		apiGroup.GET("/news/sources/status", api.HandleGetNewsSourceStatus)
+		apiGroup.GET("/news/page", api.HandleGetNewsPage)
 
 		// 爆仓级联交易策略
 		apiGroup.POST("/liq-cascade/start", api.HandleStartLiqCascade)

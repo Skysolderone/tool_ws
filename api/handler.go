@@ -740,6 +740,19 @@ func HandleGetNewsSourceStatus(c context.Context, ctx *app.RequestContext) {
 	ctx.JSON(http.StatusOK, utils.H{"data": GetNewsSourceHealthReport()})
 }
 
+// HandleGetNewsPage GET /tool/news/page?source=blockbeats&page=1&pageSize=20
+func HandleGetNewsPage(c context.Context, ctx *app.RequestContext) {
+	_ = c
+	source := ctx.DefaultQuery("source", "")
+	if source == "" {
+		ctx.JSON(http.StatusBadRequest, utils.H{"error": "source is required"})
+		return
+	}
+	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(ctx.DefaultQuery("pageSize", "20"))
+	ctx.JSON(http.StatusOK, utils.H{"data": GetNewsPage(source, page, pageSize)})
+}
+
 // ========== 爆仓级联策略 ==========
 
 // HandleStartLiqCascade POST /tool/liq-cascade/start

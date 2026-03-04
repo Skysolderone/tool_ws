@@ -109,6 +109,11 @@ export default {
       `/analytics/sentiment?symbol=${encodeURIComponent(symbol)}&period=${encodeURIComponent(period)}`,
     ),
   getNewsSourceStatus: () => apiCall('GET', '/news/sources/status'),
+  getNewsPage: ({ source, page = 1, pageSize = 20 } = {}) =>
+    apiCall(
+      'GET',
+      `/news/page?source=${encodeURIComponent(source || '')}&page=${page}&pageSize=${pageSize}`,
+    ),
 
   // Hyper 跟单（服务端执行）
   startHyperFollow: (config) => apiCall('POST', '/hyper/follow/start', config),
