@@ -493,11 +493,6 @@ func HandleAnalyze(c context.Context, ctx *app.RequestContext) {
 	}
 	req.Symbols = normalizeAndDedupeSymbols(req.Symbols)
 	log.Printf("[Agent][%s] analyze start method=%s mode=%s symbols=%v execute=%v mock=%v async=%v", reqID, string(ctx.Method()), req.Mode, req.Symbols, req.Execute, req.Mock, req.Async)
-	if !req.Mock && chatModel == nil {
-		log.Printf("[Agent][%s] analyze llm_not_configured", reqID)
-		ctx.JSON(http.StatusServiceUnavailable, hertzutils.H{"error": "Agent 未配置 LLM"})
-		return
-	}
 
 	if req.Async {
 		handleAnalyzeAsync(reqID, req, ctx)
@@ -530,7 +525,7 @@ type analyzeSSEEvent struct {
 }
 
 // HandleAnalyzeStream GET /tool/agent/analyze/stream
-// 通过 SSE 推送数据收集进度与 LLM token 流。
+// 通过 SSE 推送策略分析进度，并返回最终 JSON 结果。
 func HandleAnalyzeStream(c context.Context, ctx *app.RequestContext) {
 	reqID := strconv.FormatInt(time.Now().UnixNano(), 36)
 	req := AnalysisRequest{
@@ -543,10 +538,6 @@ func HandleAnalyzeStream(c context.Context, ctx *app.RequestContext) {
 	}
 
 	log.Printf("[Agent][%s] analyze stream start mode=%s symbols=%v", reqID, req.Mode, req.Symbols)
-	if chatModel == nil {
-		ctx.JSON(http.StatusServiceUnavailable, hertzutils.H{"error": "Agent 未配置 LLM"})
-		return
-	}
 
 	start := time.Now()
 	logRecord := &api.AgentAnalysisLog{
@@ -600,25 +591,13 @@ func HandleAnalyzeStream(c context.Context, ctx *app.RequestContext) {
 
 		go func() {
 			defer close(events)
-			output, err := RunAnalysisStream(
-				runCtx,
-				req,
-				func(p analyzeProgress) {
-					select {
-					case events <- analyzeSSEEvent{Event: "progress", Data: p}:
-					case <-runCtx.Done():
-					}
-				},
-				func(text string) {
-					if strings.TrimSpace(text) == "" {
-						return
-					}
-					select {
-					case events <- analyzeSSEEvent{Event: "token", Data: hertzutils.H{"text": text}}:
-					case <-runCtx.Done():
-					}
-				},
-			)
+			select {
+			case events <- analyzeSSEEvent{Event: "progress", Data: analyzeProgress{Phase: "collecting", Detail: "正在读取持仓并应用写死策略...", Step: 1, Total: 3}}:
+			case <-runCtx.Done():
+				return
+			}
+
+			output, warning, err := runAnalyzePipeline(runCtx, reqID, req)
 
 			durationMs := int64(time.Since(start) / time.Millisecond)
 			if err != nil {
@@ -642,6 +621,13 @@ func HandleAnalyzeStream(c context.Context, ctx *app.RequestContext) {
 			if output == nil {
 				output = &AnalysisOutput{}
 			}
+			if warning != "" {
+				select {
+				case events <- analyzeSSEEvent{Event: "progress", Data: analyzeProgress{Phase: "warning", Detail: warning, Step: 2, Total: 3}}:
+				case <-runCtx.Done():
+					return
+				}
+			}
 			if taskID > 0 {
 				_ = api.UpdateAgentAnalysisLog(taskID, map[string]any{
 					"status":         api.AgentAnalysisStatusSuccess,
@@ -653,6 +639,16 @@ func HandleAnalyzeStream(c context.Context, ctx *app.RequestContext) {
 			}
 
 			log.Printf("[Agent][%s] analyze stream done after=%v action_items=%d", reqID, time.Since(start).Round(time.Millisecond), len(output.ActionItems))
+			select {
+			case events <- analyzeSSEEvent{Event: "token", Data: hertzutils.H{"text": marshalToString(output)}}:
+			case <-runCtx.Done():
+				return
+			}
+			select {
+			case events <- analyzeSSEEvent{Event: "progress", Data: analyzeProgress{Phase: "done", Detail: "策略分析完成", Step: 3, Total: 3}}:
+			case <-runCtx.Done():
+				return
+			}
 			select {
 			case events <- analyzeSSEEvent{Event: "done", Data: hertzutils.H{"task_id": taskID}}:
 			case <-runCtx.Done():
@@ -942,23 +938,12 @@ func runAnalyzePipeline(ctx context.Context, reqID string, req AnalysisRequest) 
 		log.Printf("[Agent][%s] analyze using_mock_response", reqID)
 		result = buildMockAnalysisOutput(req)
 	} else {
-		runCtx, cancel := context.WithTimeout(ctx, analyzeOverallTimeout)
+		runCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		defer cancel()
 		var err error
-		if shouldSplitAnalyzeBySymbol(req) {
-			log.Printf("[Agent][%s] analyze split_by_symbol symbols=%v", reqID, req.Symbols)
-			result, err = runAnalysisBySymbol(runCtx, req)
-		} else {
-			result, err = RunAnalysis(runCtx, req)
-		}
+		result, err = runStaticStrategyAnalysis(runCtx, req)
 		if err != nil {
-			if isLLMTimeoutError(err) {
-				log.Printf("[Agent][%s] analyze timeout err=%v (returned fallback)", reqID, err)
-				result = buildTimeoutFallbackOutput(req, err)
-				warning = "agent analyze timeout, returned fallback result"
-			} else {
-				return nil, "", err
-			}
+			return nil, "", err
 		}
 	}
 
