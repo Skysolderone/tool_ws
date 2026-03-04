@@ -32,6 +32,8 @@ import ScalpPanel from './src/components/ScalpPanel';
 import EquityCurvePanel from './src/components/EquityCurvePanel';
 import StrategyComparePanel from './src/components/StrategyComparePanel';
 import DepthChartPanel from './src/components/DepthChartPanel';
+import MonitorOverviewPanel from './src/components/MonitorOverviewPanel';
+import MonitorEventTimelinePanel from './src/components/MonitorEventTimelinePanel';
 import { colors, spacing, radius, fontSize } from './src/services/theme';
 import api, { WS_PRICE_BASE, AUTH_TOKEN } from './src/services/api';
 
@@ -70,6 +72,33 @@ const MONITOR_SUB_TABS = [
   { key: 'depth', label: '深度图' },
 ];
 
+const MONITOR_EVENT_LIMIT = 300;
+
+function normalizeMonitorEvent(evt = {}) {
+  const ts = Number(evt.ts || evt.time || Date.now());
+  const source = String(evt.source || 'unknown');
+  const severityRaw = String(evt.severity || 'info').toLowerCase();
+  const severity = ['info', 'warn', 'critical'].includes(severityRaw) ? severityRaw : 'info';
+  const symbol = String(evt.symbol || '').toUpperCase();
+  const type = String(evt.type || 'event');
+  const strategyId = evt.strategyId ? String(evt.strategyId) : '';
+  const message = String(evt.message || evt.detail || '-');
+  const payload = evt.payload && typeof evt.payload === 'object' ? evt.payload : {};
+  const dedupeKey = `${source}::${type}::${symbol || '-'}::${message}::${Number.isFinite(ts) ? ts : Date.now()}`;
+  const eventId = String(evt.eventId || dedupeKey);
+  return {
+    eventId,
+    ts: Number.isFinite(ts) ? ts : Date.now(),
+    source,
+    severity,
+    symbol,
+    strategyId,
+    type,
+    message,
+    payload,
+  };
+}
+
 export default function App() {
   const androidStatusBarHeight = Platform.OS === 'android' ? (RNStatusBar.currentHeight || 0) : 0;
 
@@ -92,12 +121,15 @@ export default function App() {
   const [hyperHasNew, setHyperHasNew] = useState(false);
   const [liqHasNew, setLiqHasNew] = useState(false);
   const [marketHasNew, setMarketHasNew] = useState(false);
+  const [monitorEvents, setMonitorEvents] = useState([]);
+  const monitorSuppressRef = useRef({});
   const [watchAddresses, setWatchAddresses] = useState(DEFAULT_WATCH_ADDRESSES);
   const [activeAddrIdx, setActiveAddrIdx] = useState(0);
   const [newAddrInput, setNewAddrInput] = useState('');
   const [newAddrLabel, setNewAddrLabel] = useState('');
 
   // ===== 懒加载标记 =====
+  // 启动即激活资讯后台连接，保证非资讯页也能收到本地新资讯通知
   const [newsActivated, setNewsActivated] = useState(true);
   const [hyperActivated, setHyperActivated] = useState(false);
   const [liqActivated, setLiqActivated] = useState(false);
@@ -228,6 +260,31 @@ export default function App() {
   const handleMarketHasNew = useCallback((hasNew) => {
     if (hasNew && !(activeTab === 'monitor' && monitorSubTab === 'market')) setMarketHasNew(true);
   }, [activeTab, monitorSubTab]);
+
+  const handleMonitorEvent = useCallback((evt) => {
+    if (!evt || typeof evt !== 'object') return;
+    const normalized = normalizeMonitorEvent(evt);
+    const needsSuppress = normalized.severity === 'warn' || normalized.severity === 'critical';
+    if (needsSuppress) {
+      const suppressSecRaw = Number(normalized.payload?.suppressSec || 60);
+      const suppressMS = (Number.isFinite(suppressSecRaw) && suppressSecRaw > 0 ? suppressSecRaw : 60) * 1000;
+      const suppressKey = `${normalized.source}::${normalized.type}::${normalized.symbol || '-'}::${normalized.severity}`;
+      const lastTS = monitorSuppressRef.current[suppressKey] || 0;
+      if (normalized.ts - lastTS < suppressMS) return;
+      monitorSuppressRef.current[suppressKey] = normalized.ts;
+    }
+    setMonitorEvents((prev) => {
+      if (prev.some((x) => x.eventId === normalized.eventId)) return prev;
+      const merged = [normalized, ...prev];
+      merged.sort((a, b) => b.ts - a.ts);
+      return merged.slice(0, MONITOR_EVENT_LIMIT);
+    });
+  }, []);
+
+  const clearMonitorEvents = useCallback(() => {
+    setMonitorEvents([]);
+    monitorSuppressRef.current = {};
+  }, []);
 
   const switchMainTab = useCallback((key) => {
     setActiveTab(key);
@@ -407,6 +464,8 @@ export default function App() {
         {/* ==================== 监控 Tab ==================== */}
         {activeTab === 'monitor' && (
           <>
+            <MonitorOverviewPanel />
+            <MonitorEventTimelinePanel events={monitorEvents} onClear={clearMonitorEvents} />
             <SubTabBar
               tabs={MONITOR_SUB_TABS}
               activeKey={monitorSubTab}
@@ -470,6 +529,7 @@ export default function App() {
                     <HyperMonitorPanel
                       address={item.address}
                       onHasNew={handleHyperHasNew}
+                      onMonitorEvent={handleMonitorEvent}
                       withLiquidationTab={false}
                     />
                   </View>
@@ -477,7 +537,7 @@ export default function App() {
               </>
             )}
             {monitorSubTab === 'market' && marketPanelMounted && (
-              <MarketMonitorPanel onHasNew={handleMarketHasNew} />
+              <MarketMonitorPanel onHasNew={handleMarketHasNew} onMonitorEvent={handleMonitorEvent} />
             )}
             {monitorSubTab === 'equity' && (
               <EquityCurvePanel />
@@ -493,7 +553,7 @@ export default function App() {
 
         {liqPanelMounted && (
           <View style={activeTab === 'monitor' && monitorSubTab === 'liquidation' ? undefined : styles.hidden}>
-            <LiquidationMonitorPanel onHasNew={handleLiqHasNew} />
+            <LiquidationMonitorPanel onHasNew={handleLiqHasNew} onMonitorEvent={handleMonitorEvent} />
           </View>
         )}
 
@@ -547,13 +607,19 @@ export default function App() {
       {hyperPanelMounted && !(activeTab === 'monitor' && monitorSubTab === 'hyper') && (
         <View style={styles.hidden}>
           {watchAddresses.map((item) => (
-            <HyperMonitorPanel key={item.address} address={item.address} onHasNew={handleHyperHasNew} withLiquidationTab={false} />
+            <HyperMonitorPanel
+              key={item.address}
+              address={item.address}
+              onHasNew={handleHyperHasNew}
+              onMonitorEvent={handleMonitorEvent}
+              withLiquidationTab={false}
+            />
           ))}
         </View>
       )}
       {marketPanelMounted && !(activeTab === 'monitor' && monitorSubTab === 'market') && (
         <View style={styles.hidden}>
-          <MarketMonitorPanel onHasNew={handleMarketHasNew} />
+          <MarketMonitorPanel onHasNew={handleMarketHasNew} onMonitorEvent={handleMonitorEvent} />
         </View>
       )}
 
@@ -629,6 +695,19 @@ function DashboardContent({ tradeSymbol }) {
   const activePositions = useMemo(() => {
     return positions.filter((p) => Math.abs(parseFloat(p.positionAmt || '0')) > 0);
   }, [positions]);
+
+  const riskDailyLosses = Number(riskStatus?.dailyLosses || 0);
+  const riskDailyMaxLosses = Number(riskStatus?.dailyMaxLosses || 0);
+  const riskDailyLossAmount = Number(riskStatus?.dailyLossAmount || 0);
+  const riskMaxDailyLossAmount = Number(riskStatus?.maxDailyLossAmount || 0);
+  const riskConditionLines = riskStatus?.enabled
+    ? [
+      riskDailyMaxLosses > 0 ? `亏损次数 >= ${riskDailyMaxLosses}` : '亏损次数：不限制',
+      riskMaxDailyLossAmount > 0
+        ? `累计亏损金额 >= ${riskMaxDailyLossAmount.toFixed(2)} U`
+        : '累计亏损金额：不限制',
+    ]
+    : ['风控未启用'];
 
   const handleUnlock = useCallback(async () => {
     try {
@@ -796,15 +875,24 @@ function DashboardContent({ tradeSymbol }) {
         {riskStatus ? (
           <View style={styles.riskRow}>
             <View style={styles.riskItem}>
-              <View style={[styles.riskDot, { backgroundColor: riskStatus.locked ? colors.red : colors.green }]} />
+              <View style={[styles.riskDot, {
+                backgroundColor: riskStatus.enabled === false ? colors.textMuted : (riskStatus.locked ? colors.red : colors.green),
+              }]}
+              />
               <Text style={styles.riskText}>
-                {riskStatus.locked ? '已锁定' : '正常'}
+                {riskStatus.enabled === false ? '未启用' : (riskStatus.locked ? '已锁定' : '正常')}
               </Text>
             </View>
             <View style={styles.riskItem}>
-              <Text style={styles.riskLabel}>今日亏损</Text>
+              <Text style={styles.riskLabel}>亏损次数</Text>
               <Text style={styles.riskText}>
-                {riskStatus.dailyLossCount || 0}/{riskStatus.dailyMaxLosses || 3}
+                {riskDailyLosses}/{riskDailyMaxLosses > 0 ? riskDailyMaxLosses : '∞'}
+              </Text>
+            </View>
+            <View style={styles.riskItem}>
+              <Text style={styles.riskLabel}>亏损金额</Text>
+              <Text style={styles.riskText}>
+                {riskDailyLossAmount.toFixed(2)}/{riskMaxDailyLossAmount > 0 ? riskMaxDailyLossAmount.toFixed(2) : '∞'} U
               </Text>
             </View>
             {riskStatus.locked && (
@@ -812,6 +900,15 @@ function DashboardContent({ tradeSymbol }) {
                 <Text style={styles.riskUnlockText}>解锁</Text>
               </TouchableOpacity>
             )}
+            {riskStatus.locked && riskStatus.lockReason ? (
+              <Text style={styles.riskReason}>原因: {riskStatus.lockReason}</Text>
+            ) : null}
+            <View style={styles.riskConditions}>
+              <Text style={styles.riskLabel}>风控条件</Text>
+              {riskConditionLines.map((line, idx) => (
+                <Text key={`risk-condition-${idx}`} style={styles.riskConditionText}>{line}</Text>
+              ))}
+            </View>
           </View>
         ) : (
           <Text style={styles.dashEmpty}>加载中...</Text>
@@ -1360,5 +1457,18 @@ const styles = StyleSheet.create({
     fontSize: fontSize.sm,
     fontWeight: '700',
     color: colors.orange,
+  },
+  riskReason: {
+    width: '100%',
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+  },
+  riskConditions: {
+    width: '100%',
+    gap: 2,
+  },
+  riskConditionText: {
+    fontSize: fontSize.xs,
+    color: colors.textSecondary,
   },
 });

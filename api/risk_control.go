@@ -9,9 +9,9 @@ import (
 
 // RiskConfig 风控配置
 type RiskConfig struct {
-	DailyMaxLosses    int     `json:"dailyMaxLosses"`    // 每日最大亏损次数，0=不限制
+	DailyMaxLosses     int     `json:"dailyMaxLosses"`     // 每日最大亏损次数，0=不限制
 	MaxDailyLossAmount float64 `json:"maxDailyLossAmount"` // 每日最大亏损金额(USDT)，0=不限制
-	Enabled           bool    `json:"enabled"`           // 是否启用风控
+	Enabled            bool    `json:"enabled"`            // 是否启用风控
 }
 
 // riskState 风控运行时状态
@@ -59,17 +59,14 @@ func CheckRisk() error {
 		return err
 	}
 
-	risk.mu.RLock()
-	defer risk.mu.RUnlock()
+	risk.mu.Lock()
+	defer risk.mu.Unlock()
 
 	if !risk.config.Enabled {
 		return nil
 	}
 
-	// 每日重置检查
-	if today() != risk.lastResetDay {
-		return nil
-	}
+	resetRiskForNewDayLocked()
 
 	if risk.locked {
 		RecordRiskTrigger("daily_loss")
@@ -88,14 +85,7 @@ func AddDailyPnl(pnl float64) {
 		return
 	}
 
-	// 跨日重置
-	if today() != risk.lastResetDay {
-		risk.dailyPnl = 0
-		risk.dailyLosses = 0
-		risk.dailyLossAmount = 0
-		risk.locked = false
-		risk.lockReason = ""
-		risk.lastResetDay = today()
+	if resetRiskForNewDayLocked() {
 		log.Println("[Risk] Daily reset for new day")
 	}
 
@@ -136,8 +126,12 @@ func AddDailyPnl(pnl float64) {
 
 // GetRiskStatus 获取当前风控状态
 func GetRiskStatus() map[string]interface{} {
-	risk.mu.RLock()
-	defer risk.mu.RUnlock()
+	risk.mu.Lock()
+	defer risk.mu.Unlock()
+
+	if risk.config.Enabled {
+		resetRiskForNewDayLocked()
+	}
 
 	return map[string]interface{}{
 		"enabled":            risk.config.Enabled,
@@ -158,6 +152,7 @@ func UnlockRisk() {
 	defer risk.mu.Unlock()
 	risk.locked = false
 	risk.lockReason = ""
+	risk.lockedAt = time.Time{}
 	log.Println("[Risk] Manually unlocked")
 }
 
@@ -204,4 +199,19 @@ func recoverDailyPnl() {
 
 func today() string {
 	return time.Now().Format("2006-01-02")
+}
+
+// resetRiskForNewDayLocked 跨日时重置日内统计；调用方需持有 risk.mu 锁。
+func resetRiskForNewDayLocked() bool {
+	if today() == risk.lastResetDay {
+		return false
+	}
+	risk.dailyPnl = 0
+	risk.dailyLosses = 0
+	risk.dailyLossAmount = 0
+	risk.locked = false
+	risk.lockReason = ""
+	risk.lockedAt = time.Time{}
+	risk.lastResetDay = today()
+	return true
 }
