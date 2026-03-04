@@ -35,6 +35,8 @@ const FILTERS = [
 ];
 
 const AUTO_REFRESH_MS = 45000;
+const STRONG_CONFIDENCE = 70;
+const MEDIUM_CONFIDENCE = 45;
 
 export default function RecommendPanel({ onNavigateToTrade }) {
   const [data, setData] = useState(null);
@@ -189,8 +191,8 @@ export default function RecommendPanel({ onNavigateToTrade }) {
           const sc = isLong ? C.long : C.short;
           const scBg = isLong ? C.longBg : C.shortBg;
           const conf = item.confidence;
-          const levelTag = conf >= 60 ? '强' : conf >= 35 ? '中' : '弱';
-          const levelColor = conf >= 60 ? sc : conf >= 35 ? C.neon : C.textDim;
+          const levelTag = conf >= STRONG_CONFIDENCE ? '强' : conf >= MEDIUM_CONFIDENCE ? '中' : '弱';
+          const levelColor = conf >= STRONG_CONFIDENCE ? sc : conf >= MEDIUM_CONFIDENCE ? C.neon : C.textDim;
 
           return (
             <View key={item.symbol + idx} style={[s.card, { borderLeftColor: sc }]}>

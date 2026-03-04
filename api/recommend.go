@@ -44,10 +44,23 @@ var recTimeframes = []recTimeframe{
 }
 
 const (
-	recMinTakeProfitDistancePct = 0.8
-	recFallbackTakeProfitPct    = 2.0
-	recMinRiskReward            = 1.2
+	recMinTakeProfitDistancePct = 1.2
+	recFallbackTakeProfitPct    = 3.0
+	recMinRiskReward            = 1.6
+	recMinConfidence            = 30
+	recStrongConfidence         = 70
+	recMediumConfidence         = 45
+	recConfirmRounds            = 2
+	recVolStrongRatio           = 2.0
+	recVolMediumRatio           = 1.5
+	recTrendStrength            = 1.0
+	recShortTrendStrength       = 0.6
+	recNearSRDistance           = 0.8
+	recStrongSRDistance         = 0.4
+	recFundingStrongThreshold   = 0.0003
 )
+
+const recSignalCooldown = 60 * time.Minute
 
 // ========== 数据结构 ==========
 
@@ -113,6 +126,13 @@ type recCache struct {
 	updatedAt time.Time
 }
 
+type recSignalState struct {
+	candidateDirection string
+	candidateCount     int
+	publishedDirection string
+	publishedAt        time.Time
+}
+
 var (
 	// recCaches[interval] → cache
 	recCaches      = map[string]*recCache{}
@@ -128,6 +148,8 @@ var (
 		resp      *RecommendResponse
 		updatedAt time.Time
 	}
+	recSignalStates   = map[string]*recSignalState{}
+	recSignalStatesMu sync.Mutex
 )
 
 func init() {
@@ -227,16 +249,58 @@ func refreshTimeframe(tf recTimeframe) {
 	log.Printf("[Recommend] %s refreshed %d symbols in %v", tf.interval, len(defaultScanSymbols), time.Since(start).Round(time.Millisecond))
 }
 
+func updateSignalState(symbol string, direction string, now time.Time) bool {
+	recSignalStatesMu.Lock()
+	defer recSignalStatesMu.Unlock()
+
+	state, ok := recSignalStates[symbol]
+	if !ok {
+		state = &recSignalState{}
+		recSignalStates[symbol] = state
+	}
+
+	if direction == "" {
+		state.candidateDirection = ""
+		state.candidateCount = 0
+		return false
+	}
+
+	if state.candidateDirection == direction {
+		state.candidateCount++
+	} else {
+		state.candidateDirection = direction
+		state.candidateCount = 1
+	}
+
+	if state.candidateCount < recConfirmRounds {
+		return false
+	}
+
+	if state.publishedDirection == direction && !state.publishedAt.IsZero() &&
+		now.Sub(state.publishedAt) < recSignalCooldown {
+		return false
+	}
+
+	state.publishedDirection = direction
+	state.publishedAt = now
+	return true
+}
+
 // rebuildFinalCache 汇总所有时间框架，生成最终推荐列表
 func rebuildFinalCache() {
 	sentimentCache.RLock()
 	sentiment := sentimentCache.data
 	sentimentCache.RUnlock()
 
+	now := time.Now()
 	var items []RecommendItem
 	for _, symbol := range defaultScanSymbols {
 		item := mergeTimeframes(symbol)
-		if item != nil {
+		if item == nil {
+			updateSignalState(symbol, "", now)
+			continue
+		}
+		if updateSignalState(symbol, item.Direction, now) {
 			items = append(items, *item)
 		}
 	}
@@ -251,13 +315,13 @@ func rebuildFinalCache() {
 	resp := &RecommendResponse{
 		Items:     items,
 		Sentiment: sentiment,
-		ScannedAt: time.Now().Format(time.RFC3339),
+		ScannedAt: now.Format(time.RFC3339),
 		Count:     len(items),
 	}
 
 	finalCache.Lock()
 	finalCache.resp = resp
-	finalCache.updatedAt = time.Now()
+	finalCache.updatedAt = now
 	finalCache.Unlock()
 
 	log.Printf("[Recommend] Final cache rebuilt: %d recommendations", len(items))
@@ -313,7 +377,8 @@ func handleRealtimeScan(c context.Context, ctx *app.RequestContext, symbols []st
 	sentiment := calcMarketSentiment()
 
 	type scanResult struct {
-		item *RecommendItem
+		symbol string
+		item   *RecommendItem
 	}
 	resultCh := make(chan scanResult, len(symbols))
 	sem := make(chan struct{}, 6)
@@ -330,14 +395,19 @@ func handleRealtimeScan(c context.Context, ctx *app.RequestContext, symbols []st
 			defer symCancel()
 
 			item := realtimeScanSymbol(symCtx, symbol)
-			resultCh <- scanResult{item: item}
+			resultCh <- scanResult{symbol: symbol, item: item}
 		}(sym)
 	}
 	go func() { wg.Wait(); close(resultCh) }()
 
+	now := time.Now()
 	var items []RecommendItem
 	for res := range resultCh {
-		if res.item != nil {
+		if res.item == nil {
+			updateSignalState(res.symbol, "", now)
+			continue
+		}
+		if updateSignalState(res.symbol, res.item.Direction, now) {
 			items = append(items, *res.item)
 		}
 	}
@@ -353,7 +423,7 @@ func handleRealtimeScan(c context.Context, ctx *app.RequestContext, symbols []st
 		"data": RecommendResponse{
 			Items:     items,
 			Sentiment: sentiment,
-			ScannedAt: time.Now().Format(time.RFC3339),
+			ScannedAt: now.Format(time.RFC3339),
 			Count:     len(items),
 		},
 	})
@@ -451,10 +521,10 @@ func analyzeTF(ctx context.Context, symbol string, tf recTimeframe) *tfSignal {
 		volRatio = volumes[lastIdx] / avgVol
 	}
 	sig.VolRatio = volRatio
-	if volRatio >= 1.5 {
+	if volRatio >= recVolStrongRatio {
 		volScore = 1.5
 		reasonParts = append(reasonParts, fmt.Sprintf("放量%.1fx", volRatio))
-	} else if volRatio >= 1.2 {
+	} else if volRatio >= recVolMediumRatio {
 		volScore = 0.8
 	}
 
@@ -479,8 +549,8 @@ func analyzeTF(ctx context.Context, symbol string, tf recTimeframe) *tfSignal {
 
 	// --- 趋势 ---
 	trendScore := 0.0
-	trend := detectTrend(closes, lastIdx, 10, 0.5)
-	shortTrend := detectTrend(closes, lastIdx, 5, 0.3)
+	trend := detectTrend(closes, lastIdx, 10, recTrendStrength)
+	shortTrend := detectTrend(closes, lastIdx, 5, recShortTrendStrength)
 	sig.Trend = trend
 
 	trendDir := ""
@@ -653,15 +723,15 @@ func mergeTimeframes(symbol string) *RecommendItem {
 			resistDist = math.Abs(srData.ClosestResist.Distance)
 		}
 
-		if direction == "LONG" && supportDist < 1.0 {
-			if supportDist < 0.5 && srData.ClosestSupport.Strength >= 2 {
+		if direction == "LONG" && supportDist < recNearSRDistance {
+			if supportDist < recStrongSRDistance && srData.ClosestSupport.Strength >= 2 {
 				srScore = 1.5
 				reasons = append(reasons, fmt.Sprintf("靠近强支撑 $%.2f", srData.ClosestSupport.Price))
 			} else {
 				srScore = 0.7
 			}
-		} else if direction == "SHORT" && resistDist < 1.0 {
-			if resistDist < 0.5 && srData.ClosestResist.Strength >= 2 {
+		} else if direction == "SHORT" && resistDist < recNearSRDistance {
+			if resistDist < recStrongSRDistance && srData.ClosestResist.Strength >= 2 {
 				srScore = 1.5
 				reasons = append(reasons, fmt.Sprintf("靠近强阻力 $%.2f", srData.ClosestResist.Price))
 			} else {
@@ -689,7 +759,7 @@ func mergeTimeframes(symbol string) *RecommendItem {
 
 	// 资金费率
 	if fr, err := fetchFundingRate(symbol); err == nil {
-		if (direction == "LONG" && fr < -0.0002) || (direction == "SHORT" && fr > 0.0002) {
+		if (direction == "LONG" && fr < -recFundingStrongThreshold) || (direction == "SHORT" && fr > recFundingStrongThreshold) {
 			fundingScore = 1.0
 			reasons = append(reasons, fmt.Sprintf("资金费率支持 (%.4f%%)", fr*100))
 		} else if (direction == "LONG" && fr < 0) || (direction == "SHORT" && fr > 0) {
@@ -734,7 +804,7 @@ func mergeTimeframes(symbol string) *RecommendItem {
 		confidence = int(math.Min(100, float64(confidence)*1.05))
 	}
 
-	if confidence < 15 || len(reasons) == 0 {
+	if confidence < recMinConfidence || len(reasons) == 0 {
 		return nil
 	}
 
@@ -1123,7 +1193,7 @@ func analyzePosition(ctx context.Context, p posInfo) *PositionAnalysis {
 
 	switch {
 	// AI 方向与持仓一致
-	case sameDir && rec.Confidence >= 60:
+	case sameDir && rec.Confidence >= recStrongConfidence:
 		if pnlPct > 10 {
 			pa.Advice = "take_profit"
 			pa.AdviceLabel = "强信号一致但浮盈较大，考虑部分止盈"
@@ -1137,7 +1207,7 @@ func analyzePosition(ctx context.Context, p posInfo) *PositionAnalysis {
 			pa.AdviceLabel = "信号一致，继续持有等待回本"
 			pa.Reasons = append(pa.Reasons, "AI方向与持仓一致，耐心等待")
 		}
-	case sameDir && rec.Confidence >= 35:
+	case sameDir && rec.Confidence >= recMediumConfidence:
 		if pnlPct > 15 {
 			pa.Advice = "take_profit"
 			pa.AdviceLabel = "浮盈丰厚，建议止盈"
@@ -1151,7 +1221,7 @@ func analyzePosition(ctx context.Context, p posInfo) *PositionAnalysis {
 		pa.AdviceLabel = "弱信号一致，谨慎持有"
 
 	// AI 方向与持仓相反
-	case !sameDir && rec.Confidence >= 60:
+	case !sameDir && rec.Confidence >= recStrongConfidence:
 		if pnlPct < -5 {
 			pa.Advice = "close"
 			pa.AdviceLabel = "强反向信号 + 亏损，建议平仓"
@@ -1165,7 +1235,7 @@ func analyzePosition(ctx context.Context, p posInfo) *PositionAnalysis {
 			pa.AdviceLabel = "反向信号出现，建议止盈离场"
 			pa.Reasons = append(pa.Reasons, fmt.Sprintf("AI转向%s(置信度%d%%)，建议锁定利润", rec.Direction, rec.Confidence))
 		}
-	case !sameDir && rec.Confidence >= 35:
+	case !sameDir && rec.Confidence >= recMediumConfidence:
 		if pnlPct < -8 {
 			pa.Advice = "stop_loss"
 			pa.AdviceLabel = "反向信号 + 较大亏损，建议止损"
