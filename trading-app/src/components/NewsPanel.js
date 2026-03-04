@@ -271,11 +271,12 @@ function normalizeFeedDisplayName(key, name) {
   return n || key;
 }
 
-function formatTime(pubDate) {
+function formatTime(pubDate, { withYear = false } = {}) {
   if (!pubDate) return '-';
   const date = new Date(pubDate);
   if (Number.isNaN(date.getTime())) return pubDate;
   return date.toLocaleString('zh-CN', {
+    ...(withYear ? { year: 'numeric' } : {}),
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -1252,7 +1253,7 @@ export default function NewsPanel({ onHasNew }) {
     if (!selected || !selectedHasHtml) return '';
     return buildArticleHtml(
       getDisplayTitle(selected, true),
-      formatTime(selected.pubDate),
+      formatTime(selected.pubDate, { withYear: true }),
       selected.summary,
       selected.link,
     );
@@ -1335,7 +1336,7 @@ export default function NewsPanel({ onHasNew }) {
             {selected ? (
               <>
                 <Text style={styles.modalTitle}>{getDisplayTitle(selected, showSourceLang)}</Text>
-                <Text style={styles.modalTime}>{formatTime(selected.pubDate)}</Text>
+                <Text style={styles.modalTime}>{formatTime(selected.pubDate, { withYear: true })}</Text>
                 <ScrollView style={styles.modalBody}>
                   <Text style={styles.modalSummary}>{getDisplaySummary(selected, showSourceLang)}</Text>
                 </ScrollView>
@@ -1473,7 +1474,7 @@ export default function NewsPanel({ onHasNew }) {
           {!showSourceLang && selectedHasTranslation ? (
             <ScrollView style={styles.articleTranslatedWrap} contentContainerStyle={styles.articleTranslatedContent}>
               <Text style={styles.articleTranslatedTitle}>{getDisplayTitle(selected, false)}</Text>
-              <Text style={styles.articleTranslatedTime}>{formatTime(selected?.pubDate)}</Text>
+              <Text style={styles.articleTranslatedTime}>{formatTime(selected?.pubDate, { withYear: true })}</Text>
               <Text style={styles.articleTranslatedSummary}>{getDisplaySummary(selected, false)}</Text>
             </ScrollView>
           ) : articleHtml ? (
