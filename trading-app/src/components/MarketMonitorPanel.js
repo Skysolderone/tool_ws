@@ -22,6 +22,19 @@ const DEFAULT_SYMBOL = 'BTCUSDT';
 const DEFAULT_THRESHOLD = 100000;
 const DEFAULT_SPIKE_THRESHOLD_PCT = 1.5;
 const DEFAULT_SPIKE_WINDOW_SEC = 30;
+const DEFAULT_RANGE_COOLDOWN_SEC = 10;
+const DEFAULT_RANGE_SUPPRESS_SEC = 60;
+const DEFAULT_SPIKE_COOLDOWN_SEC = 15;
+const DEFAULT_SPIKE_SUPPRESS_SEC = 60;
+const DEFAULT_SPIKE_WARN_Q = 95;
+const DEFAULT_SPIKE_CRITICAL_Q = 99;
+const DEFAULT_SPIKE_MIN_SAMPLES = 40;
+const DEFAULT_NOTIFY_CONFIG = Object.freeze({
+  warnPopup: false,
+  warnVibrate: false,
+  criticalPopup: true,
+  criticalVibrate: true,
+});
 
 function toNum(v) {
   const n = Number(v);
@@ -47,7 +60,7 @@ function fmtPct(v) {
   return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
 }
 
-export default function MarketMonitorPanel({ onHasNew }) {
+export default function MarketMonitorPanel({ onHasNew, onMonitorEvent, notifyConfig }) {
   const [symbolInput, setSymbolInput] = useState(DEFAULT_SYMBOL);
   const [thresholdInput, setThresholdInput] = useState(String(DEFAULT_THRESHOLD));
   const [symbol, setSymbol] = useState(DEFAULT_SYMBOL);
@@ -59,6 +72,8 @@ export default function MarketMonitorPanel({ onHasNew }) {
   const [alertSymbolInput, setAlertSymbolInput] = useState(DEFAULT_SYMBOL);
   const [alertLowerInput, setAlertLowerInput] = useState('');
   const [alertUpperInput, setAlertUpperInput] = useState('');
+  const [alertCooldownInput, setAlertCooldownInput] = useState(String(DEFAULT_RANGE_COOLDOWN_SEC));
+  const [alertSuppressInput, setAlertSuppressInput] = useState(String(DEFAULT_RANGE_SUPPRESS_SEC));
   const [alerts, setAlerts] = useState([]);
   const [alertLogs, setAlertLogs] = useState([]);
   const [alertWsConnected, setAlertWsConnected] = useState(false);
@@ -66,6 +81,12 @@ export default function MarketMonitorPanel({ onHasNew }) {
   const [spikeSymbolInput, setSpikeSymbolInput] = useState(DEFAULT_SYMBOL);
   const [spikeThresholdInput, setSpikeThresholdInput] = useState(String(DEFAULT_SPIKE_THRESHOLD_PCT));
   const [spikeWindowInput, setSpikeWindowInput] = useState(String(DEFAULT_SPIKE_WINDOW_SEC));
+  const [spikeCooldownInput, setSpikeCooldownInput] = useState(String(DEFAULT_SPIKE_COOLDOWN_SEC));
+  const [spikeSuppressInput, setSpikeSuppressInput] = useState(String(DEFAULT_SPIKE_SUPPRESS_SEC));
+  const [spikeDynamicEnabled, setSpikeDynamicEnabled] = useState(true);
+  const [spikeWarnQInput, setSpikeWarnQInput] = useState(String(DEFAULT_SPIKE_WARN_Q));
+  const [spikeCriticalQInput, setSpikeCriticalQInput] = useState(String(DEFAULT_SPIKE_CRITICAL_Q));
+  const [spikeMinSamplesInput, setSpikeMinSamplesInput] = useState(String(DEFAULT_SPIKE_MIN_SAMPLES));
   const [spikeRules, setSpikeRules] = useState([]);
   const [spikeLogs, setSpikeLogs] = useState([]);
   const [spikeWsConnected, setSpikeWsConnected] = useState(false);
@@ -81,10 +102,54 @@ export default function MarketMonitorPanel({ onHasNew }) {
   const spikeSnapshotTimerRef = useRef(null);
   const mountedRef = useRef(false);
   const onHasNewRef = useRef(onHasNew);
+  const onMonitorEventRef = useRef(onMonitorEvent);
+  const notifyConfigRef = useRef(notifyConfig);
 
   useEffect(() => {
     onHasNewRef.current = onHasNew;
   }, [onHasNew]);
+
+  useEffect(() => {
+    onMonitorEventRef.current = onMonitorEvent;
+  }, [onMonitorEvent]);
+
+  useEffect(() => {
+    notifyConfigRef.current = notifyConfig;
+  }, [notifyConfig]);
+
+  const resolveNotifyPolicy = useCallback((severity) => {
+    const config = {
+      ...DEFAULT_NOTIFY_CONFIG,
+      ...(notifyConfigRef.current || {}),
+    };
+    if (severity === 'critical') {
+      return {
+        popup: !!config.criticalPopup,
+        vibrate: !!config.criticalVibrate,
+      };
+    }
+    if (severity === 'warn') {
+      return {
+        popup: !!config.warnPopup,
+        vibrate: !!config.warnVibrate,
+      };
+    }
+    return { popup: false, vibrate: false };
+  }, []);
+
+  const emitMonitorEvent = useCallback((evt = {}) => {
+    onMonitorEventRef.current?.({
+      eventId: evt.eventId || `market::${evt.type || 'event'}::${evt.symbol || '-'}::${evt.ts || Date.now()}`,
+      ts: toNum(evt.ts || Date.now()),
+      source: 'market',
+      severity: evt.severity || 'info',
+      symbol: evt.symbol || '',
+      strategyId: evt.strategyId || '',
+      type: evt.type || 'event',
+      message: evt.message || '',
+      payload: evt.payload || {},
+    });
+  }, []);
 
   const applyBigConfig = useCallback(() => {
     const sym = symbolInput.trim().toUpperCase();
@@ -167,6 +232,15 @@ export default function MarketMonitorPanel({ onHasNew }) {
           time: toNum(msg.t || Date.now()),
         };
         onHasNewRef.current?.(true);
+        emitMonitorEvent({
+          eventId: `market::big_trade::${evt.id}`,
+          ts: evt.time,
+          severity: evt.notional >= threshold * 2 ? 'warn' : 'info',
+          symbol: evt.symbol,
+          type: 'big_trade',
+          message: `${evt.symbol} ${evt.side} 大单 $${fmtUsd(evt.notional)}`,
+          payload: evt,
+        });
         setBigEvents((prev) => [evt, ...prev].slice(0, 150));
       };
 
@@ -195,7 +269,7 @@ export default function MarketMonitorPanel({ onHasNew }) {
         bigWsRef.current = null;
       }
     };
-  }, [symbol, threshold]);
+  }, [emitMonitorEvent, symbol, threshold]);
 
   const bigSummary = useMemo(() => {
     const recent = bigEvents.slice(0, 80);
@@ -260,18 +334,38 @@ export default function MarketMonitorPanel({ onHasNew }) {
         }
         if (msg.type === 'event' && msg.event) {
           const event = msg.event;
+          const eventSeverityRaw = String(event.severity || 'warn').toLowerCase();
+          const eventSeverity = eventSeverityRaw === 'critical' ? 'critical' : eventSeverityRaw === 'warn' ? 'warn' : 'info';
           onHasNewRef.current?.(true);
-          Vibration.vibrate(180);
+          emitMonitorEvent({
+            eventId: `market::range_break::${event.id || `${event.ruleId}-${event.time}`}`,
+            ts: toNum(event.time || Date.now()),
+            severity: eventSeverity,
+            symbol: String(event.symbol || '').toUpperCase(),
+            strategyId: event.ruleId ? `range:${event.ruleId}` : 'range',
+            type: 'range_break',
+            message: `${event.symbol} ${event.direction} 区间 ${event.lower}-${event.upper} 当前 ${toNum(event.price).toFixed(4)}`,
+            payload: {
+              ...event,
+              suppressSec: toNum(event.suppressSec || DEFAULT_RANGE_SUPPRESS_SEC),
+            },
+          });
+          const notify = resolveNotifyPolicy(eventSeverity);
+          if (notify.vibrate) {
+            Vibration.vibrate(eventSeverity === 'critical' ? [0, 220, 120, 220] : 180);
+          }
           setAlertLogs((prev) => [event, ...prev].slice(0, 60));
           setAlerts((prev) => prev.map((r) => (
             r.id === event.ruleId
               ? { ...r, lastPrice: toNum(event.price), lastInside: false, lastTriggerAt: toNum(event.time) }
               : r
           )));
-          Alert.alert(
-            '价格预警触发',
-            `${event.symbol} ${event.direction}\n区间 ${event.lower} - ${event.upper}\n当前 ${toNum(event.price).toFixed(4)}`,
-          );
+          if (notify.popup) {
+            Alert.alert(
+              `价格预警触发（${eventSeverity.toUpperCase()}）`,
+              `${event.symbol} ${event.direction}\n区间 ${event.lower} - ${event.upper}\n当前 ${toNum(event.price).toFixed(4)}\n抑制 ${toNum(event.suppressSec || DEFAULT_RANGE_SUPPRESS_SEC)}s`,
+            );
+          }
           return;
         }
         if (msg.type === 'error') {
@@ -311,7 +405,7 @@ export default function MarketMonitorPanel({ onHasNew }) {
         alertWsRef.current = null;
       }
     };
-  }, [sendAlertWs]);
+  }, [emitMonitorEvent, resolveNotifyPolicy, sendAlertWs]);
 
   const sendSpikeWs = useCallback((payload) => {
     const ws = spikeWsRef.current;
@@ -357,18 +451,40 @@ export default function MarketMonitorPanel({ onHasNew }) {
         }
         if (msg.type === 'event' && msg.event) {
           const event = msg.event;
+          const eventSeverityRaw = String(event.severity || 'warn').toLowerCase();
+          const eventSeverity = eventSeverityRaw === 'critical' ? 'critical' : eventSeverityRaw === 'warn' ? 'warn' : 'info';
+          const triggerPct = toNum(event.triggerPct || event.thresholdPct);
+          const dynamicTag = event.dynamic ? '动态' : '静态';
           onHasNewRef.current?.(true);
-          Vibration.vibrate(220);
+          emitMonitorEvent({
+            eventId: `market::spike::${event.id || `${event.ruleId}-${event.time}`}`,
+            ts: toNum(event.time || Date.now()),
+            severity: eventSeverity,
+            symbol: String(event.symbol || '').toUpperCase(),
+            strategyId: event.ruleId ? `spike:${event.ruleId}` : 'spike',
+            type: 'market_spike',
+            message: `${event.symbol} ${event.direction} ${fmtPct(event.movePct)} | ${event.windowSec}s | ${dynamicTag}阈值 ${triggerPct.toFixed(2)}%`,
+            payload: {
+              ...event,
+              suppressSec: toNum(event.suppressSec || DEFAULT_SPIKE_SUPPRESS_SEC),
+            },
+          });
+          const notify = resolveNotifyPolicy(eventSeverity);
+          if (notify.vibrate) {
+            Vibration.vibrate(eventSeverity === 'critical' ? [0, 220, 120, 220] : 180);
+          }
           setSpikeLogs((prev) => [event, ...prev].slice(0, 80));
           setSpikeRules((prev) => prev.map((r) => (
             r.id === event.ruleId
               ? { ...r, lastPrice: toNum(event.price), lastMovePct: toNum(event.movePct), lastTriggerAt: toNum(event.time) }
               : r
           )));
-          Alert.alert(
-            '突发波动预警',
-            `${event.symbol} ${event.direction} ${fmtPct(event.movePct)}\n窗口 ${event.windowSec}s 阈值 ${event.thresholdPct}%\n基准 ${toNum(event.basePrice).toFixed(4)} 当前 ${toNum(event.price).toFixed(4)}`,
-          );
+          if (notify.popup) {
+            Alert.alert(
+              `突发波动预警（${eventSeverity.toUpperCase()}）`,
+              `${event.symbol} ${event.direction} ${fmtPct(event.movePct)}\n窗口 ${event.windowSec}s ${dynamicTag}阈值 ${triggerPct.toFixed(2)}%\n基准 ${toNum(event.basePrice).toFixed(4)} 当前 ${toNum(event.price).toFixed(4)}\n抑制 ${toNum(event.suppressSec || DEFAULT_SPIKE_SUPPRESS_SEC)}s`,
+            );
+          }
           return;
         }
         if (msg.type === 'error') {
@@ -408,12 +524,14 @@ export default function MarketMonitorPanel({ onHasNew }) {
         spikeWsRef.current = null;
       }
     };
-  }, [sendSpikeWs]);
+  }, [emitMonitorEvent, resolveNotifyPolicy, sendSpikeWs]);
 
   const addAlert = useCallback(() => {
     const symbolUpper = alertSymbolInput.trim().toUpperCase();
     const lower = toNum(alertLowerInput);
     const upper = toNum(alertUpperInput);
+    const cooldownSec = Math.round(toNum(alertCooldownInput));
+    const suppressSec = Math.round(toNum(alertSuppressInput));
     if (!symbolUpper) {
       Alert.alert('参数错误', '请输入预警交易对');
       return;
@@ -422,12 +540,21 @@ export default function MarketMonitorPanel({ onHasNew }) {
       Alert.alert('参数错误', '请填写有效区间，且下限 < 上限');
       return;
     }
+    if (!Number.isFinite(cooldownSec) || cooldownSec < 5 || cooldownSec > 600) {
+      Alert.alert('参数错误', '冷却时间请填写 5~600 秒');
+      return;
+    }
+    if (!Number.isFinite(suppressSec) || suppressSec < 10 || suppressSec > 1800) {
+      Alert.alert('参数错误', '抑制时间请填写 10~1800 秒');
+      return;
+    }
     const ok = sendAlertWs({
       action: 'addRule',
       symbol: symbolUpper,
       lower,
       upper,
-      cooldownSec: 10,
+      cooldownSec,
+      suppressSec,
       enabled: true,
     });
     if (!ok) {
@@ -437,12 +564,17 @@ export default function MarketMonitorPanel({ onHasNew }) {
     setAlertSymbolInput(symbolUpper);
     setAlertLowerInput('');
     setAlertUpperInput('');
-  }, [alertLowerInput, alertSymbolInput, alertUpperInput, sendAlertWs]);
+  }, [alertCooldownInput, alertLowerInput, alertSuppressInput, alertSymbolInput, alertUpperInput, sendAlertWs]);
 
   const addSpikeRule = useCallback(() => {
     const symbolUpper = spikeSymbolInput.trim().toUpperCase();
     const thresholdPct = toNum(spikeThresholdInput);
     const windowSec = toNum(spikeWindowInput);
+    const cooldownSec = Math.round(toNum(spikeCooldownInput));
+    const suppressSec = Math.round(toNum(spikeSuppressInput));
+    const warnQuantile = toNum(spikeWarnQInput);
+    const criticalQuantile = toNum(spikeCriticalQInput);
+    const minSamples = Math.round(toNum(spikeMinSamplesInput));
     if (!symbolUpper) {
       Alert.alert('参数错误', '请输入预警交易对');
       return;
@@ -455,19 +587,57 @@ export default function MarketMonitorPanel({ onHasNew }) {
       Alert.alert('参数错误', '窗口请填写 5~3600 秒');
       return;
     }
+    if (!Number.isFinite(cooldownSec) || cooldownSec < 5 || cooldownSec > 600) {
+      Alert.alert('参数错误', '冷却时间请填写 5~600 秒');
+      return;
+    }
+    if (!Number.isFinite(suppressSec) || suppressSec < 10 || suppressSec > 1800) {
+      Alert.alert('参数错误', '抑制时间请填写 10~1800 秒');
+      return;
+    }
+    if (spikeDynamicEnabled) {
+      if (!Number.isFinite(warnQuantile) || warnQuantile < 50 || warnQuantile > 99.9) {
+        Alert.alert('参数错误', '动态警告分位请填写 50~99.9');
+        return;
+      }
+      if (!Number.isFinite(criticalQuantile) || criticalQuantile < warnQuantile || criticalQuantile > 99.9) {
+        Alert.alert('参数错误', '动态危险分位需 >= 警告分位，且不超过 99.9');
+        return;
+      }
+      if (!Number.isFinite(minSamples) || minSamples < 10 || minSamples > 500) {
+        Alert.alert('参数错误', '最小样本请填写 10~500');
+        return;
+      }
+    }
     const ok = sendSpikeWs({
       action: 'addRule',
       symbol: symbolUpper,
       thresholdPct,
       windowSec: Math.round(windowSec),
-      cooldownSec: 15,
+      cooldownSec,
+      suppressSec,
+      dynamic: spikeDynamicEnabled,
+      warnQuantile,
+      criticalQuantile,
+      minSamples,
       enabled: true,
     });
     if (!ok) {
       Alert.alert('连接异常', '后端突发监控未连接，请稍后重试');
       return;
     }
-  }, [sendSpikeWs, spikeSymbolInput, spikeThresholdInput, spikeWindowInput]);
+  }, [
+    sendSpikeWs,
+    spikeCooldownInput,
+    spikeCriticalQInput,
+    spikeDynamicEnabled,
+    spikeMinSamplesInput,
+    spikeSuppressInput,
+    spikeSymbolInput,
+    spikeThresholdInput,
+    spikeWarnQInput,
+    spikeWindowInput,
+  ]);
 
   const toggleSpikeRule = useCallback((id) => {
     if (!sendSpikeWs({ action: 'toggleRule', id })) {
@@ -583,6 +753,24 @@ export default function MarketMonitorPanel({ onHasNew }) {
             <Text style={styles.applyText}>添加</Text>
           </TouchableOpacity>
         </View>
+        <View style={[styles.inputRow, styles.subInputRow]}>
+          <TextInput
+            style={styles.input}
+            value={alertCooldownInput}
+            onChangeText={(v) => setAlertCooldownInput(v.replace(/[^0-9]/g, ''))}
+            placeholder="冷却秒 5-600"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="number-pad"
+          />
+          <TextInput
+            style={styles.input}
+            value={alertSuppressInput}
+            onChangeText={(v) => setAlertSuppressInput(v.replace(/[^0-9]/g, ''))}
+            placeholder="抑制秒 10-1800"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="number-pad"
+          />
+        </View>
         <Text style={styles.hint}>
           后端监控: {alertWsConnected ? '在线' : '重连中'} | 突破区间触发提醒，可同时监控多个币种。
         </Text>
@@ -597,6 +785,9 @@ export default function MarketMonitorPanel({ onHasNew }) {
                 <Text style={styles.rowSub}>最新价: {rule.lastPrice ? rule.lastPrice.toFixed(4) : '--'}</Text>
               </View>
               <Text style={styles.rowSub}>区间: {rule.lower} - {rule.upper}</Text>
+              <Text style={styles.rowSub}>
+                冷却 {toNum(rule.cooldownSec || DEFAULT_RANGE_COOLDOWN_SEC)}s | 抑制 {toNum(rule.suppressSec || DEFAULT_RANGE_SUPPRESS_SEC)}s
+              </Text>
               <View style={styles.opsRow}>
                 <TouchableOpacity
                   style={[styles.smallBtn, rule.enabled ? styles.enableBtn : styles.disableBtn]}
@@ -619,7 +810,7 @@ export default function MarketMonitorPanel({ onHasNew }) {
           ) : (
             alertLogs.slice(0, 20).map((log) => (
               <Text key={log.id} style={styles.logText}>
-                {fmtTime(log.time)} {log.symbol} {log.direction} {log.lower}-{log.upper} 当前 {log.price.toFixed(4)}
+                {fmtTime(log.time)} {String(log.severity || 'warn').toUpperCase()} {log.symbol} {log.direction} {log.lower}-{log.upper} 当前 {log.price.toFixed(4)}
               </Text>
             ))
           )}
@@ -657,6 +848,65 @@ export default function MarketMonitorPanel({ onHasNew }) {
             <Text style={styles.applyText}>添加</Text>
           </TouchableOpacity>
         </View>
+        <View style={[styles.inputRow, styles.subInputRow]}>
+          <TextInput
+            style={styles.input}
+            value={spikeCooldownInput}
+            onChangeText={(v) => setSpikeCooldownInput(v.replace(/[^0-9]/g, ''))}
+            placeholder="冷却秒 5-600"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="number-pad"
+          />
+          <TextInput
+            style={styles.input}
+            value={spikeSuppressInput}
+            onChangeText={(v) => setSpikeSuppressInput(v.replace(/[^0-9]/g, ''))}
+            placeholder="抑制秒 10-1800"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="number-pad"
+          />
+        </View>
+        <View style={styles.modeRow}>
+          <Text style={styles.modeLabel}>阈值模式</Text>
+          <TouchableOpacity
+            style={[styles.modeBtn, spikeDynamicEnabled && styles.modeBtnActive]}
+            onPress={() => setSpikeDynamicEnabled(true)}
+          >
+            <Text style={[styles.modeText, spikeDynamicEnabled && styles.modeTextActive]}>动态</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.modeBtn, !spikeDynamicEnabled && styles.modeBtnActive]}
+            onPress={() => setSpikeDynamicEnabled(false)}
+          >
+            <Text style={[styles.modeText, !spikeDynamicEnabled && styles.modeTextActive]}>静态</Text>
+          </TouchableOpacity>
+        </View>
+        {spikeDynamicEnabled ? (
+          <View style={[styles.inputRow, styles.subInputRow]}>
+            <TextInput
+              style={styles.input}
+              value={spikeWarnQInput}
+              onChangeText={(v) => setSpikeWarnQInput(v.replace(/[^0-9.]/g, ''))}
+              placeholder="警告分位 50-99.9"
+              placeholderTextColor={colors.textMuted}
+            />
+            <TextInput
+              style={styles.input}
+              value={spikeCriticalQInput}
+              onChangeText={(v) => setSpikeCriticalQInput(v.replace(/[^0-9.]/g, ''))}
+              placeholder="危险分位 50-99.9"
+              placeholderTextColor={colors.textMuted}
+            />
+            <TextInput
+              style={styles.input}
+              value={spikeMinSamplesInput}
+              onChangeText={(v) => setSpikeMinSamplesInput(v.replace(/[^0-9]/g, ''))}
+              placeholder="最小样本 10-500"
+              placeholderTextColor={colors.textMuted}
+              keyboardType="number-pad"
+            />
+          </View>
+        ) : null}
         <Text style={styles.hint}>
           后端监控: {spikeWsConnected ? '在线' : '重连中'} | 在指定秒数窗口内涨跌幅超过阈值时触发预警。
         </Text>
@@ -672,7 +922,17 @@ export default function MarketMonitorPanel({ onHasNew }) {
                   最新价: {rule.lastPrice ? rule.lastPrice.toFixed(4) : '--'} | 窗口变动: {fmtPct(rule.lastMovePct)}
                 </Text>
               </View>
-              <Text style={styles.rowSub}>条件: {rule.windowSec}s 内 {rule.thresholdPct}% 以上波动</Text>
+              <Text style={styles.rowSub}>
+                条件: {rule.windowSec}s 内 {rule.dynamic ? '动态阈值' : `${rule.thresholdPct}%`} 以上波动
+              </Text>
+              <Text style={styles.rowSub}>
+                模式: {rule.dynamic ? '动态分位' : '静态阈值'} | 冷却 {toNum(rule.cooldownSec || DEFAULT_SPIKE_COOLDOWN_SEC)}s | 抑制 {toNum(rule.suppressSec || DEFAULT_SPIKE_SUPPRESS_SEC)}s
+              </Text>
+              {rule.dynamic ? (
+                <Text style={styles.rowSub}>
+                  分位: warn {toNum(rule.warnQuantile || DEFAULT_SPIKE_WARN_Q).toFixed(1)} / critical {toNum(rule.criticalQuantile || DEFAULT_SPIKE_CRITICAL_Q).toFixed(1)} | 最小样本 {toNum(rule.minSamples || DEFAULT_SPIKE_MIN_SAMPLES)}
+                </Text>
+              ) : null}
               <View style={styles.opsRow}>
                 <TouchableOpacity
                   style={[styles.smallBtn, rule.enabled ? styles.enableBtn : styles.disableBtn]}
@@ -694,7 +954,7 @@ export default function MarketMonitorPanel({ onHasNew }) {
           ) : (
             spikeLogs.slice(0, 20).map((log) => (
               <Text key={log.id} style={styles.logText}>
-                {fmtTime(log.time)} {log.symbol} {log.direction} {fmtPct(log.movePct)} | {log.windowSec}s 阈值 {log.thresholdPct}%
+                {fmtTime(log.time)} {String(log.severity || 'warn').toUpperCase()} {log.symbol} {log.direction} {fmtPct(log.movePct)} | {log.windowSec}s {log.dynamic ? '动态' : '静态'}阈值 {toNum(log.triggerPct || log.thresholdPct).toFixed(2)}%
               </Text>
             ))
           )}
@@ -738,6 +998,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.xs,
   },
+  subInputRow: {
+    marginTop: spacing.xs,
+  },
   input: {
     flex: 1,
     backgroundColor: colors.cardAlt,
@@ -761,6 +1024,37 @@ const styles = StyleSheet.create({
     color: colors.goldLight,
     fontSize: fontSize.sm,
     fontWeight: '700',
+  },
+  modeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+  },
+  modeLabel: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    minWidth: 52,
+  },
+  modeBtn: {
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    borderRadius: radius.pill,
+    backgroundColor: colors.cardAlt,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+  },
+  modeBtnActive: {
+    borderColor: colors.blue,
+    backgroundColor: colors.blueBg,
+  },
+  modeText: {
+    color: colors.textSecondary,
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+  },
+  modeTextActive: {
+    color: colors.blueLight,
   },
   hint: {
     color: colors.textMuted,

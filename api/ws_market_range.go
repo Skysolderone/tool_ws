@@ -18,6 +18,9 @@ const (
 	marketRangeDefaultCooldownSec = 10
 	marketRangeMinCooldownSec     = 5
 	marketRangeMaxCooldownSec     = 600
+	marketRangeDefaultSuppressSec = 60
+	marketRangeMinSuppressSec     = 10
+	marketRangeMaxSuppressSec     = 1800
 	marketRangeRulesPersistFile   = "market_range_rules.json"
 
 	marketRangeReconnectBase = time.Second
@@ -29,6 +32,7 @@ type marketRangeRule struct {
 	Lower         float64 `json:"lower"`
 	Upper         float64 `json:"upper"`
 	CooldownSec   int     `json:"cooldownSec"`
+	SuppressSec   int     `json:"suppressSec"`
 	Enabled       bool    `json:"enabled"`
 	LastPrice     float64 `json:"lastPrice"`
 	LastInside    *bool   `json:"lastInside"`
@@ -37,14 +41,16 @@ type marketRangeRule struct {
 }
 
 type marketRangeEvent struct {
-	ID        string  `json:"id"`
-	RuleID    string  `json:"ruleId"`
-	Symbol    string  `json:"symbol"`
-	Direction string  `json:"direction"` // 上破 / 下破
-	Lower     float64 `json:"lower"`
-	Upper     float64 `json:"upper"`
-	Price     float64 `json:"price"`
-	Time      int64   `json:"time"`
+	ID          string  `json:"id"`
+	RuleID      string  `json:"ruleId"`
+	Symbol      string  `json:"symbol"`
+	Direction   string  `json:"direction"` // 上破 / 下破
+	Severity    string  `json:"severity"`
+	SuppressSec int     `json:"suppressSec"`
+	Lower       float64 `json:"lower"`
+	Upper       float64 `json:"upper"`
+	Price       float64 `json:"price"`
+	Time        int64   `json:"time"`
 }
 
 type marketRangePayload struct {
@@ -62,6 +68,8 @@ type marketRangeSession struct {
 
 	mu    sync.Mutex
 	rules map[string]*marketRangeRule
+
+	lastSuppressed map[string]int64
 }
 
 type marketRangeRoom struct {
@@ -110,8 +118,9 @@ func handleWsMarketRange(w http.ResponseWriter, r *http.Request) {
 
 func (h *marketRangeHub) addSession(client *wsClient) *marketRangeSession {
 	session := &marketRangeSession{
-		client: client,
-		rules:  make(map[string]*marketRangeRule),
+		client:         client,
+		rules:          make(map[string]*marketRangeRule),
+		lastSuppressed: make(map[string]int64),
 	}
 	if err := h.restoreSessionRules(session); err != nil {
 		log.Printf("[WsRange] Restore rules failed: %v", err)
@@ -328,6 +337,7 @@ func cloneRangeRule(rule *marketRangeRule) marketRangeRule {
 		Lower:         rule.Lower,
 		Upper:         rule.Upper,
 		CooldownSec:   rule.CooldownSec,
+		SuppressSec:   rule.SuppressSec,
 		Enabled:       rule.Enabled,
 		LastPrice:     rule.LastPrice,
 		LastTriggerAt: rule.LastTriggerAt,
@@ -393,6 +403,7 @@ func (h *marketRangeHub) restoreSessionRules(session *marketRangeSession) error 
 			Lower:         item.Lower,
 			Upper:         item.Upper,
 			CooldownSec:   sanitizeRangeCooldownSec(item.CooldownSec),
+			SuppressSec:   sanitizeRangeSuppressSec(item.SuppressSec),
 			Enabled:       item.Enabled,
 			LastPrice:     item.LastPrice,
 			LastTriggerAt: item.LastTriggerAt,
@@ -433,11 +444,27 @@ func sanitizeRangeCooldownSec(v int) int {
 	return v
 }
 
+func sanitizeRangeSuppressSec(v int) int {
+	if v <= 0 {
+		return marketRangeDefaultSuppressSec
+	}
+	if v < marketRangeMinSuppressSec {
+		return marketRangeMinSuppressSec
+	}
+	if v > marketRangeMaxSuppressSec {
+		return marketRangeMaxSuppressSec
+	}
+	return v
+}
+
 func (s *marketRangeSession) upsertRule(rule marketRangeRule) (subscribe []string, unsubscribe []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	before := s.enabledSymbolsLocked()
+
+	rule.CooldownSec = sanitizeRangeCooldownSec(rule.CooldownSec)
+	rule.SuppressSec = sanitizeRangeSuppressSec(rule.SuppressSec)
 
 	if old, ok := s.rules[rule.ID]; ok {
 		rule.LastPrice = old.LastPrice
@@ -529,22 +556,45 @@ func (s *marketRangeSession) processPrice(symbol string, price float64, ts int64
 		}
 
 		cooldownMS := int64(sanitizeRangeCooldownSec(rule.CooldownSec)) * 1000
+		suppressSec := sanitizeRangeSuppressSec(rule.SuppressSec)
+		suppressMS := int64(suppressSec) * 1000
 		if *rule.LastInside && !inside && ts-rule.LastTriggerAt >= cooldownMS {
 			direction := "下破"
 			if price > rule.Upper {
 				direction = "上破"
 			}
-			rule.LastTriggerAt = ts
-			events = append(events, marketRangeEvent{
-				ID:        fmt.Sprintf("%s-%d", rule.ID, ts),
-				RuleID:    rule.ID,
-				Symbol:    symbol,
-				Direction: direction,
-				Lower:     rule.Lower,
-				Upper:     rule.Upper,
-				Price:     price,
-				Time:      ts,
-			})
+			severity := "warn"
+			breachPct := 0.0
+			if direction == "上破" && rule.Upper > 0 {
+				breachPct = (price - rule.Upper) / rule.Upper * 100
+			}
+			if direction == "下破" && rule.Lower > 0 {
+				breachPct = (rule.Lower - price) / rule.Lower * 100
+			}
+			if breachPct >= 0.8 {
+				severity = "critical"
+			}
+			if s.lastSuppressed == nil {
+				s.lastSuppressed = make(map[string]int64)
+			}
+			suppressKey := fmt.Sprintf("%s|%s|%s", symbol, direction, severity)
+			lastTS := s.lastSuppressed[suppressKey]
+			if lastTS == 0 || ts-lastTS >= suppressMS {
+				s.lastSuppressed[suppressKey] = ts
+				rule.LastTriggerAt = ts
+				events = append(events, marketRangeEvent{
+					ID:          fmt.Sprintf("%s-%d", rule.ID, ts),
+					RuleID:      rule.ID,
+					Symbol:      symbol,
+					Direction:   direction,
+					Severity:    severity,
+					SuppressSec: suppressSec,
+					Lower:       rule.Lower,
+					Upper:       rule.Upper,
+					Price:       price,
+					Time:        ts,
+				})
+			}
 		}
 
 		b := inside
@@ -628,6 +678,7 @@ func readPumpMarketRange(session *marketRangeSession) {
 			Lower       float64 `json:"lower"`
 			Upper       float64 `json:"upper"`
 			CooldownSec int     `json:"cooldownSec"`
+			SuppressSec int     `json:"suppressSec"`
 			Enabled     *bool   `json:"enabled"`
 		}
 		if err := json.Unmarshal(message, &req); err != nil {
@@ -672,6 +723,7 @@ func readPumpMarketRange(session *marketRangeSession) {
 				Lower:       req.Lower,
 				Upper:       req.Upper,
 				CooldownSec: sanitizeRangeCooldownSec(req.CooldownSec),
+				SuppressSec: sanitizeRangeSuppressSec(req.SuppressSec),
 				Enabled:     enabled,
 				CreatedAt:   time.Now().UnixMilli(),
 			}

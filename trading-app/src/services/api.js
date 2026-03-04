@@ -220,6 +220,8 @@ export default {
   getKillSwitchStatus: () => apiCall('GET', '/risk/kill-switch'),
   runStressTest: (scenarios) => apiCall('POST', '/risk/stress-test', { scenarios }),
   getOpsMetrics: () => apiCall('GET', '/ops/metrics'),
+  getMonitorOverview: (days = 30) =>
+    apiCall('GET', `/monitor/overview?days=${Number(days) > 0 ? Number(days) : 30}`),
   getDataQuality: () => apiCall('GET', '/data-quality'),
   getExecutionQuality: (source, days) => apiCall('GET', `/execution/quality?source=${source || ''}&days=${days || 30}`),
   getAllocationStatus: () => apiCall('GET', '/allocator/status'),

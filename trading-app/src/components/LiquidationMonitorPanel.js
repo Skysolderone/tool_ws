@@ -18,6 +18,12 @@ const WS_PING_MS = 30000;
 const SNAPSHOT_REFRESH_MS = 30000;
 const HISTORY_LIMIT = 120;
 const DEFAULT_ALERT_THRESHOLD = 50000000; // 5000万 USD
+const DEFAULT_NOTIFY_CONFIG = Object.freeze({
+  warnPopup: false,
+  warnVibrate: false,
+  criticalPopup: true,
+  criticalVibrate: true,
+});
 
 const EMPTY_LIQ_STATS = Object.freeze({
   daily: [],
@@ -291,7 +297,7 @@ const chartStyles = StyleSheet.create({
 });
 
 // ========== 主组件 ==========
-export default function LiquidationMonitorPanel({ onHasNew }) {
+export default function LiquidationMonitorPanel({ onHasNew, onMonitorEvent, notifyConfig }) {
   const cachedStats = LIQ_PANEL_CACHE.stats || EMPTY_LIQ_STATS;
 
   const [wsConnected, setWsConnected] = useState(false);
@@ -323,10 +329,56 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
   const closedByUserRef = useRef(false);
   const lastUpdatedRef = useRef(Math.max(LIQ_PANEL_CACHE.lastUpdatedAt || 0, toNumber(cachedStats.updatedAt)));
   const onHasNewRef = useRef(onHasNew);
+  const onMonitorEventRef = useRef(onMonitorEvent);
+  const notifyConfigRef = useRef(notifyConfig);
+  const lastEmitEventTimeRef = useRef(toNumber(cachedStats.lastEventTime));
+  const spikeActiveRef = useRef(!!LIQ_PANEL_CACHE.spikeDetected);
 
   useEffect(() => {
     onHasNewRef.current = onHasNew;
   }, [onHasNew]);
+
+  useEffect(() => {
+    onMonitorEventRef.current = onMonitorEvent;
+  }, [onMonitorEvent]);
+
+  useEffect(() => {
+    notifyConfigRef.current = notifyConfig;
+  }, [notifyConfig]);
+
+  const resolveNotifyPolicy = useCallback((severity) => {
+    const config = {
+      ...DEFAULT_NOTIFY_CONFIG,
+      ...(notifyConfigRef.current || {}),
+    };
+    if (severity === 'critical') {
+      return {
+        popup: !!config.criticalPopup,
+        vibrate: !!config.criticalVibrate,
+      };
+    }
+    if (severity === 'warn') {
+      return {
+        popup: !!config.warnPopup,
+        vibrate: !!config.warnVibrate,
+      };
+    }
+    return { popup: false, vibrate: false };
+  }, []);
+
+  const emitMonitorEvent = useCallback((evt = {}) => {
+    onMonitorEventRef.current?.({
+      eventId: evt.eventId || `liquidation::${evt.type || 'event'}::${evt.symbol || '-'}::${evt.ts || Date.now()}`,
+      ts: toNumber(evt.ts || Date.now()),
+      source: 'liquidation',
+      severity: evt.severity || 'info',
+      symbol: evt.symbol || '',
+      strategyId: evt.strategyId || '',
+      type: evt.type || 'event',
+      message: evt.message || '',
+      payload: evt.payload || {},
+    });
+  }, []);
 
   useEffect(() => {
     LIQ_PANEL_CACHE.stats = stats;
@@ -383,19 +435,53 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
     const h1List = statsData.h1 || [];
     if (h1List.length < 3) {
       setSpikeDetected(null);
+      spikeActiveRef.current = false;
       return;
     }
     const current = toNumber(h1List[0]?.totalNotional);
     // 计算前 2~6 小时的均值
     const prevSlice = h1List.slice(1, Math.min(7, h1List.length));
-    if (prevSlice.length === 0) { setSpikeDetected(null); return; }
+    if (prevSlice.length === 0) {
+      setSpikeDetected(null);
+      spikeActiveRef.current = false;
+      return;
+    }
     const avg = prevSlice.reduce((s, b) => s + toNumber(b.totalNotional), 0) / prevSlice.length;
     if (avg > 0 && current > avg * 3) {
-      setSpikeDetected({ ratio: (current / avg).toFixed(1), value: current });
+      const ratio = (current / avg).toFixed(1);
+      setSpikeDetected({ ratio, value: current });
+      if (!spikeActiveRef.current) {
+        spikeActiveRef.current = true;
+        emitMonitorEvent({
+          eventId: `liquidation::spike::${toNumber(h1List[0]?.startTime || Date.now())}`,
+          ts: toNumber(statsData.updatedAt || Date.now()),
+          severity: 'critical',
+          symbol: '',
+          type: 'liquidation_spike',
+          message: `1H 爆仓突增 ${ratio}x，金额 $${fmtUsd(current)}`,
+          payload: {
+            ratio: Number(ratio),
+            value: current,
+            startTime: toNumber(h1List[0]?.startTime || 0),
+          },
+        });
+        const notify = resolveNotifyPolicy('critical');
+        if (notify.vibrate) {
+          Vibration.vibrate([0, 240, 120, 240]);
+        }
+        if (notify.popup) {
+          Alert.alert(
+            '爆仓突增预警（CRITICAL）',
+            `当前 1H 爆仓总额 $${fmtUsdFull(current)}，约为前均值 ${ratio}x`,
+            [{ text: '知道了' }]
+          );
+        }
+      }
     } else {
       setSpikeDetected(null);
+      spikeActiveRef.current = false;
     }
-  }, []);
+  }, [emitMonitorEvent, resolveNotifyPolicy]);
 
   // 阈值通知
   const checkThresholdAlert = useCallback((statsData) => {
@@ -406,14 +492,32 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
     const now = Date.now();
     if (val >= alertThreshold && now - lastAlertRef.current > 60000) {
       lastAlertRef.current = now;
-      Vibration.vibrate([0, 200, 100, 200]);
-      Alert.alert(
-        '爆仓预警',
-        `当前 1H 爆仓总额 $${fmtUsdFull(val)} 已超过阈值 $${fmtUsdFull(alertThreshold)}`,
-        [{ text: '知道了' }]
-      );
+      emitMonitorEvent({
+        eventId: `liquidation::threshold::${toNumber(h1.startTime || now)}::${Math.round(val)}`,
+        ts: now,
+        severity: 'warn',
+        symbol: '',
+        type: 'liquidation_threshold',
+        message: `1H 爆仓 $${fmtUsdFull(val)} 超阈值 $${fmtUsdFull(alertThreshold)}`,
+        payload: {
+          totalNotional: val,
+          threshold: alertThreshold,
+          startTime: toNumber(h1.startTime || 0),
+        },
+      });
+      const notify = resolveNotifyPolicy('warn');
+      if (notify.vibrate) {
+        Vibration.vibrate([0, 180]);
+      }
+      if (notify.popup) {
+        Alert.alert(
+          '爆仓预警（WARN）',
+          `当前 1H 爆仓总额 $${fmtUsdFull(val)} 已超过阈值 $${fmtUsdFull(alertThreshold)}`,
+          [{ text: '知道了' }]
+        );
+      }
     }
-  }, [alertEnabled, alertThreshold]);
+  }, [alertEnabled, alertThreshold, emitMonitorEvent, resolveNotifyPolicy]);
 
   const connectWs = useCallback(() => {
     if (!mountedRef.current) return;
@@ -461,6 +565,24 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
             day: Array.isArray(topSymbols.day) ? topSymbols.day : [],
           },
         };
+        if (newStats.lastEventTime > 0 && newStats.lastEventTime > lastEmitEventTimeRef.current) {
+          lastEmitEventTimeRef.current = newStats.lastEventTime;
+          const latest = newStats.h1?.[0] || null;
+          emitMonitorEvent({
+            eventId: `liquidation::stream::${newStats.lastEventTime}`,
+            ts: newStats.lastEventTime,
+            severity: 'info',
+            symbol: '',
+            type: 'liquidation_stream',
+            message: `强平新增事件，1H总额 $${fmtUsd(latest?.totalNotional)}`,
+            payload: {
+              lastEventTime: newStats.lastEventTime,
+              updatedAt: newStats.updatedAt,
+              h1TotalNotional: toNumber(latest?.totalNotional),
+              eventCount: newStats.eventCount,
+            },
+          });
+        }
         setStats(newStats);
         detectSpike(newStats);
         checkThresholdAlert(newStats);
@@ -482,7 +604,7 @@ export default function LiquidationMonitorPanel({ onHasNew }) {
       if (!mountedRef.current || closedByUserRef.current) return;
       reconnectTimerRef.current = setTimeout(() => { connectWs(); }, WS_RECONNECT_MS);
     };
-  }, [clearWsTimers, requestSnapshot, sendWs, detectSpike, checkThresholdAlert]);
+  }, [clearWsTimers, requestSnapshot, sendWs, detectSpike, checkThresholdAlert, emitMonitorEvent]);
 
   useEffect(() => {
     mountedRef.current = true;

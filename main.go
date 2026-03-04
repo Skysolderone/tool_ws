@@ -262,6 +262,7 @@ func main() {
 
 		// 运营指标
 		apiGroup.GET("/ops/metrics", api.HandleGetOpsMetrics)
+		apiGroup.GET("/monitor/overview", api.HandleGetMonitorOverview)
 
 		// VaR 风控
 		apiGroup.GET("/risk/var", api.HandleGetVarStatus)

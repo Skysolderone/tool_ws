@@ -73,6 +73,12 @@ const MONITOR_SUB_TABS = [
 ];
 
 const MONITOR_EVENT_LIMIT = 300;
+const DEFAULT_MONITOR_NOTIFY_CONFIG = Object.freeze({
+  warnPopup: false,
+  warnVibrate: false,
+  criticalPopup: false,
+  criticalVibrate: false,
+});
 
 function normalizeMonitorEvent(evt = {}) {
   const ts = Number(evt.ts || evt.time || Date.now());
@@ -122,6 +128,7 @@ export default function App() {
   const [liqHasNew, setLiqHasNew] = useState(false);
   const [marketHasNew, setMarketHasNew] = useState(false);
   const [monitorEvents, setMonitorEvents] = useState([]);
+  const monitorNotifyConfig = DEFAULT_MONITOR_NOTIFY_CONFIG;
   const monitorSuppressRef = useRef({});
   const [watchAddresses, setWatchAddresses] = useState(DEFAULT_WATCH_ADDRESSES);
   const [activeAddrIdx, setActiveAddrIdx] = useState(0);
@@ -268,7 +275,15 @@ export default function App() {
     if (needsSuppress) {
       const suppressSecRaw = Number(normalized.payload?.suppressSec || 60);
       const suppressMS = (Number.isFinite(suppressSecRaw) && suppressSecRaw > 0 ? suppressSecRaw : 60) * 1000;
-      const suppressKey = `${normalized.source}::${normalized.type}::${normalized.symbol || '-'}::${normalized.severity}`;
+      const suppressKey = [
+        normalized.source,
+        normalized.type,
+        normalized.symbol || '-',
+        normalized.severity,
+        normalized.strategyId || '-',
+        String(normalized.payload?.direction || '-'),
+        String(normalized.payload?.ruleId || '-'),
+      ].join('::');
       const lastTS = monitorSuppressRef.current[suppressKey] || 0;
       if (normalized.ts - lastTS < suppressMS) return;
       monitorSuppressRef.current[suppressKey] = normalized.ts;
@@ -465,7 +480,11 @@ export default function App() {
         {activeTab === 'monitor' && (
           <>
             <MonitorOverviewPanel />
-            <MonitorEventTimelinePanel events={monitorEvents} onClear={clearMonitorEvents} />
+            <MonitorEventTimelinePanel
+              events={monitorEvents}
+              onClear={clearMonitorEvents}
+              notifyConfig={monitorNotifyConfig}
+            />
             <SubTabBar
               tabs={MONITOR_SUB_TABS}
               activeKey={monitorSubTab}
@@ -537,7 +556,11 @@ export default function App() {
               </>
             )}
             {monitorSubTab === 'market' && marketPanelMounted && (
-              <MarketMonitorPanel onHasNew={handleMarketHasNew} onMonitorEvent={handleMonitorEvent} />
+              <MarketMonitorPanel
+                onHasNew={handleMarketHasNew}
+                onMonitorEvent={handleMonitorEvent}
+                notifyConfig={monitorNotifyConfig}
+              />
             )}
             {monitorSubTab === 'equity' && (
               <EquityCurvePanel />
@@ -553,7 +576,11 @@ export default function App() {
 
         {liqPanelMounted && (
           <View style={activeTab === 'monitor' && monitorSubTab === 'liquidation' ? undefined : styles.hidden}>
-            <LiquidationMonitorPanel onHasNew={handleLiqHasNew} onMonitorEvent={handleMonitorEvent} />
+            <LiquidationMonitorPanel
+              onHasNew={handleLiqHasNew}
+              onMonitorEvent={handleMonitorEvent}
+              notifyConfig={monitorNotifyConfig}
+            />
           </View>
         )}
 
@@ -619,7 +646,11 @@ export default function App() {
       )}
       {marketPanelMounted && !(activeTab === 'monitor' && monitorSubTab === 'market') && (
         <View style={styles.hidden}>
-          <MarketMonitorPanel onHasNew={handleMarketHasNew} onMonitorEvent={handleMonitorEvent} />
+          <MarketMonitorPanel
+            onHasNew={handleMarketHasNew}
+            onMonitorEvent={handleMonitorEvent}
+            notifyConfig={monitorNotifyConfig}
+          />
         </View>
       )}
 

@@ -118,6 +118,14 @@ function statusColor(status = '') {
   return colors.yellow;
 }
 
+function inferHyperSeverity(item = {}) {
+  const title = String(item.title || '').toLowerCase();
+  const detail = String(item.detail || '').toLowerCase();
+  if (title.includes('清算') || title.includes('拒') || detail.includes('rejected') || detail.includes('error')) return 'critical';
+  if (title.includes('取消') || title.includes('消失') || title.includes('跟单平仓')) return 'warn';
+  return 'info';
+}
+
 function makeHistoryKey(item = {}) {
   const order = normalizeOrder(item);
   return `${order.oid || order.cloid || order.coin || '-'}::${item.status || '-'}::${item.statusTimestamp || item.timestamp || '-'}`;
@@ -162,6 +170,7 @@ function mergeFills(prev = [], incoming = []) {
 export default function HyperMonitorPanel({
   address = DEFAULT_ADDRESS,
   onHasNew,
+  onMonitorEvent,
   withLiquidationTab = false,
 }) {
   const [activeCard, setActiveCard] = useState('orders');
@@ -195,6 +204,11 @@ export default function HyperMonitorPanel({
   const prevOpenMapRef = useRef({});
   const seenHistoryRef = useRef(new Set());
   const seenEventRef = useRef(new Set());
+  const onMonitorEventRef = useRef(onMonitorEvent);
+
+  useEffect(() => {
+    onMonitorEventRef.current = onMonitorEvent;
+  }, [onMonitorEvent]);
 
   useEffect(() => {
     prevOpenMapRef.current = {};
@@ -223,17 +237,34 @@ export default function HyperMonitorPanel({
       seenEventRef.current.add(key);
       fresh.push({
         ...item,
+        eventKey: key,
         id: `${key}::${Math.random().toString(36).slice(2, 8)}`,
       });
     });
     if (!fresh.length) return;
     onHasNew?.(true);
+    fresh.forEach((item) => {
+      onMonitorEventRef.current?.({
+        eventId: `hyper::${item.eventKey || item.id}`,
+        ts: toNumber(item.time || Date.now()),
+        source: 'hyper',
+        severity: inferHyperSeverity(item),
+        symbol: item.symbol || '',
+        strategyId: `hyper:${address}`,
+        type: item.type || 'activity',
+        message: `${item.title} - ${item.detail}`,
+        payload: {
+          title: item.title,
+          detail: item.detail,
+        },
+      });
+    });
     setActivityEvents((prev) => {
       const merged = [...fresh, ...prev];
       merged.sort((a, b) => toNumber(b.time) - toNumber(a.time));
       return merged.slice(0, 80);
     });
-  }, [onHasNew]);
+  }, [address, onHasNew]);
 
   const applyOpenOrders = useCallback((rawList = [], emitEvents = true) => {
     const normalized = rawList.map((raw) => normalizeOrder(raw));
@@ -255,6 +286,8 @@ export default function HyperMonitorPanel({
         events.push({
           time: Date.now(),
           title: '新增挂单',
+          type: 'open_order_new',
+          symbol: order.coin || '',
           detail: `${order.coin || '-'} ${sideLabel(order.side)} ${fmtAmount(getOrderSize(order))} @ ${fmtPrice(getOrderPrice(order))}`,
         });
       });
@@ -265,6 +298,8 @@ export default function HyperMonitorPanel({
         events.push({
           time: Date.now(),
           title: '挂单消失',
+          type: 'open_order_missing',
+          symbol: order.coin || '',
           detail: `${order.coin || '-'} ${sideLabel(order.side)} ${fmtAmount(getOrderSize(order))} @ ${fmtPrice(getOrderPrice(order))}（可能成交或撤单）`,
         });
       });
@@ -290,6 +325,8 @@ export default function HyperMonitorPanel({
       events.push({
         time: toNumber(item.statusTimestamp || item.timestamp || Date.now()),
         title: `订单状态: ${item.status || '-'}`,
+        type: 'order_status',
+        symbol: order.coin || '',
         detail: `${order.coin || '-'} ${sideLabel(order.side)} ${fmtAmount(getOrderSize(order))} @ ${fmtPrice(getOrderPrice(order))}`,
       });
     });
@@ -310,6 +347,8 @@ export default function HyperMonitorPanel({
     pushEvents(incoming.map((fill) => ({
       time: toNumber(fill.time || Date.now()),
       title: '新成交',
+      type: 'fill',
+      symbol: fill.coin || '',
       detail: `${fill.coin || '-'} ${fillActionLabel(fill)} ${sideLabel(fill.side)} ${fill.sz || '-'} @ ${fill.px || '-'}`,
     })));
   }, [pushEvents]);
@@ -456,6 +495,8 @@ export default function HyperMonitorPanel({
           pushEvents(data.nonUserCancel.map((evt) => ({
             time: toNumber(evt.time || Date.now()),
             title: '系统取消订单',
+            type: 'system_cancel',
+            symbol: evt.coin || '',
             detail: `${evt.coin || '-'} OID ${evt.oid || '-'}`,
           })));
         }
@@ -463,6 +504,8 @@ export default function HyperMonitorPanel({
           pushEvents(data.liquidation.map((evt) => ({
             time: toNumber(evt.time || Date.now()),
             title: '清算事件',
+            type: 'liquidation_event',
+            symbol: evt.coin || '',
             detail: `${evt.coin || '-'} ${evt.side || '-'} ${evt.sz || '-'}`,
           })));
         }
@@ -485,6 +528,8 @@ export default function HyperMonitorPanel({
         pushEvents([{
           time: toNumber(msg.time || Date.now()),
           title: action,
+          type: msg.action === 'open' ? 'follow_open' : 'follow_close',
+          symbol: msg.symbol || '',
           detail,
         }]);
         // 刷新跟单计数

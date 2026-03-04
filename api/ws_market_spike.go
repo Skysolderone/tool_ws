@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,10 @@ const (
 	marketSpikeDefaultThresholdPct = 1.5
 	marketSpikeDefaultWindowSec    = 30
 	marketSpikeDefaultCooldownSec  = 15
+	marketSpikeDefaultSuppressSec  = 60
+	marketSpikeDefaultMinSamples   = 40
+	marketSpikeDefaultWarnQ        = 95.0
+	marketSpikeDefaultCriticalQ    = 99.0
 	marketSpikeRulesPersistFile    = "market_spike_rules.json"
 
 	marketSpikeMinThresholdPct = 0.1
@@ -26,8 +31,15 @@ const (
 	marketSpikeMaxWindowSec    = 3600
 	marketSpikeMinCooldownSec  = 5
 	marketSpikeMaxCooldownSec  = 600
+	marketSpikeMinSuppressSec  = 10
+	marketSpikeMaxSuppressSec  = 1800
+	marketSpikeMinQuantile     = 50.0
+	marketSpikeMaxQuantile     = 99.9
+	marketSpikeMinSamplesMin   = 10
+	marketSpikeMinSamplesMax   = 500
 
 	marketSpikeSampleCap       = 3000
+	marketSpikeMoveHistoryCap  = 1200
 	marketSpikeReconnectBase   = time.Second
 	marketSpikeSnapshotEveryMS = 30000
 )
@@ -41,15 +53,21 @@ type marketSpikeRule struct {
 	ID            string  `json:"id"`
 	Symbol        string  `json:"symbol"`
 	ThresholdPct  float64 `json:"thresholdPct"`
+	Dynamic       bool    `json:"dynamic"`
+	WarnQuantile  float64 `json:"warnQuantile"`
+	CriticalQ     float64 `json:"criticalQuantile"`
+	MinSamples    int     `json:"minSamples"`
 	WindowSec     int     `json:"windowSec"`
 	CooldownSec   int     `json:"cooldownSec"`
+	SuppressSec   int     `json:"suppressSec"`
 	Enabled       bool    `json:"enabled"`
 	LastPrice     float64 `json:"lastPrice"`
 	LastMovePct   float64 `json:"lastMovePct"`
 	LastTriggerAt int64   `json:"lastTriggerAt"`
 	CreatedAt     int64   `json:"createdAt"`
 
-	Samples []marketSpikeSample `json:"-"`
+	Samples     []marketSpikeSample `json:"-"`
+	MoveHistory []float64           `json:"-"`
 }
 
 type marketSpikeEvent struct {
@@ -58,6 +76,10 @@ type marketSpikeEvent struct {
 	Symbol       string  `json:"symbol"`
 	Direction    string  `json:"direction"` // 拉升 / 下跌
 	ThresholdPct float64 `json:"thresholdPct"`
+	TriggerPct   float64 `json:"triggerPct"`
+	Dynamic      bool    `json:"dynamic"`
+	Severity     string  `json:"severity"`
+	SuppressSec  int     `json:"suppressSec"`
 	WindowSec    int     `json:"windowSec"`
 	MovePct      float64 `json:"movePct"`
 	BasePrice    float64 `json:"basePrice"`
@@ -80,6 +102,8 @@ type marketSpikeSession struct {
 
 	mu    sync.Mutex
 	rules map[string]*marketSpikeRule
+
+	lastSuppressed map[string]int64
 }
 
 type marketSpikeRoom struct {
@@ -128,8 +152,9 @@ func handleWsMarketSpike(w http.ResponseWriter, r *http.Request) {
 
 func (h *marketSpikeHub) addSession(client *wsClient) *marketSpikeSession {
 	session := &marketSpikeSession{
-		client: client,
-		rules:  make(map[string]*marketSpikeRule),
+		client:         client,
+		rules:          make(map[string]*marketSpikeRule),
+		lastSuppressed: make(map[string]int64),
 	}
 	if err := h.restoreSessionRules(session); err != nil {
 		log.Printf("[WsSpike] Restore rules failed: %v", err)
@@ -344,8 +369,13 @@ func cloneRule(rule *marketSpikeRule) marketSpikeRule {
 		ID:            rule.ID,
 		Symbol:        rule.Symbol,
 		ThresholdPct:  rule.ThresholdPct,
+		Dynamic:       rule.Dynamic,
+		WarnQuantile:  rule.WarnQuantile,
+		CriticalQ:     rule.CriticalQ,
+		MinSamples:    rule.MinSamples,
 		WindowSec:     rule.WindowSec,
 		CooldownSec:   rule.CooldownSec,
+		SuppressSec:   rule.SuppressSec,
 		Enabled:       rule.Enabled,
 		LastPrice:     rule.LastPrice,
 		LastMovePct:   rule.LastMovePct,
@@ -399,12 +429,21 @@ func (h *marketSpikeHub) restoreSessionRules(session *marketSpikeSession) error 
 		if ruleID == "" {
 			ruleID = fmt.Sprintf("%s-restore-%d-%d", symbol, now, i)
 		}
+		dynamic := item.Dynamic
+		if !dynamic && item.WarnQuantile == 0 && item.CriticalQ == 0 && item.MinSamples == 0 && item.SuppressSec == 0 {
+			dynamic = true
+		}
 		rule := marketSpikeRule{
 			ID:            ruleID,
 			Symbol:        symbol,
 			ThresholdPct:  sanitizeThresholdPct(item.ThresholdPct),
+			Dynamic:       dynamic,
+			WarnQuantile:  sanitizeQuantile(item.WarnQuantile, marketSpikeDefaultWarnQ),
+			CriticalQ:     sanitizeQuantile(item.CriticalQ, marketSpikeDefaultCriticalQ),
+			MinSamples:    sanitizeMinSamples(item.MinSamples),
 			WindowSec:     sanitizeWindowSec(item.WindowSec),
 			CooldownSec:   sanitizeCooldownSec(item.CooldownSec),
+			SuppressSec:   sanitizeSuppressSec(item.SuppressSec),
 			Enabled:       item.Enabled,
 			LastPrice:     item.LastPrice,
 			LastMovePct:   item.LastMovePct,
@@ -413,6 +452,9 @@ func (h *marketSpikeHub) restoreSessionRules(session *marketSpikeSession) error 
 		}
 		if rule.CreatedAt <= 0 {
 			rule.CreatedAt = now - int64(len(stored)-i)
+		}
+		if rule.CriticalQ < rule.WarnQuantile {
+			rule.CriticalQ = rule.WarnQuantile
 		}
 		session.rules[rule.ID] = &rule
 	}
@@ -468,15 +510,83 @@ func sanitizeCooldownSec(v int) int {
 	return v
 }
 
+func sanitizeSuppressSec(v int) int {
+	if v <= 0 {
+		return marketSpikeDefaultSuppressSec
+	}
+	if v < marketSpikeMinSuppressSec {
+		return marketSpikeMinSuppressSec
+	}
+	if v > marketSpikeMaxSuppressSec {
+		return marketSpikeMaxSuppressSec
+	}
+	return v
+}
+
+func sanitizeQuantile(v float64, fallback float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return fallback
+	}
+	if v < marketSpikeMinQuantile {
+		return marketSpikeMinQuantile
+	}
+	if v > marketSpikeMaxQuantile {
+		return marketSpikeMaxQuantile
+	}
+	return math.Round(v*10) / 10
+}
+
+func sanitizeMinSamples(v int) int {
+	if v <= 0 {
+		return marketSpikeDefaultMinSamples
+	}
+	if v < marketSpikeMinSamplesMin {
+		return marketSpikeMinSamplesMin
+	}
+	if v > marketSpikeMinSamplesMax {
+		return marketSpikeMinSamplesMax
+	}
+	return v
+}
+
+func calcPctl(values []float64, q float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := make([]float64, 0, len(values))
+	for _, v := range values {
+		if v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0) {
+			sorted = append(sorted, v)
+		}
+	}
+	if len(sorted) == 0 {
+		return 0
+	}
+	sort.Float64s(sorted)
+	return percentile(sorted, q)
+}
+
 func (s *marketSpikeSession) upsertRule(rule marketSpikeRule) (subscribe []string, unsubscribe []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	before := s.enabledSymbolsLocked()
 
+	rule.ThresholdPct = sanitizeThresholdPct(rule.ThresholdPct)
+	rule.WindowSec = sanitizeWindowSec(rule.WindowSec)
+	rule.CooldownSec = sanitizeCooldownSec(rule.CooldownSec)
+	rule.SuppressSec = sanitizeSuppressSec(rule.SuppressSec)
+	rule.WarnQuantile = sanitizeQuantile(rule.WarnQuantile, marketSpikeDefaultWarnQ)
+	rule.CriticalQ = sanitizeQuantile(rule.CriticalQ, marketSpikeDefaultCriticalQ)
+	if rule.CriticalQ < rule.WarnQuantile {
+		rule.CriticalQ = rule.WarnQuantile
+	}
+	rule.MinSamples = sanitizeMinSamples(rule.MinSamples)
+
 	if old, ok := s.rules[rule.ID]; ok {
 		// 更新规则时继承历史样本与上次状态
 		rule.Samples = old.Samples
+		rule.MoveHistory = old.MoveHistory
 		rule.LastPrice = old.LastPrice
 		rule.LastMovePct = old.LastMovePct
 		rule.LastTriggerAt = old.LastTriggerAt
@@ -553,9 +663,19 @@ func (s *marketSpikeSession) processPrice(symbol string, price float64, ts int64
 			continue
 		}
 
-		windowMS := int64(sanitizeWindowSec(rule.WindowSec)) * 1000
+		windowSec := sanitizeWindowSec(rule.WindowSec)
+		windowMS := int64(windowSec) * 1000
 		cooldownMS := int64(sanitizeCooldownSec(rule.CooldownSec)) * 1000
+		suppressSec := sanitizeSuppressSec(rule.SuppressSec)
+		suppressMS := int64(suppressSec) * 1000
 		thresholdPct := sanitizeThresholdPct(rule.ThresholdPct)
+		warnQ := sanitizeQuantile(rule.WarnQuantile, marketSpikeDefaultWarnQ)
+		criticalQ := sanitizeQuantile(rule.CriticalQ, marketSpikeDefaultCriticalQ)
+		if criticalQ < warnQ {
+			criticalQ = warnQ
+		}
+		minSamples := sanitizeMinSamples(rule.MinSamples)
+		dynamic := rule.Dynamic
 
 		samples := make([]marketSpikeSample, 0, len(rule.Samples)+1)
 		for _, sample := range rule.Samples {
@@ -575,14 +695,52 @@ func (s *marketSpikeSession) processPrice(symbol string, price float64, ts int64
 		if base > 0 {
 			movePct = ((price - base) / base) * 100
 		}
+		absMove := math.Abs(movePct)
 		rule.LastPrice = price
 		rule.LastMovePct = movePct
 
 		if base <= 0 {
 			continue
 		}
-		if math.Abs(movePct) < thresholdPct {
-			continue
+
+		if absMove > 0 && !math.IsNaN(absMove) && !math.IsInf(absMove, 0) {
+			hist := append(rule.MoveHistory, absMove)
+			if len(hist) > marketSpikeMoveHistoryCap {
+				hist = hist[len(hist)-marketSpikeMoveHistoryCap:]
+			}
+			rule.MoveHistory = hist
+		}
+
+		triggerPct := thresholdPct
+		severity := "warn"
+		dynamicUsed := false
+		if dynamic && len(rule.MoveHistory) >= minSamples {
+			warnTrigger := calcPctl(rule.MoveHistory, warnQ)
+			criticalTrigger := calcPctl(rule.MoveHistory, criticalQ)
+			if warnTrigger <= 0 {
+				warnTrigger = thresholdPct
+			}
+			if criticalTrigger < warnTrigger {
+				criticalTrigger = warnTrigger
+			}
+			dynamicUsed = true
+			triggerPct = warnTrigger
+			switch {
+			case absMove >= criticalTrigger:
+				severity = "critical"
+				triggerPct = criticalTrigger
+			case absMove >= warnTrigger:
+				severity = "warn"
+			default:
+				continue
+			}
+		} else {
+			if absMove < thresholdPct {
+				continue
+			}
+			if absMove >= thresholdPct*2 {
+				severity = "critical"
+			}
 		}
 		if ts-rule.LastTriggerAt < cooldownMS {
 			continue
@@ -592,6 +750,14 @@ func (s *marketSpikeSession) processPrice(symbol string, price float64, ts int64
 		if movePct < 0 {
 			direction = "下跌"
 		}
+		if s.lastSuppressed == nil {
+			s.lastSuppressed = make(map[string]int64)
+		}
+		suppressKey := fmt.Sprintf("%s|%s|%s", symbol, direction, severity)
+		if lastTS, ok := s.lastSuppressed[suppressKey]; ok && lastTS > 0 && ts-lastTS < suppressMS {
+			continue
+		}
+		s.lastSuppressed[suppressKey] = ts
 		rule.LastTriggerAt = ts
 
 		events = append(events, marketSpikeEvent{
@@ -600,7 +766,11 @@ func (s *marketSpikeSession) processPrice(symbol string, price float64, ts int64
 			Symbol:       symbol,
 			Direction:    direction,
 			ThresholdPct: thresholdPct,
-			WindowSec:    sanitizeWindowSec(rule.WindowSec),
+			TriggerPct:   roundFloat(triggerPct, 4),
+			Dynamic:      dynamicUsed,
+			Severity:     severity,
+			SuppressSec:  suppressSec,
+			WindowSec:    windowSec,
 			MovePct:      movePct,
 			BasePrice:    base,
 			Price:        price,
@@ -683,8 +853,13 @@ func readPumpMarketSpike(session *marketSpikeSession) {
 			ID           string  `json:"id"`
 			Symbol       string  `json:"symbol"`
 			ThresholdPct float64 `json:"thresholdPct"`
+			Dynamic      *bool   `json:"dynamic"`
+			WarnQuantile float64 `json:"warnQuantile"`
+			CriticalQ    float64 `json:"criticalQuantile"`
+			MinSamples   int     `json:"minSamples"`
 			WindowSec    int     `json:"windowSec"`
 			CooldownSec  int     `json:"cooldownSec"`
+			SuppressSec  int     `json:"suppressSec"`
 			Enabled      *bool   `json:"enabled"`
 		}
 		if err := json.Unmarshal(message, &req); err != nil {
@@ -719,12 +894,21 @@ func readPumpMarketSpike(session *marketSpikeSession) {
 			if req.Enabled != nil {
 				enabled = *req.Enabled
 			}
+			dynamic := true
+			if req.Dynamic != nil {
+				dynamic = *req.Dynamic
+			}
 			rule := marketSpikeRule{
 				ID:           ruleID,
 				Symbol:       symbol,
 				ThresholdPct: sanitizeThresholdPct(req.ThresholdPct),
+				Dynamic:      dynamic,
+				WarnQuantile: sanitizeQuantile(req.WarnQuantile, marketSpikeDefaultWarnQ),
+				CriticalQ:    sanitizeQuantile(req.CriticalQ, marketSpikeDefaultCriticalQ),
+				MinSamples:   sanitizeMinSamples(req.MinSamples),
 				WindowSec:    sanitizeWindowSec(req.WindowSec),
 				CooldownSec:  sanitizeCooldownSec(req.CooldownSec),
+				SuppressSec:  sanitizeSuppressSec(req.SuppressSec),
 				Enabled:      enabled,
 				CreatedAt:    time.Now().UnixMilli(),
 			}
