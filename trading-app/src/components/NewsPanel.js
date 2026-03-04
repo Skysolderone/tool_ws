@@ -211,6 +211,7 @@ const WS_RECONNECT_MS = 3000;
 const WS_PING_MS = 30000;
 const SOURCE_STATUS_REFRESH_MS = 60 * 60 * 1000;
 const NEWS_PAGE_SIZE = 20;
+const APP_START_ANCHOR_TS = Date.now();
 const TRANSLATE_ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
 const TRANSLATE_MAX_CHARS = 1800;
 const TRANSLATE_BATCH_LIMIT = 12;
@@ -451,6 +452,13 @@ function mergeNewsPageItems(prevItems, nextItems) {
   return out;
 }
 
+function parseNewsTimestamp(pubDate, fallbackTs = 0) {
+  const d = new Date(pubDate || '');
+  const ts = d.getTime();
+  if (Number.isFinite(ts) && ts > 0) return ts;
+  return Number.isFinite(fallbackTs) && fallbackTs > 0 ? fallbackTs : 0;
+}
+
 function containsChinese(text) {
   return /[\u4e00-\u9fff]/.test(text || '');
 }
@@ -520,6 +528,7 @@ export default function NewsPanel({ onHasNew }) {
   const reconnectTimerRef = useRef(null);
   const translatingKeysRef = useRef(new Set());
   const canNotifyRef = useRef(false);
+  const notifyAnchorRef = useRef(APP_START_ANCHOR_TS);
   const mountedRef = useRef(false);
   const closedByUserRef = useRef(false);
   const initializedRef = useRef(false);
@@ -601,18 +610,23 @@ export default function NewsPanel({ onHasNew }) {
     return () => { active = false; };
   }, []);
 
-  const notifyNewsUpdate = useCallback(async (changedKeys, data = {}) => {
+  const notifyNewsUpdate = useCallback(async (changedKeys, data = {}, payloadTs = 0) => {
     if (!canNotifyRef.current) return;
     if (!Array.isArray(changedKeys) || changedKeys.length === 0) return;
-
-    const lines = changedKeys.slice(0, 3).map((key) => {
+    const anchorTs = notifyAnchorRef.current;
+    const freshEntries = changedKeys.map((key) => {
       const feed = feedSources.find((x) => x.key === key);
       const sourceName = feed?.name || key;
       const first = Array.isArray(data[key]) ? data[key][0] : null;
       const title = String(first?.title || '新资讯').replace(/\s+/g, ' ').trim();
-      return `${sourceName}: ${title}`;
-    });
-    const suffix = changedKeys.length > 3 ? ` 等${changedKeys.length}个来源` : '';
+      const itemTs = parseNewsTimestamp(first?.pubDate, payloadTs);
+      return { key, sourceName, title, itemTs };
+    }).filter((entry) => entry.itemTs > anchorTs);
+
+    if (freshEntries.length === 0) return;
+    const lines = freshEntries.slice(0, 3).map((entry) => `${entry.sourceName}: ${entry.title}`);
+    const suffix = freshEntries.length > 3 ? ` 等${freshEntries.length}个来源` : '';
+    const maxTs = freshEntries.reduce((acc, entry) => Math.max(acc, entry.itemTs), anchorTs);
 
     try {
       await Notifications.scheduleNotificationAsync({
@@ -620,10 +634,11 @@ export default function NewsPanel({ onHasNew }) {
           title: '📰 收到新资讯',
           body: `${lines.join(' | ')}${suffix}`,
           sound: 'default',
-          data: { type: 'news', sources: changedKeys },
+          data: { type: 'news', sources: freshEntries.map((x) => x.key) },
         },
         trigger: null,
       });
+      notifyAnchorRef.current = maxTs;
     } catch (_) {}
   }, [feedSources]);
 
@@ -793,7 +808,7 @@ export default function NewsPanel({ onHasNew }) {
       initializedRef.current = true;
     } else if (changedKeys.length > 0) {
       onHasNew?.(true);
-      notifyNewsUpdate(changedKeys, payload.data || {});
+      notifyNewsUpdate(changedKeys, payload.data || {}, Number(payload.t || payload.time || 0));
     }
     latestTopKeyRef.current = nextTopKeys;
     setSourceCountByKey((prev) => ({ ...prev, ...nextCounts }));
