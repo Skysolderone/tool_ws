@@ -31,6 +31,8 @@ const C = {
 const ANALYZE_TIMEOUT_MS = 210000;
 const RAW_POSITION_TIMEOUT_MS = 15000;
 const ANALYZE_MODE = 'positions';
+const AGENT_LOG_LIMIT = 30;
+const AGENT_LOG_POLL_MS = 1500;
 
 export default function AIAnalysisPanel() {
   const [loading, setLoading] = useState(false);
@@ -44,14 +46,37 @@ export default function AIAnalysisPanel() {
   const [policyError, setPolicyError] = useState(null);
   const [policyLoading, setPolicyLoading] = useState(true);
   const [selectedActions, setSelectedActions] = useState({});
+  const [analysisLogs, setAnalysisLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState(null);
+  const [activeTaskId, setActiveTaskId] = useState(null);
   const analyzeAbortRef = useRef(null);
   const rawPositionAbortRef = useRef(null);
+  const logsAbortRef = useRef(null);
   const requestIdRef = useRef(0);
 
   const actionItems = useMemo(() => data?.action_items || [], [data]);
   const positionAnalysis = useMemo(() => data?.position_analysis || [], [data]);
   const rawPositionItems = useMemo(() => rawPositionData?.items || [], [rawPositionData]);
   const execution = data?.execution;
+  const currentTaskLabel = activeTaskId ? `#${activeTaskId}` : '';
+
+  const loadAnalysisLogs = useCallback(async (requestOptions = {}) => {
+    setLogsLoading(true);
+    try {
+      const res = await api.getAgentLogs({ limit: AGENT_LOG_LIMIT }, requestOptions);
+      const payload = res?.data ?? res;
+      setAnalysisLogs(Array.isArray(payload) ? payload : []);
+      setLogsError(null);
+    } catch (e) {
+      if (requestOptions?.signal?.aborted) return;
+      setLogsError(e.message);
+    } finally {
+      if (!requestOptions?.signal?.aborted) {
+        setLogsLoading(false);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     const next = {};
@@ -86,6 +111,9 @@ export default function AIAnalysisPanel() {
       }
     };
     loadPolicy();
+    const logController = new AbortController();
+    logsAbortRef.current = logController;
+    loadAnalysisLogs({ signal: logController.signal });
     return () => {
       active = false;
       if (analyzeAbortRef.current) {
@@ -94,8 +122,11 @@ export default function AIAnalysisPanel() {
       if (rawPositionAbortRef.current) {
         rawPositionAbortRef.current.abort();
       }
+      if (logsAbortRef.current) {
+        logsAbortRef.current.abort();
+      }
     };
-  }, []);
+  }, [loadAnalysisLogs]);
 
   const actionStats = useMemo(() => {
     const total = actionItems.length;
@@ -109,6 +140,55 @@ export default function AIAnalysisPanel() {
   );
   const selectedCount = selectedActionItems.length;
   const executionEnabled = !!policy?.enable_execution;
+
+  const fetchRawPositionSnapshot = useCallback(async (requestId) => {
+    if (rawPositionAbortRef.current) {
+      rawPositionAbortRef.current.abort();
+    }
+    const rawController = new AbortController();
+    rawPositionAbortRef.current = rawController;
+    const rawTimeoutId = setTimeout(() => {
+      rawController.abort();
+    }, RAW_POSITION_TIMEOUT_MS);
+    try {
+      const rawRes = await api.getRecommendAnalyze({ signal: rawController.signal });
+      if (requestId !== requestIdRef.current) return;
+      setRawPositionData(rawRes?.data || rawRes || null);
+      setRawPositionError(null);
+    } catch (e) {
+      if (requestId !== requestIdRef.current) return;
+      if (rawController.signal.aborted) {
+        setRawPositionError(`原始仓位分析超时（>${RAW_POSITION_TIMEOUT_MS / 1000}s）`);
+        return;
+      }
+      setRawPositionError(e.message);
+    } finally {
+      clearTimeout(rawTimeoutId);
+      if (rawPositionAbortRef.current === rawController) {
+        rawPositionAbortRef.current = null;
+      }
+    }
+  }, []);
+
+  const waitForAgentTask = useCallback(async (taskId, { signal, timeoutMs }) => {
+    const begin = Date.now();
+    let lastRecord = null;
+    while (Date.now() - begin < timeoutMs) {
+      if (signal?.aborted) {
+        throw new Error('已取消本次分析。');
+      }
+      const res = await api.getAgentLog(taskId, { signal });
+      const record = res?.data ?? res;
+      lastRecord = record || null;
+      const status = String(record?.status || '').toUpperCase();
+      if (status === 'SUCCESS' || status === 'FAILED') {
+        return record;
+      }
+      await waitWithAbort(AGENT_LOG_POLL_MS, signal);
+    }
+    const lastStatus = String(lastRecord?.status || '').toUpperCase();
+    throw new Error(`分析超时（>${Math.round(timeoutMs / 1000)}s），当前状态: ${lastStatus || 'UNKNOWN'}`);
+  }, []);
 
   const runAgent = useCallback(async ({ symbols }) => {
     if (analyzeAbortRef.current) {
@@ -135,84 +215,47 @@ export default function AIAnalysisPanel() {
     setError(null);
     setRawPositionError(null);
     setRawPositionData(null);
+    setActiveTaskId(null);
     try {
-      let result;
-      if (normalizedSymbols.length <= 1) {
-        const body = {
+      const submitRes = await api.analyzeAgentAsync(
+        {
           mode: ANALYZE_MODE,
           symbols: normalizedSymbols,
-        };
-        const res = await api.analyzeAgent(body, { signal: controller.signal });
-        result = res.data || res;
-      } else {
-        const merged = createEmptyAnalysisResult();
-        const summaryParts = [];
-        const failures = [];
-        for (const symbol of normalizedSymbols) {
-          if (controller.signal.aborted) break;
-          try {
-            const res = await api.analyzeAgent(
-              { mode: ANALYZE_MODE, symbols: [symbol] },
-              { signal: controller.signal },
-            );
-            const part = res.data || res;
-            if (part?.summary) {
-              summaryParts.push(`[${symbol}] ${part.summary}`);
-            }
-            mergeAnalysisResult(merged, part);
-          } catch (e) {
-            if (controller.signal.aborted) {
-              throw e;
-            }
-            failures.push(`${symbol}: ${e.message}`);
-          }
-        }
-        if (!hasAnalysisResult(merged)) {
-          throw new Error(failures.length ? `全部币种分析失败: ${failures.join('；')}` : '分析失败');
-        }
-        if (summaryParts.length > 0) {
-          merged.summary = summaryParts.join('\n\n');
-        }
-        if (failures.length > 0) {
-          const failureText = `以下币种分析失败：${failures.join('；')}`;
-          merged.summary = merged.summary ? `${merged.summary}\n\n${failureText}` : failureText;
-        }
-        result = merged;
+        },
+        { signal: controller.signal },
+      );
+      const submitData = submitRes?.data ?? submitRes;
+      const taskId = Number(submitData?.task_id || 0);
+      if (!Number.isFinite(taskId) || taskId <= 0) {
+        throw new Error('异步任务创建失败：未返回 task_id');
+      }
+      if (requestId !== requestIdRef.current) return;
+      setActiveTaskId(taskId);
+      await loadAnalysisLogs();
+
+      const taskRecord = await waitForAgentTask(taskId, {
+        signal: controller.signal,
+        timeoutMs,
+      });
+      if (requestId !== requestIdRef.current) return;
+      await loadAnalysisLogs();
+      setActiveTaskId(null);
+
+      const taskStatus = String(taskRecord?.status || '').toUpperCase();
+      if (taskStatus !== 'SUCCESS') {
+        throw new Error(taskRecord?.errorMessage || `分析任务失败（${taskStatus || 'UNKNOWN'}）`);
+      }
+      const result = safeJSONParse(taskRecord?.responseBody, null);
+      if (!result || typeof result !== 'object') {
+        throw new Error('分析任务完成，但结果为空');
       }
 
-      if (requestId !== requestIdRef.current) return;
       setData(result);
       setAnalyzedSymbol(
         normalizedSymbols.length > 0 ? normalizedSymbols.join(', ') : '全部持仓'
       );
       setError(null);
-
-      const rawController = new AbortController();
-      rawPositionAbortRef.current = rawController;
-      const rawTimeoutId = setTimeout(() => {
-        rawController.abort();
-      }, RAW_POSITION_TIMEOUT_MS);
-      api
-        .getRecommendAnalyze({ signal: rawController.signal })
-        .then((rawRes) => {
-          if (requestId !== requestIdRef.current) return;
-          setRawPositionData(rawRes?.data || rawRes || null);
-          setRawPositionError(null);
-        })
-        .catch((e) => {
-          if (requestId !== requestIdRef.current) return;
-          if (rawController.signal.aborted) {
-            setRawPositionError(`原始仓位分析超时（>${RAW_POSITION_TIMEOUT_MS / 1000}s）`);
-            return;
-          }
-          setRawPositionError(e.message);
-        })
-        .finally(() => {
-          clearTimeout(rawTimeoutId);
-          if (rawPositionAbortRef.current === rawController) {
-            rawPositionAbortRef.current = null;
-          }
-        });
+      await fetchRawPositionSnapshot(requestId);
     } catch (e) {
       if (requestId !== requestIdRef.current) return;
       if (controller.signal.aborted) {
@@ -226,10 +269,11 @@ export default function AIAnalysisPanel() {
         analyzeAbortRef.current = null;
       }
       if (requestId === requestIdRef.current) {
+        setActiveTaskId(null);
         setLoading(false);
       }
     }
-  }, []);
+  }, [fetchRawPositionSnapshot, loadAnalysisLogs, waitForAgentTask]);
 
   const onAnalyzePress = () => {
     const raw = String(targetSymbol || '').trim();
@@ -347,6 +391,15 @@ export default function AIAnalysisPanel() {
     setSelectedActions(next);
   };
 
+  const onRefreshLogs = useCallback(() => {
+    if (logsAbortRef.current) {
+      logsAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    logsAbortRef.current = controller;
+    loadAnalysisLogs({ signal: controller.signal });
+  }, [loadAnalysisLogs]);
+
   return (
     <ScrollView style={s.root} contentContainerStyle={s.content}>
       <View style={s.headerCard}>
@@ -410,7 +463,7 @@ export default function AIAnalysisPanel() {
       {loading && (
         <View style={s.card}>
           <ActivityIndicator size="large" color={C.primary} />
-          <Text style={s.loadingText}>正在请求 Agent，请稍候...</Text>
+          <Text style={s.loadingText}>正在等待 Agent 异步任务{currentTaskLabel ? ` ${currentTaskLabel}` : ''}，请稍候...</Text>
           <Text style={s.loadingHint}>reasoner 模型可能需要 1-3 分钟；若不想等待可点击上方“取消分析”。</Text>
         </View>
       )}
@@ -421,6 +474,44 @@ export default function AIAnalysisPanel() {
           <Text style={s.errorText}>{error}</Text>
         </View>
       )}
+
+      <View style={s.card}>
+        <View style={s.logHeaderRow}>
+          <Text style={s.cardTitle}>Agent分析记录</Text>
+          <TouchableOpacity style={s.logRefreshBtn} onPress={onRefreshLogs} disabled={logsLoading}>
+            <Text style={[s.logRefreshText, logsLoading ? s.btnDisabled : null]}>{logsLoading ? '刷新中...' : '刷新'}</Text>
+          </TouchableOpacity>
+        </View>
+        {!!logsError && (
+          <Text style={[s.emptyText, { color: C.warn }]}>记录加载失败: {logsError}</Text>
+        )}
+        {!logsError && analysisLogs.length === 0 && (
+          <Text style={s.emptyText}>暂无分析记录</Text>
+        )}
+        {(analysisLogs || []).map((item, idx) => {
+          const status = String(item?.status || '').toUpperCase();
+          const statusStyle = status === 'SUCCESS'
+            ? s.logStatusSuccess
+            : status === 'FAILED'
+              ? s.logStatusFailed
+              : status === 'RUNNING'
+                ? s.logStatusRunning
+                : s.logStatusPending;
+          const symbols = String(item?.symbols || '').trim() || '全部持仓';
+          return (
+            <View key={`log-${item?.id || idx}`} style={s.logRow}>
+              <View style={s.logRowTop}>
+                <Text style={s.logTitle}>#{item?.id || '--'} · {item?.mode || '-'}</Text>
+                <Text style={[s.logStatusTag, statusStyle]}>{status || 'UNKNOWN'}</Text>
+              </View>
+              <Text style={s.logMeta}>标的: {symbols}</Text>
+              <Text style={s.logMeta}>执行: {item?.execute ? '是' : '否'} · 耗时: {Number(item?.durationMs || 0)}ms</Text>
+              <Text style={s.logMeta}>时间: {formatTimestamp(item?.createdAt)}</Text>
+              {!!item?.errorMessage && <Text style={s.logError}>{item.errorMessage}</Text>}
+            </View>
+          );
+        })}
+      </View>
 
       {!!data && !loading && (
         <>
@@ -690,6 +781,23 @@ const s = StyleSheet.create({
     fontSize: fontSize.md,
     fontWeight: '800',
   },
+  logHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  logRefreshBtn: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+  },
+  logRefreshText: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+  },
   loadingText: {
     color: C.textDim,
     fontSize: fontSize.sm,
@@ -726,6 +834,59 @@ const s = StyleSheet.create({
   emptyText: {
     color: C.textDim,
     fontSize: fontSize.sm,
+  },
+  logRow: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    gap: 3,
+  },
+  logRowTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  logTitle: {
+    color: C.text,
+    fontSize: fontSize.sm,
+    fontWeight: '800',
+    flex: 1,
+    marginRight: spacing.sm,
+  },
+  logStatusTag: {
+    fontSize: fontSize.xs,
+    fontWeight: '800',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  logStatusSuccess: {
+    color: C.success,
+    backgroundColor: C.successBg,
+  },
+  logStatusFailed: {
+    color: C.danger,
+    backgroundColor: C.dangerBg,
+  },
+  logStatusRunning: {
+    color: C.warn,
+    backgroundColor: C.warnBg,
+  },
+  logStatusPending: {
+    color: C.textDim,
+    backgroundColor: C.bg,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  logMeta: {
+    color: C.textDim,
+    fontSize: fontSize.xs,
+  },
+  logError: {
+    color: C.warn,
+    fontSize: fontSize.xs,
   },
   rawPosRow: {
     borderWidth: 1,
@@ -974,42 +1135,42 @@ function parseSymbolsInput(input) {
   return normalizeSymbolList(tokens);
 }
 
-function createEmptyAnalysisResult() {
-  return {
-    summary: '',
-    position_analysis: [],
-    signal_evaluation: [],
-    journal_review: {
-      patterns: [],
-      weaknesses: [],
-      strengths: [],
-      suggestion: '',
-    },
-    action_items: [],
-  };
+function waitWithAbort(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('aborted'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (signal) {
+        signal.removeEventListener('abort', onAbort);
+      }
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(new Error('aborted'));
+    };
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
 }
 
-function mergeAnalysisResult(base, part) {
-  if (!base || !part) return;
-  if (Array.isArray(part.position_analysis)) {
-    base.position_analysis = base.position_analysis.concat(part.position_analysis);
-  }
-  if (Array.isArray(part.signal_evaluation)) {
-    base.signal_evaluation = base.signal_evaluation.concat(part.signal_evaluation);
-  }
-  if (Array.isArray(part.action_items)) {
-    base.action_items = base.action_items.concat(part.action_items);
+function safeJSONParse(text, fallback) {
+  if (typeof text !== 'string' || !text.trim()) return fallback;
+  try {
+    return JSON.parse(text);
+  } catch (_e) {
+    return fallback;
   }
 }
 
-function hasAnalysisResult(result) {
-  if (!result) return false;
-  return (
-    (Array.isArray(result.position_analysis) && result.position_analysis.length > 0) ||
-    (Array.isArray(result.signal_evaluation) && result.signal_evaluation.length > 0) ||
-    (Array.isArray(result.action_items) && result.action_items.length > 0) ||
-    !!String(result.summary || '').trim()
-  );
+function formatTimestamp(value) {
+  const ts = Date.parse(String(value || ''));
+  if (!Number.isFinite(ts)) return '--';
+  return new Date(ts).toLocaleString('zh-CN', { hour12: false });
 }
 
 function formatPrice(value) {

@@ -17,12 +17,14 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/cloudwego/hertz/pkg/app"
 	hertzutils "github.com/cloudwego/hertz/pkg/common/utils"
+	"gorm.io/gorm"
 )
 
 var chatModel *openai.ChatModel
 var chatModelName string
 
 const analyzeOverallTimeout = 55 * time.Second
+const analyzeAsyncTaskTimeout = 2 * time.Minute
 
 // InitAgent 初始化 Eino Agent（在 main.go 中调用）。
 func InitAgent(cfg api.LLMConfig) error {
@@ -321,29 +323,63 @@ func HandleAnalyze(c context.Context, ctx *app.RequestContext) {
 		req.Execute = execRaw == "1" || strings.EqualFold(execRaw, "true")
 		mockRaw := strings.TrimSpace(ctx.DefaultQuery("mock", "false"))
 		req.Mock = mockRaw == "1" || strings.EqualFold(mockRaw, "true")
+		asyncRaw := strings.TrimSpace(ctx.DefaultQuery("async", "false"))
+		req.Async = asyncRaw == "1" || strings.EqualFold(asyncRaw, "true")
+	}
+	// query 参数优先级高于 body 字段，便于灰度切换。
+	asyncRaw := strings.TrimSpace(ctx.DefaultQuery("async", ""))
+	if asyncRaw != "" {
+		req.Async = asyncRaw == "1" || strings.EqualFold(asyncRaw, "true")
 	}
 
 	if req.Mode == "" {
 		req.Mode = "full"
 	}
 	req.Symbols = normalizeAndDedupeSymbols(req.Symbols)
-	log.Printf("[Agent][%s] analyze start method=%s mode=%s symbols=%v execute=%v mock=%v", reqID, string(ctx.Method()), req.Mode, req.Symbols, req.Execute, req.Mock)
+	log.Printf("[Agent][%s] analyze start method=%s mode=%s symbols=%v execute=%v mock=%v async=%v", reqID, string(ctx.Method()), req.Mode, req.Symbols, req.Execute, req.Mock, req.Async)
 	if !req.Mock && chatModel == nil {
 		log.Printf("[Agent][%s] analyze llm_not_configured", reqID)
 		ctx.JSON(http.StatusServiceUnavailable, hertzutils.H{"error": "Agent 未配置 LLM"})
 		return
 	}
 
+	if req.Async {
+		handleAnalyzeAsync(reqID, req, ctx)
+		return
+	}
+
+	result, warning, err := runAnalyzePipeline(c, reqID, req)
+	if err != nil {
+		saveAnalyzeLog(req, nil, nil, err, time.Since(start))
+		log.Printf("[Agent][%s] analyze failed after=%v err=%v", reqID, time.Since(start).Round(time.Millisecond), err)
+		ctx.JSON(http.StatusInternalServerError, hertzutils.H{"error": err.Error()})
+		return
+	}
+
+	saveAnalyzeLog(req, result, result.Execution, nil, time.Since(start))
+	log.Printf("[Agent][%s] analyze done after=%v action_items=%d", reqID, time.Since(start).Round(time.Millisecond), len(result.ActionItems))
+	if warning != "" {
+		ctx.JSON(http.StatusOK, hertzutils.H{
+			"data":    result,
+			"warning": warning,
+		})
+		return
+	}
+	ctx.JSON(http.StatusOK, hertzutils.H{"data": result})
+}
+
+func runAnalyzePipeline(ctx context.Context, reqID string, req AnalysisRequest) (*AnalysisOutput, string, error) {
 	var (
-		result *AnalysisOutput
-		err    error
+		result  *AnalysisOutput
+		warning string
 	)
 	if req.Mock {
 		log.Printf("[Agent][%s] analyze using_mock_response", reqID)
 		result = buildMockAnalysisOutput(req)
 	} else {
-		runCtx, cancel := context.WithTimeout(c, analyzeOverallTimeout)
+		runCtx, cancel := context.WithTimeout(ctx, analyzeOverallTimeout)
 		defer cancel()
+		var err error
 		if shouldSplitAnalyzeBySymbol(req) {
 			log.Printf("[Agent][%s] analyze split_by_symbol symbols=%v", reqID, req.Symbols)
 			result, err = runAnalysisBySymbol(runCtx, req)
@@ -352,30 +388,23 @@ func HandleAnalyze(c context.Context, ctx *app.RequestContext) {
 		}
 		if err != nil {
 			if isLLMTimeoutError(err) {
-				fallback := buildTimeoutFallbackOutput(req, err)
-				saveAnalyzeLog(req, fallback, nil, err, time.Since(start))
-				log.Printf("[Agent][%s] analyze timeout after=%v err=%v (returned fallback)", reqID, time.Since(start).Round(time.Millisecond), err)
-				ctx.JSON(http.StatusOK, hertzutils.H{
-					"data":    fallback,
-					"warning": "agent analyze timeout, returned fallback result",
-				})
-				return
+				log.Printf("[Agent][%s] analyze timeout err=%v (returned fallback)", reqID, err)
+				result = buildTimeoutFallbackOutput(req, err)
+				warning = "agent analyze timeout, returned fallback result"
+			} else {
+				return nil, "", err
 			}
-			saveAnalyzeLog(req, nil, nil, err, time.Since(start))
-			log.Printf("[Agent][%s] analyze failed after=%v err=%v", reqID, time.Since(start).Round(time.Millisecond), err)
-			ctx.JSON(http.StatusInternalServerError, hertzutils.H{"error": err.Error()})
-			return
 		}
 	}
 
-	if req.Execute {
+	if req.Execute && result != nil {
 		items := req.ActionItems
 		if len(items) == 0 {
 			items = result.ActionItems
 		}
 		execStart := time.Now()
 		log.Printf("[Agent][%s] execute start items=%d", reqID, len(items))
-		result.Execution = executeActionItems(c, items)
+		result.Execution = executeActionItems(ctx, items)
 		if result.Execution != nil {
 			log.Printf("[Agent][%s] execute done after=%v requested=%d success=%d failed=%d skipped=%d",
 				reqID,
@@ -390,9 +419,88 @@ func HandleAnalyze(c context.Context, ctx *app.RequestContext) {
 		}
 	}
 
-	saveAnalyzeLog(req, result, result.Execution, nil, time.Since(start))
-	log.Printf("[Agent][%s] analyze done after=%v action_items=%d", reqID, time.Since(start).Round(time.Millisecond), len(result.ActionItems))
-	ctx.JSON(http.StatusOK, hertzutils.H{"data": result})
+	if result == nil {
+		result = &AnalysisOutput{}
+	}
+	return result, warning, nil
+}
+
+func handleAnalyzeAsync(reqID string, req AnalysisRequest, ctx *app.RequestContext) {
+	record := &api.AgentAnalysisLog{
+		Mode:        normalizeMode(req.Mode),
+		Symbols:     strings.Join(req.Symbols, ","),
+		Execute:     req.Execute,
+		Status:      api.AgentAnalysisStatusPending,
+		RequestBody: marshalToString(req),
+	}
+	if err := api.SaveAgentAnalysisLog(record); err != nil {
+		log.Printf("[Agent][%s] async create_log_failed err=%v", reqID, err)
+		ctx.JSON(http.StatusInternalServerError, hertzutils.H{"error": "创建异步任务失败: " + err.Error()})
+		return
+	}
+	if record.ID == 0 {
+		ctx.JSON(http.StatusInternalServerError, hertzutils.H{"error": "异步分析需要启用数据库日志"})
+		return
+	}
+
+	log.Printf("[Agent][%s] async accepted task_id=%d", reqID, record.ID)
+	go runAnalyzeAsyncTask(record.ID, reqID, req)
+
+	ctx.JSON(http.StatusAccepted, hertzutils.H{
+		"data": hertzutils.H{
+			"task_id": record.ID,
+			"status":  record.Status,
+		},
+	})
+}
+
+func runAnalyzeAsyncTask(taskID uint, reqID string, req AnalysisRequest) {
+	workerID := fmt.Sprintf("%s-%d", reqID, taskID)
+	start := time.Now()
+	_ = api.UpdateAgentAnalysisLog(taskID, map[string]any{
+		"status":        api.AgentAnalysisStatusRunning,
+		"error_message": "",
+	})
+	log.Printf("[Agent][%s] async start", workerID)
+
+	taskCtx, cancel := context.WithTimeout(context.Background(), analyzeAsyncTaskTimeout)
+	defer cancel()
+
+	result, warning, runErr := runAnalyzePipeline(taskCtx, workerID, req)
+	durationMs := int64(time.Since(start) / time.Millisecond)
+	if runErr != nil {
+		log.Printf("[Agent][%s] async failed after=%v err=%v", workerID, time.Since(start).Round(time.Millisecond), runErr)
+		_ = api.UpdateAgentAnalysisLog(taskID, map[string]any{
+			"status":         api.AgentAnalysisStatusFailed,
+			"error_message":  runErr.Error(),
+			"duration_ms":    durationMs,
+			"response_body":  "",
+			"execution_body": "",
+		})
+		return
+	}
+
+	respJSON := marshalToString(result)
+	execJSON := ""
+	if result != nil {
+		execJSON = marshalToString(result.Execution)
+	}
+	errMsg := ""
+	if warning != "" {
+		errMsg = warning
+	}
+	if err := api.UpdateAgentAnalysisLog(taskID, map[string]any{
+		"status":         api.AgentAnalysisStatusSuccess,
+		"error_message":  errMsg,
+		"duration_ms":    durationMs,
+		"response_body":  respJSON,
+		"execution_body": execJSON,
+	}); err != nil {
+		log.Printf("[Agent][%s] async update_log_failed err=%v", workerID, err)
+		return
+	}
+
+	log.Printf("[Agent][%s] async done after=%v", workerID, time.Since(start).Round(time.Millisecond))
 }
 
 // HandleExecute POST /tool/agent/execute。
@@ -585,7 +693,33 @@ func buildTimeoutFallbackOutput(req AnalysisRequest, cause error) *AnalysisOutpu
 	}
 }
 
-// HandleLogs GET /tool/agent/logs?limit=50&status=SUCCESS|FAILED&execute=true|false
+// HandleLog GET /tool/agent/log?id=123
+func HandleLog(c context.Context, ctx *app.RequestContext) {
+	_ = c
+	idRaw := strings.TrimSpace(ctx.DefaultQuery("id", ""))
+	id64, err := strconv.ParseUint(idRaw, 10, 32)
+	if err != nil || id64 == 0 {
+		ctx.JSON(http.StatusBadRequest, hertzutils.H{"error": "id 参数无效"})
+		return
+	}
+
+	record, err := api.GetAgentAnalysisLogByID(uint(id64))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			ctx.JSON(http.StatusNotFound, hertzutils.H{"error": "记录不存在"})
+			return
+		}
+		ctx.JSON(http.StatusInternalServerError, hertzutils.H{"error": err.Error()})
+		return
+	}
+	if record == nil {
+		ctx.JSON(http.StatusNotFound, hertzutils.H{"error": "记录不存在"})
+		return
+	}
+	ctx.JSON(http.StatusOK, hertzutils.H{"data": record})
+}
+
+// HandleLogs GET /tool/agent/logs?limit=50&status=PENDING|RUNNING|SUCCESS|FAILED&execute=true|false
 func HandleLogs(c context.Context, ctx *app.RequestContext) {
 	limit, _ := strconv.Atoi(strings.TrimSpace(ctx.DefaultQuery("limit", "50")))
 	status := strings.ToUpper(strings.TrimSpace(ctx.DefaultQuery("status", "")))
@@ -618,19 +752,15 @@ func saveAnalyzeLog(req AnalysisRequest, output *AnalysisOutput, exec *Execution
 	respJSON := marshalToString(output)
 	execJSON := marshalToString(exec)
 
-	mode := strings.TrimSpace(req.Mode)
-	if mode == "" {
-		mode = "full"
-	}
-	status := "SUCCESS"
+	status := api.AgentAnalysisStatusSuccess
 	errMsg := ""
 	if runErr != nil {
-		status = "FAILED"
+		status = api.AgentAnalysisStatusFailed
 		errMsg = runErr.Error()
 	}
 
 	_ = api.SaveAgentAnalysisLog(&api.AgentAnalysisLog{
-		Mode:          mode,
+		Mode:          normalizeMode(req.Mode),
 		Symbols:       strings.Join(req.Symbols, ","),
 		Execute:       req.Execute,
 		Status:        status,
@@ -640,6 +770,14 @@ func saveAnalyzeLog(req AnalysisRequest, output *AnalysisOutput, exec *Execution
 		ResponseBody:  respJSON,
 		ExecutionBody: execJSON,
 	})
+}
+
+func normalizeMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return "full"
+	}
+	return mode
 }
 
 func isLLMTimeoutError(err error) bool {

@@ -202,6 +202,7 @@ func main() {
 		apiGroup.POST("/agent/analyze", agent.HandleAnalyze)
 		apiGroup.GET("/agent/analyze", agent.HandleAnalyze)
 		apiGroup.POST("/agent/execute", agent.HandleExecute)
+		apiGroup.GET("/agent/log", agent.HandleLog)
 		apiGroup.GET("/agent/logs", agent.HandleLogs)
 		apiGroup.GET("/agent/policy", agent.HandlePolicy)
 

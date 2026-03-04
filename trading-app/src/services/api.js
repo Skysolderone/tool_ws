@@ -167,7 +167,19 @@ export default {
   // 持仓分析
   getRecommendAnalyze: (requestOptions = {}) => apiCall('GET', '/recommend/analyze', null, requestOptions),
   analyzeAgent: (req, requestOptions = {}) => apiCall('POST', '/agent/analyze', req, requestOptions),
+  analyzeAgentAsync: (req, requestOptions = {}) =>
+    apiCall('POST', '/agent/analyze', { ...(req || {}), async: true }, requestOptions),
   executeAgent: (req) => apiCall('POST', '/agent/execute', req),
+  getAgentLog: (id, requestOptions = {}) =>
+    apiCall('GET', `/agent/log?id=${encodeURIComponent(String(id || ''))}`, null, requestOptions),
+  getAgentLogs: ({ limit = 50, status = '', execute } = {}, requestOptions = {}) => {
+    const parts = [`limit=${Number(limit) > 0 ? Number(limit) : 50}`];
+    if (status) parts.push(`status=${encodeURIComponent(String(status))}`);
+    if (typeof execute === 'boolean') {
+      parts.push(`execute=${execute ? 'true' : 'false'}`);
+    }
+    return apiCall('GET', `/agent/logs?${parts.join('&')}`, null, requestOptions);
+  },
   getAgentPolicy: () => apiCall('GET', '/agent/policy'),
 
   // 本地止盈止损

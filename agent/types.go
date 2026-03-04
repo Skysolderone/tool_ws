@@ -5,6 +5,7 @@ type AnalysisRequest struct {
 	Mode        string       `json:"mode"`                   // full|positions|signals|journal|sentiment
 	Symbols     []string     `json:"symbols"`                // 可选：指定币种过滤
 	Mock        bool         `json:"mock,omitempty"`         // 调试：返回 mock 分析结果（不调用 LLM）
+	Async       bool         `json:"async,omitempty"`        // 异步执行：立即返回任务ID，结果写入日志
 	Execute     bool         `json:"execute,omitempty"`      // 是否执行 action_items
 	ActionItems []ActionItem `json:"action_items,omitempty"` // 可选：执行指定动作；为空时执行本次分析动作
 }
