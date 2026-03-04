@@ -612,13 +612,11 @@ export default function App() {
           }} />
         )}
 
-        {/* ==================== 资讯 Tab ==================== */}
-        {activeTab === 'info' && (
-          <>
-            {newsPanelMounted && (
-              <NewsPanel onHasNew={handleNewsHasNew} />
-            )}
-          </>
+        {/* ==================== 资讯面板（常驻，按 Tab 显隐） ==================== */}
+        {newsPanelMounted && (
+          <View style={activeTab === 'info' ? undefined : styles.hidden}>
+            <NewsPanel onHasNew={handleNewsHasNew} />
+          </View>
         )}
 
         {/* ==================== 我的 Tab ==================== */}
@@ -628,9 +626,6 @@ export default function App() {
       </ScrollView>
 
       {/* 懒挂载的后台面板（保持 WS 连接） */}
-      {newsPanelMounted && activeTab !== 'info' && (
-        <View style={styles.hidden}><NewsPanel onHasNew={handleNewsHasNew} /></View>
-      )}
       {hyperPanelMounted && !(activeTab === 'monitor' && monitorSubTab === 'hyper') && (
         <View style={styles.hidden}>
           {watchAddresses.map((item) => (
