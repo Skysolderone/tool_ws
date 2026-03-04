@@ -115,6 +115,9 @@ func ensureDBIndexes() error {
 	if err := createIndexIfMissing(&AgentAnalysisLog{}, "Mode"); err != nil {
 		return err
 	}
+	if err := createIndexIfMissing(&AgentAnalysisLog{}, "Source"); err != nil {
+		return err
+	}
 	if err := createIndexIfMissing(&AgentAnalysisLog{}, "Execute"); err != nil {
 		return err
 	}

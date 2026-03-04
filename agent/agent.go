@@ -58,6 +58,7 @@ func InitAgent(cfg api.LLMConfig) error {
 	chatModel = model
 	chatModelName = strings.TrimSpace(cfg.Model)
 	log.Printf("[Agent] Initialized with provider=%s model=%s", cfg.Provider, cfg.Model)
+	StartDailyAutoAnalyze()
 	return nil
 }
 
@@ -426,30 +427,21 @@ func runAnalyzePipeline(ctx context.Context, reqID string, req AnalysisRequest) 
 }
 
 func handleAnalyzeAsync(reqID string, req AnalysisRequest, ctx *app.RequestContext) {
-	record := &api.AgentAnalysisLog{
-		Mode:        normalizeMode(req.Mode),
-		Symbols:     strings.Join(req.Symbols, ","),
-		Execute:     req.Execute,
-		Status:      api.AgentAnalysisStatusPending,
-		RequestBody: marshalToString(req),
-	}
-	if err := api.SaveAgentAnalysisLog(record); err != nil {
+	taskID, err := enqueueAsyncAnalyze(reqID, req, api.AgentAnalysisSourceAppManual)
+	if err != nil {
 		log.Printf("[Agent][%s] async create_log_failed err=%v", reqID, err)
+		if strings.Contains(strings.ToLower(err.Error()), "database logging") {
+			ctx.JSON(http.StatusInternalServerError, hertzutils.H{"error": "异步分析需要启用数据库日志"})
+			return
+		}
 		ctx.JSON(http.StatusInternalServerError, hertzutils.H{"error": "创建异步任务失败: " + err.Error()})
 		return
 	}
-	if record.ID == 0 {
-		ctx.JSON(http.StatusInternalServerError, hertzutils.H{"error": "异步分析需要启用数据库日志"})
-		return
-	}
-
-	log.Printf("[Agent][%s] async accepted task_id=%d", reqID, record.ID)
-	go runAnalyzeAsyncTask(record.ID, reqID, req)
 
 	ctx.JSON(http.StatusAccepted, hertzutils.H{
 		"data": hertzutils.H{
-			"task_id": record.ID,
-			"status":  record.Status,
+			"task_id": taskID,
+			"status":  api.AgentAnalysisStatusPending,
 		},
 	})
 }
@@ -506,6 +498,7 @@ func runAnalyzeAsyncTask(taskID uint, reqID string, req AnalysisRequest) {
 // HandleExecute POST /tool/agent/execute。
 // 仅执行前端传入的 action_items，不触发 LLM 分析。
 func HandleExecute(c context.Context, ctx *app.RequestContext) {
+	start := time.Now()
 	var req AnalysisRequest
 	if err := ctx.BindJSON(&req); err != nil {
 		ctx.JSON(http.StatusBadRequest, hertzutils.H{"error": "请求体 JSON 无效"})
@@ -517,7 +510,45 @@ func HandleExecute(c context.Context, ctx *app.RequestContext) {
 	}
 
 	result := executeActionItems(c, req.ActionItems)
+	execErrMsg := ""
+	if result != nil && result.Failed > 0 {
+		execErrMsg = fmt.Sprintf("execution has failed items: %d", result.Failed)
+	}
+	_ = api.SaveAgentAnalysisLog(&api.AgentAnalysisLog{
+		Mode:          "execute",
+		Source:        api.AgentAnalysisSourceAppManual,
+		Symbols:       strings.Join(extractSymbolsFromActionItems(req.ActionItems), ","),
+		Execute:       true,
+		Status:        api.AgentAnalysisStatusSuccess,
+		ErrorMessage:  execErrMsg,
+		DurationMs:    int64(time.Since(start) / time.Millisecond),
+		RequestBody:   marshalToString(req),
+		ExecutionBody: marshalToString(result),
+	})
 	ctx.JSON(http.StatusOK, hertzutils.H{"data": result})
+}
+
+func extractSymbolsFromActionItems(items []ActionItem) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		symbol := strings.ToUpper(strings.TrimSpace(item.Symbol))
+		if symbol == "" {
+			continue
+		}
+		if _, ok := set[symbol]; ok {
+			continue
+		}
+		set[symbol] = struct{}{}
+		out = append(out, symbol)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func parseSymbolsQuery(raw string) []string {
@@ -761,6 +792,7 @@ func saveAnalyzeLog(req AnalysisRequest, output *AnalysisOutput, exec *Execution
 
 	_ = api.SaveAgentAnalysisLog(&api.AgentAnalysisLog{
 		Mode:          normalizeMode(req.Mode),
+		Source:        api.AgentAnalysisSourceAppManual,
 		Symbols:       strings.Join(req.Symbols, ","),
 		Execute:       req.Execute,
 		Status:        status,

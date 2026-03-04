@@ -490,6 +490,7 @@ export default function AIAnalysisPanel() {
         )}
         {(analysisLogs || []).map((item, idx) => {
           const status = String(item?.status || '').toUpperCase();
+          const source = String(item?.source || '').toUpperCase();
           const statusStyle = status === 'SUCCESS'
             ? s.logStatusSuccess
             : status === 'FAILED'
@@ -504,6 +505,7 @@ export default function AIAnalysisPanel() {
                 <Text style={s.logTitle}>#{item?.id || '--'} · {item?.mode || '-'}</Text>
                 <Text style={[s.logStatusTag, statusStyle]}>{status || 'UNKNOWN'}</Text>
               </View>
+              <Text style={s.logMeta}>来源: {formatLogSource(source)}</Text>
               <Text style={s.logMeta}>标的: {symbols}</Text>
               <Text style={s.logMeta}>执行: {item?.execute ? '是' : '否'} · 耗时: {Number(item?.durationMs || 0)}ms</Text>
               <Text style={s.logMeta}>时间: {formatTimestamp(item?.createdAt)}</Text>
@@ -1171,6 +1173,12 @@ function formatTimestamp(value) {
   const ts = Date.parse(String(value || ''));
   if (!Number.isFinite(ts)) return '--';
   return new Date(ts).toLocaleString('zh-CN', { hour12: false });
+}
+
+function formatLogSource(source) {
+  if (source === 'DAILY_AUTO') return '每日自动';
+  if (source === 'APP_MANUAL') return 'App手动';
+  return source || '--';
 }
 
 function formatPrice(value) {

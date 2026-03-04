@@ -10,12 +10,16 @@ const (
 	AgentAnalysisStatusRunning = "RUNNING"
 	AgentAnalysisStatusSuccess = "SUCCESS"
 	AgentAnalysisStatusFailed  = "FAILED"
+
+	AgentAnalysisSourceAppManual = "APP_MANUAL"
+	AgentAnalysisSourceDailyAuto = "DAILY_AUTO"
 )
 
 // AgentAnalysisLog Agent 分析请求/结果日志。
 type AgentAnalysisLog struct {
 	ID            uint      `gorm:"primaryKey" json:"id"`
 	Mode          string    `gorm:"type:varchar(20);index" json:"mode"`
+	Source        string    `gorm:"type:varchar(20);index" json:"source"` // APP_MANUAL / DAILY_AUTO
 	Symbols       string    `gorm:"type:text" json:"symbols"`
 	Execute       bool      `gorm:"index" json:"execute"`
 	Status        string    `gorm:"type:varchar(20);index" json:"status"` // PENDING / RUNNING / SUCCESS / FAILED
@@ -37,6 +41,11 @@ func SaveAgentAnalysisLog(record *AgentAnalysisLog) error {
 		record.Status = AgentAnalysisStatusSuccess
 	} else {
 		record.Status = normalizeAgentAnalysisStatus(record.Status)
+	}
+	if record.Source == "" {
+		record.Source = AgentAnalysisSourceAppManual
+	} else {
+		record.Source = normalizeAgentAnalysisSource(record.Source)
 	}
 	return DB.Create(record).Error
 }
@@ -87,6 +96,9 @@ func UpdateAgentAnalysisLog(id uint, updates map[string]any) error {
 	if status, ok := updates["status"].(string); ok {
 		updates["status"] = normalizeAgentAnalysisStatus(status)
 	}
+	if source, ok := updates["source"].(string); ok {
+		updates["source"] = normalizeAgentAnalysisSource(source)
+	}
 	return DB.Model(&AgentAnalysisLog{}).Where("id = ?", id).Updates(updates).Error
 }
 
@@ -97,5 +109,15 @@ func normalizeAgentAnalysisStatus(status string) string {
 		return status
 	default:
 		return AgentAnalysisStatusFailed
+	}
+}
+
+func normalizeAgentAnalysisSource(source string) string {
+	source = strings.ToUpper(strings.TrimSpace(source))
+	switch source {
+	case AgentAnalysisSourceAppManual, AgentAnalysisSourceDailyAuto:
+		return source
+	default:
+		return AgentAnalysisSourceAppManual
 	}
 }
