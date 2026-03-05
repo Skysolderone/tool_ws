@@ -2,6 +2,7 @@ package api
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -130,6 +131,18 @@ func TestRoundToStepSize(t *testing.T) {
 			quantity: 0.123,
 			stepSize: 0.001,
 			expected: 0.123,
+		},
+		{
+			name:     "浮点边界 0.3/0.1",
+			quantity: 0.3,
+			stepSize: 0.1,
+			expected: 0.3,
+		},
+		{
+			name:     "浮点边界 0.7/0.1",
+			quantity: 0.7,
+			stepSize: 0.1,
+			expected: 0.7,
 		},
 	}
 
@@ -402,5 +415,101 @@ func TestNotionalValue_Calculation(t *testing.T) {
 			t.Logf("%.2f USDT × %.0fx = %.2f USDT notional value",
 				tt.margin, tt.leverage, notional)
 		})
+	}
+}
+
+func TestParseFilterFloat(t *testing.T) {
+	tests := []struct {
+		name   string
+		filter map[string]interface{}
+		keys   []string
+		want   float64
+		ok     bool
+	}{
+		{
+			name:   "string value",
+			filter: map[string]interface{}{"stepSize": "0.001"},
+			keys:   []string{"stepSize"},
+			want:   0.001,
+			ok:     true,
+		},
+		{
+			name:   "float value",
+			filter: map[string]interface{}{"minQty": 0.01},
+			keys:   []string{"minQty"},
+			want:   0.01,
+			ok:     true,
+		},
+		{
+			name:   "fallback key",
+			filter: map[string]interface{}{"notional": "100"},
+			keys:   []string{"minNotional", "notional"},
+			want:   100,
+			ok:     true,
+		},
+		{
+			name:   "invalid value",
+			filter: map[string]interface{}{"stepSize": "abc"},
+			keys:   []string{"stepSize"},
+			want:   0,
+			ok:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseFilterFloat(tt.filter, tt.keys...)
+			if ok != tt.ok {
+				t.Fatalf("parseFilterFloat() ok = %v, want %v", ok, tt.ok)
+			}
+			if tt.ok && math.Abs(got-tt.want) > 1e-12 {
+				t.Fatalf("parseFilterFloat() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetMinimumOrderNotional(t *testing.T) {
+	t.Run("minQty dominates", func(t *testing.T) {
+		rules := symbolQuantityRules{
+			MinQty:      0.001,
+			MinNotional: 5,
+		}
+		got := getMinimumOrderNotional(100000, rules)
+		want := 100.0 // 0.001 * 100000
+		if math.Abs(got-want) > 1e-9 {
+			t.Fatalf("getMinimumOrderNotional() = %.8f, want %.8f", got, want)
+		}
+	})
+
+	t.Run("minNotional dominates", func(t *testing.T) {
+		rules := symbolQuantityRules{
+			MinQty:      0.001,
+			MinNotional: 5,
+		}
+		got := getMinimumOrderNotional(1000, rules)
+		want := 5.0 // max(0.001*1000=1, 5)
+		if math.Abs(got-want) > 1e-9 {
+			t.Fatalf("getMinimumOrderNotional() = %.8f, want %.8f", got, want)
+		}
+	})
+}
+
+func TestFormatMinimumOrderHint(t *testing.T) {
+	rules := symbolQuantityRules{
+		MinQty:      0.001,
+		MinNotional: 5,
+	}
+	hint := formatMinimumOrderHint("BTCUSDT", 100000, 10, rules)
+	contains := []string{
+		"BTCUSDT",
+		"最小持仓价值 100.0000 USDT",
+		"最小下单量 0.0010000000",
+		"按 10x 杠杆至少需要 10.0000 USDT 保证金",
+	}
+	for _, part := range contains {
+		if !strings.Contains(hint, part) {
+			t.Fatalf("hint %q missing %q", hint, part)
+		}
 	}
 }

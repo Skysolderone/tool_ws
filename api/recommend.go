@@ -318,6 +318,7 @@ func rebuildFinalCache() {
 	if len(items) > 15 {
 		items = items[:15]
 	}
+	persistRecommendSignalHistoryBatch(items, now, "engine")
 
 	resp := &RecommendResponse{
 		Items:     items,
@@ -438,6 +439,7 @@ func handleRealtimeScan(c context.Context, ctx *app.RequestContext, symbols []st
 	if len(items) > 15 {
 		items = items[:15]
 	}
+	persistRecommendSignalHistoryBatch(items, now, "realtime")
 
 	ctx.JSON(http.StatusOK, utils.H{
 		"data": RecommendResponse{

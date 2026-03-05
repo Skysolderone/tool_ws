@@ -68,6 +68,7 @@ func autoMigrateSchema() error {
 	return DB.AutoMigrate(
 		&TradeRecord{},
 		&OperationRecord{},
+		&RecommendSignalRecord{},
 		&LiquidationStatRecord{},
 		&LocalTPSLCondition{},
 		&StrategyState{},
@@ -114,6 +115,18 @@ func ensureDBIndexes() error {
 		return err
 	}
 	if err := createIndexIfMissing(&OperationRecord{}, "RelatedOrderID"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&RecommendSignalRecord{}, "Symbol"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&RecommendSignalRecord{}, "Direction"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&RecommendSignalRecord{}, "Source"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&RecommendSignalRecord{}, "ScannedAt"); err != nil {
 		return err
 	}
 	if err := createIndexIfMissing(&AgentAnalysisLog{}, "Mode"); err != nil {
@@ -245,6 +258,23 @@ type OperationRecord struct {
 	RelatedOrderID int64     `gorm:"index" json:"relatedOrderId,omitempty"`
 	CreatedAt      time.Time `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt      time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
+}
+
+// RecommendSignalRecord 推荐信号历史记录（数据库永久保存）。
+type RecommendSignalRecord struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	Symbol     string    `gorm:"type:varchar(20);index" json:"symbol"`
+	Direction  string    `gorm:"type:varchar(10);index" json:"direction"` // LONG / SHORT
+	Confidence int       `json:"confidence"`
+	Entry      float64   `gorm:"type:numeric(36,8)" json:"entry"`
+	StopLoss   float64   `gorm:"type:numeric(36,8)" json:"stopLoss"`
+	TakeProfit float64   `gorm:"type:numeric(36,8)" json:"takeProfit"`
+	Reasons    string    `gorm:"type:text" json:"reasons"` // JSON string
+	Signals    string    `gorm:"type:text" json:"signals"` // JSON string
+	Source     string    `gorm:"type:varchar(30);index" json:"source"`
+	ScannedAt  time.Time `gorm:"index" json:"scannedAt"`
+	CreatedAt  time.Time `gorm:"autoCreateTime" json:"createdAt"`
+	UpdatedAt  time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 }
 
 // ========== 数据库操作 ==========

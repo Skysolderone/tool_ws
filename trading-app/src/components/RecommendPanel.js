@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
+  View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, TextInput, Alert,
 } from 'react-native';
 import { colors, spacing, radius, fontSize } from '../services/theme';
 import api from '../services/api';
@@ -40,9 +40,23 @@ const MEDIUM_CONFIDENCE = 45;
 
 export default function RecommendPanel({ onNavigateToTrade }) {
   const [data, setData] = useState(null);
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [filter, setFilter] = useState('ALL');
   const [error, setError] = useState(null);
+  const [historyError, setHistoryError] = useState(null);
+  const [execModalVisible, setExecModalVisible] = useState(false);
+  const [execSubmitting, setExecSubmitting] = useState(false);
+  const [execForm, setExecForm] = useState({
+    symbol: '',
+    direction: 'LONG',
+    entry: '',
+    stopLoss: '',
+    takeProfit: '',
+    quoteQuantity: '5',
+    leverage: '10',
+  });
   const timerRef = useRef(null);
   const [scanDots, setScanDots] = useState('');
 
@@ -56,16 +70,32 @@ export default function RecommendPanel({ onNavigateToTrade }) {
   }, [loading]);
 
   const fetchData = useCallback(async (showLoading = false) => {
-    if (showLoading) setLoading(true);
-    try {
-      const res = await api.getRecommendScan();
-      setData(res.data || res);
-      setError(null);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
+    if (showLoading) {
+      setLoading(true);
+      setHistoryLoading(true);
     }
+    const [scanResult, historyResult] = await Promise.allSettled([
+      api.getRecommendScan(),
+      api.getRecommendHistory({ limit: 100 }),
+    ]);
+
+    if (scanResult.status === 'fulfilled') {
+      setData(scanResult.value?.data || scanResult.value);
+      setError(null);
+    } else {
+      setError(scanResult.reason?.message || '获取推荐信号失败');
+    }
+
+    if (historyResult.status === 'fulfilled') {
+      const payload = historyResult.value?.data || historyResult.value || {};
+      setHistory(payload.items || []);
+      setHistoryError(null);
+    } else {
+      setHistoryError(historyResult.reason?.message || '获取历史信号失败');
+    }
+
+    setLoading(false);
+    setHistoryLoading(false);
   }, []);
 
   useEffect(() => {
@@ -77,6 +107,9 @@ export default function RecommendPanel({ onNavigateToTrade }) {
   const filteredItems = (data?.items || []).filter(
     (item) => filter === 'ALL' || item.direction === filter,
   );
+  const filteredHistory = (history || []).filter(
+    (item) => filter === 'ALL' || item.direction === filter,
+  );
 
   const sentiment = data?.sentiment;
   const sentimentColor =
@@ -86,9 +119,105 @@ export default function RecommendPanel({ onNavigateToTrade }) {
     sentiment?.bias === 'bullish' ? '看涨' :
     sentiment?.bias === 'bearish' ? '看跌' : '中性';
 
+  const execRiskRewardPreview = useMemo(() => {
+    const entry = Number(execForm.entry);
+    const stopLoss = Number(execForm.stopLoss);
+    const takeProfit = Number(execForm.takeProfit);
+    if (!(entry > 0 && stopLoss > 0 && takeProfit > 0)) return null;
+
+    if (execForm.direction === 'LONG' && !(stopLoss < entry && entry < takeProfit)) return null;
+    if (execForm.direction === 'SHORT' && !(takeProfit < entry && entry < stopLoss)) return null;
+
+    const risk = Math.abs(entry - stopLoss);
+    const reward = Math.abs(takeProfit - entry);
+    if (risk <= 0 || reward <= 0) return null;
+    return reward / risk;
+  }, [execForm.direction, execForm.entry, execForm.stopLoss, execForm.takeProfit]);
+
+  const openExecModal = useCallback((item) => {
+    if (!item?.symbol) return;
+    const direction = item.direction === 'SHORT' ? 'SHORT' : 'LONG';
+    setExecForm({
+      symbol: String(item.symbol || '').toUpperCase(),
+      direction,
+      entry: item.entry ? String(item.entry) : '',
+      stopLoss: item.stopLoss ? String(item.stopLoss) : '',
+      takeProfit: item.takeProfit ? String(item.takeProfit) : '',
+      quoteQuantity: '5',
+      leverage: '10',
+    });
+    setExecModalVisible(true);
+  }, []);
+
+  const submitExecOrder = useCallback(async () => {
+    const symbol = String(execForm.symbol || '').trim().toUpperCase();
+    const direction = execForm.direction === 'SHORT' ? 'SHORT' : 'LONG';
+    const entry = Number(execForm.entry);
+    const stopLoss = Number(execForm.stopLoss);
+    const takeProfit = Number(execForm.takeProfit);
+    const quoteQuantity = Number(execForm.quoteQuantity);
+    const leverage = parseInt(execForm.leverage, 10);
+
+    if (!symbol) return Alert.alert('提示', '交易对不能为空');
+    if (!(entry > 0)) return Alert.alert('提示', '入场价必须大于 0');
+    if (!(quoteQuantity > 0)) return Alert.alert('提示', '金额必须大于 0');
+    if (!(leverage > 0)) return Alert.alert('提示', '杠杆必须大于 0');
+
+    const hasSL = stopLoss > 0;
+    const hasTP = takeProfit > 0;
+    let riskReward = 0;
+    if (hasSL || hasTP) {
+      if (!hasSL || !hasTP) {
+        return Alert.alert('提示', '止损和止盈需要同时填写');
+      }
+      if (direction === 'LONG' && !(stopLoss < entry && entry < takeProfit)) {
+        return Alert.alert('提示', '做多时需满足：止损 < 入场 < 止盈');
+      }
+      if (direction === 'SHORT' && !(takeProfit < entry && entry < stopLoss)) {
+        return Alert.alert('提示', '做空时需满足：止盈 < 入场 < 止损');
+      }
+      const risk = Math.abs(entry - stopLoss);
+      const reward = Math.abs(takeProfit - entry);
+      if (risk <= 0 || reward <= 0) {
+        return Alert.alert('提示', '止损/止盈参数无效');
+      }
+      riskReward = reward / risk;
+    }
+
+    const req = {
+      source: 'history_signal',
+      symbol,
+      side: direction === 'LONG' ? 'BUY' : 'SELL',
+      positionSide: direction,
+      orderType: 'LIMIT',
+      price: String(entry),
+      timeInForce: 'GTC',
+      quoteQuantity: String(quoteQuantity),
+      leverage,
+    };
+
+    if (riskReward > 0) {
+      req.stopLossPrice = String(stopLoss);
+      req.riskReward = Number(riskReward.toFixed(4));
+    }
+
+    setExecSubmitting(true);
+    try {
+      const res = await api.placeOrder(req);
+      const orderID = res?.data?.order?.orderId || res?.data?.order?.orderID || 'N/A';
+      setExecModalVisible(false);
+      Alert.alert('下单成功', `订单ID: ${orderID}`);
+    } catch (e) {
+      Alert.alert('下单失败', e.message || '未知错误');
+    } finally {
+      setExecSubmitting(false);
+    }
+  }, [execForm]);
+
   return (
     <View style={s.root}>
       {renderScanner()}
+      {renderExecModal()}
     </View>
   );
 
@@ -284,6 +413,69 @@ export default function RecommendPanel({ onNavigateToTrade }) {
           );
         })}
 
+        <View style={s.historyPanel}>
+          <View style={s.historyHeader}>
+            <Text style={s.historyTitle}>历史信号记录</Text>
+            <Text style={s.historyCount}>{filteredHistory.length} 条</Text>
+          </View>
+
+          {historyLoading && history.length === 0 && (
+            <View style={s.historyLoadingWrap}>
+              <ActivityIndicator color={C.neon} />
+              <Text style={s.historyHint}>加载历史信号中...</Text>
+            </View>
+          )}
+
+          {historyError && history.length === 0 && (
+            <View style={s.historyLoadingWrap}>
+              <Text style={s.historyErrorText}>{historyError}</Text>
+            </View>
+          )}
+
+          {!historyLoading && filteredHistory.length === 0 && (
+            <View style={s.historyLoadingWrap}>
+              <Text style={s.historyHint}>暂无历史信号</Text>
+            </View>
+          )}
+
+          {filteredHistory.slice(0, 30).map((item, idx) => {
+            const isLong = item.direction === 'LONG';
+            const isShort = item.direction === 'SHORT';
+            const sideColor = isLong ? C.long : isShort ? C.short : C.textDim;
+            const key = `${item.id || 'h'}-${item.symbol}-${item.scannedAt || item.createdAt || idx}`;
+            return (
+              <View key={key} style={s.historyRow}>
+                <View style={s.historyTopRow}>
+                  <View style={s.historyLeft}>
+                    <Text style={s.historySymbol}>{item.symbol || '--'}</Text>
+                    <Text style={[s.historyDirection, { color: sideColor }]}>
+                      {isLong ? '做多' : isShort ? '做空' : '未知'}
+                    </Text>
+                  </View>
+                  <View style={s.historyRight}>
+                    <Text style={[s.historyConfidence, { color: sideColor }]}>
+                      {Number(item.confidence || 0)}%
+                    </Text>
+                    <Text style={s.historyTime}>{formatHistoryTime(item.scannedAt || item.createdAt)}</Text>
+                  </View>
+                </View>
+
+                <Text style={s.historyPriceLine}>
+                  入场 {formatPrice(Number(item.entry || 0))} · 止损 {formatPrice(Number(item.stopLoss || 0))} · 止盈 {formatPrice(Number(item.takeProfit || 0))}
+                </Text>
+
+                <TouchableOpacity
+                  style={[s.historyExecBtn, { borderColor: sideColor }]}
+                  onPress={() => openExecModal(item)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[s.historyExecBtnText, { color: sideColor }]}>执行该历史信号 ›</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })}
+        </View>
+
         {data && (
           <View style={s.footerRow}>
             <View style={s.footerDot} />
@@ -297,6 +489,122 @@ export default function RecommendPanel({ onNavigateToTrade }) {
     );
   }
 
+  function renderExecModal() {
+    return (
+      <Modal
+        visible={execModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !execSubmitting && setExecModalVisible(false)}
+      >
+        <View style={s.execOverlay}>
+          <View style={s.execModal}>
+            <Text style={s.execTitle}>执行历史信号</Text>
+            <Text style={s.execSub}>{execForm.symbol || '--'}</Text>
+
+            <View style={s.execDirRow}>
+              <TouchableOpacity
+                style={[s.execDirBtn, execForm.direction === 'LONG' && s.execDirBtnLongActive]}
+                onPress={() => setExecForm((prev) => ({ ...prev, direction: 'LONG' }))}
+              >
+                <Text style={[s.execDirText, execForm.direction === 'LONG' && { color: C.long }]}>做多</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[s.execDirBtn, execForm.direction === 'SHORT' && s.execDirBtnShortActive]}
+                onPress={() => setExecForm((prev) => ({ ...prev, direction: 'SHORT' }))}
+              >
+                <Text style={[s.execDirText, execForm.direction === 'SHORT' && { color: C.short }]}>做空</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={s.execFieldGrid}>
+              <View style={s.execField}>
+                <Text style={s.execFieldLabel}>入场价</Text>
+                <TextInput
+                  style={s.execInput}
+                  value={execForm.entry}
+                  onChangeText={(v) => setExecForm((prev) => ({ ...prev, entry: v }))}
+                  keyboardType="decimal-pad"
+                  placeholder="0"
+                  placeholderTextColor={C.textDim}
+                />
+              </View>
+              <View style={s.execField}>
+                <Text style={s.execFieldLabel}>止损价</Text>
+                <TextInput
+                  style={s.execInput}
+                  value={execForm.stopLoss}
+                  onChangeText={(v) => setExecForm((prev) => ({ ...prev, stopLoss: v }))}
+                  keyboardType="decimal-pad"
+                  placeholder="可选"
+                  placeholderTextColor={C.textDim}
+                />
+              </View>
+              <View style={s.execField}>
+                <Text style={s.execFieldLabel}>止盈价</Text>
+                <TextInput
+                  style={s.execInput}
+                  value={execForm.takeProfit}
+                  onChangeText={(v) => setExecForm((prev) => ({ ...prev, takeProfit: v }))}
+                  keyboardType="decimal-pad"
+                  placeholder="可选"
+                  placeholderTextColor={C.textDim}
+                />
+              </View>
+              <View style={s.execField}>
+                <Text style={s.execFieldLabel}>金额(U)</Text>
+                <TextInput
+                  style={s.execInput}
+                  value={execForm.quoteQuantity}
+                  onChangeText={(v) => setExecForm((prev) => ({ ...prev, quoteQuantity: v }))}
+                  keyboardType="decimal-pad"
+                  placeholder="5"
+                  placeholderTextColor={C.textDim}
+                />
+              </View>
+              <View style={s.execField}>
+                <Text style={s.execFieldLabel}>杠杆</Text>
+                <TextInput
+                  style={s.execInput}
+                  value={execForm.leverage}
+                  onChangeText={(v) => setExecForm((prev) => ({ ...prev, leverage: v }))}
+                  keyboardType="number-pad"
+                  placeholder="10"
+                  placeholderTextColor={C.textDim}
+                />
+              </View>
+            </View>
+
+            <Text style={s.execHint}>
+              {execRiskRewardPreview ? `当前盈亏比: 1:${execRiskRewardPreview.toFixed(2)}` : '可选：填写止损+止盈自动挂 TPSL'}
+            </Text>
+
+            <View style={s.execActionRow}>
+              <TouchableOpacity
+                style={[s.execActionBtn, s.execCancelBtn]}
+                onPress={() => !execSubmitting && setExecModalVisible(false)}
+                disabled={execSubmitting}
+              >
+                <Text style={s.execCancelText}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[s.execActionBtn, s.execConfirmBtn, execSubmitting && s.execConfirmBtnDisabled]}
+                onPress={submitExecOrder}
+                disabled={execSubmitting}
+              >
+                {execSubmitting ? (
+                  <ActivityIndicator color={C.text} size="small" />
+                ) : (
+                  <Text style={s.execConfirmText}>直接下单</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
 }
 
 // ==================== 辅助函数 ====================
@@ -306,6 +614,13 @@ function formatPrice(price) {
   if (price >= 1000) return price.toFixed(1).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   if (price >= 1) return price.toFixed(2);
   return price.toFixed(4);
+}
+
+function formatHistoryTime(v) {
+  if (!v) return '--';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return '--';
+  return d.toLocaleString();
 }
 
 
@@ -918,6 +1233,237 @@ const s = StyleSheet.create({
     color: C.neon,
     fontFamily: 'monospace',
     fontVariant: ['tabular-nums'],
+  },
+
+  // ===== 历史信号 =====
+  historyPanel: {
+    backgroundColor: C.cardBg,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: C.cardBorder,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  historyHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  historyTitle: {
+    fontSize: fontSize.md,
+    fontWeight: '800',
+    color: C.text,
+    fontFamily: 'monospace',
+    letterSpacing: 0.6,
+  },
+  historyCount: {
+    fontSize: 10,
+    color: C.textDim,
+    fontFamily: 'monospace',
+  },
+  historyLoadingWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.lg,
+    gap: spacing.xs,
+  },
+  historyHint: {
+    color: C.textDim,
+    fontSize: 10,
+    fontFamily: 'monospace',
+  },
+  historyErrorText: {
+    color: C.short,
+    fontSize: 10,
+    fontFamily: 'monospace',
+  },
+  historyRow: {
+    backgroundColor: C.surface,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: C.cardBorder,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    gap: 4,
+  },
+  historyTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  historyLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  historyRight: {
+    alignItems: 'flex-end',
+  },
+  historySymbol: {
+    fontSize: fontSize.sm,
+    color: C.text,
+    fontWeight: '800',
+    fontFamily: 'monospace',
+  },
+  historyDirection: {
+    fontSize: 10,
+    fontWeight: '800',
+    fontFamily: 'monospace',
+  },
+  historyConfidence: {
+    fontSize: 12,
+    fontWeight: '800',
+    fontFamily: 'monospace',
+  },
+  historyTime: {
+    fontSize: 9,
+    color: C.textDim,
+    fontFamily: 'monospace',
+  },
+  historyPriceLine: {
+    fontSize: 9,
+    color: C.textDim,
+    fontFamily: 'monospace',
+  },
+  historyExecBtn: {
+    marginTop: 2,
+    alignSelf: 'flex-end',
+    borderWidth: 1,
+    borderRadius: radius.xs,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    backgroundColor: 'transparent',
+  },
+  historyExecBtnText: {
+    fontSize: 10,
+    fontWeight: '800',
+    fontFamily: 'monospace',
+    letterSpacing: 0.4,
+  },
+
+  // ===== 执行弹窗 =====
+  execOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+  },
+  execModal: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: C.cardBg,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: C.cardBorder,
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  execTitle: {
+    fontSize: fontSize.lg,
+    color: C.text,
+    fontWeight: '900',
+    fontFamily: 'monospace',
+    textAlign: 'center',
+    letterSpacing: 0.4,
+  },
+  execSub: {
+    fontSize: 11,
+    color: C.textDim,
+    fontFamily: 'monospace',
+    textAlign: 'center',
+  },
+  execDirRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  execDirBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: C.cardBorder,
+    borderRadius: radius.sm,
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    backgroundColor: C.surface,
+  },
+  execDirBtnLongActive: {
+    borderColor: C.long,
+    backgroundColor: C.longBg,
+  },
+  execDirBtnShortActive: {
+    borderColor: C.short,
+    backgroundColor: C.shortBg,
+  },
+  execDirText: {
+    color: C.text,
+    fontSize: 12,
+    fontWeight: '800',
+    fontFamily: 'monospace',
+  },
+  execFieldGrid: {
+    gap: spacing.xs,
+  },
+  execField: {
+    gap: 4,
+  },
+  execFieldLabel: {
+    color: C.textDim,
+    fontSize: 10,
+    fontFamily: 'monospace',
+  },
+  execInput: {
+    borderWidth: 1,
+    borderColor: C.cardBorder,
+    borderRadius: radius.sm,
+    backgroundColor: C.surface,
+    color: C.text,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs + 2,
+    fontSize: 12,
+    fontFamily: 'monospace',
+  },
+  execHint: {
+    color: C.textDim,
+    fontSize: 10,
+    fontFamily: 'monospace',
+    textAlign: 'center',
+  },
+  execActionRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  execActionBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.sm,
+    paddingVertical: spacing.sm,
+  },
+  execCancelBtn: {
+    borderWidth: 1,
+    borderColor: C.cardBorder,
+    backgroundColor: C.surface,
+  },
+  execCancelText: {
+    color: C.textDim,
+    fontSize: 12,
+    fontWeight: '700',
+    fontFamily: 'monospace',
+  },
+  execConfirmBtn: {
+    backgroundColor: C.neonBg,
+    borderWidth: 1,
+    borderColor: C.neon,
+  },
+  execConfirmBtnDisabled: {
+    opacity: 0.6,
+  },
+  execConfirmText: {
+    color: C.text,
+    fontSize: 12,
+    fontWeight: '800',
+    fontFamily: 'monospace',
   },
 
   // ===== 底部时间戳 =====

@@ -18,35 +18,22 @@ import SignalPanel from './src/components/SignalPanel';
 import DojiPanel from './src/components/DojiPanel';
 import TradeLogPanel from './src/components/TradeLogPanel';
 import NewsPanel from './src/components/NewsPanel';
-import HyperMonitorPanel from './src/components/HyperMonitorPanel';
-import LiquidationMonitorPanel from './src/components/LiquidationMonitorPanel';
 import AnalyticsPanel from './src/components/AnalyticsPanel';
-import WhaleAggregatePanel from './src/components/WhaleAggregatePanel';
-import MarketMonitorPanel from './src/components/MarketMonitorPanel';
 import FundingPanel from './src/components/FundingPanel';
 import StrategyLinkPanel from './src/components/StrategyLinkPanel';
 import SupportResistancePanel from './src/components/SupportResistancePanel';
 import RecommendPanel from './src/components/RecommendPanel';
 import AIAnalysisPanel from './src/components/AIAnalysisPanel';
 import ScalpPanel from './src/components/ScalpPanel';
-import EquityCurvePanel from './src/components/EquityCurvePanel';
-import StrategyComparePanel from './src/components/StrategyComparePanel';
-import DepthChartPanel from './src/components/DepthChartPanel';
-import MonitorOverviewPanel from './src/components/MonitorOverviewPanel';
-import MonitorEventTimelinePanel from './src/components/MonitorEventTimelinePanel';
 import { colors, spacing, radius, fontSize } from './src/services/theme';
 import api, { WS_PRICE_BASE, AUTH_TOKEN } from './src/services/api';
 
 const DEFAULT_SYMBOL = 'ETHUSDT';
-const DEFAULT_WATCH_ADDRESSES = [
-  { address: '0x15a4f009bb324a3fb9e36137136b201e3fe0dfdb', label: '主监控' },
-];
 
 // ==================== 底部主 Tab ====================
 const MAIN_TABS = [
   { key: 'trade', label: '交易' },
   { key: 'strategy', label: '策略' },
-  { key: 'monitor', label: '监控' },
   { key: 'recommend', label: 'AI推荐' },
   { key: 'analysis', label: 'AI分析' },
   { key: 'info', label: '资讯' },
@@ -63,48 +50,6 @@ const TRADE_SUB_TABS = [
   { key: 'log', label: '日志' },
 ];
 
-// 监控 Tab 子页签
-const MONITOR_SUB_TABS = [
-  { key: 'hyper', label: 'Hyper监控' },
-  { key: 'liquidation', label: '强平监控' },
-  { key: 'market', label: '市场监控' },
-  { key: 'equity', label: '权益曲线' },
-  { key: 'compare', label: '策略对比' },
-  { key: 'depth', label: '深度图' },
-];
-
-const MONITOR_EVENT_LIMIT = 300;
-const DEFAULT_MONITOR_NOTIFY_CONFIG = Object.freeze({
-  warnPopup: false,
-  warnVibrate: false,
-  criticalPopup: false,
-  criticalVibrate: false,
-});
-
-function normalizeMonitorEvent(evt = {}) {
-  const ts = Number(evt.ts || evt.time || Date.now());
-  const source = String(evt.source || 'unknown');
-  const severityRaw = String(evt.severity || 'info').toLowerCase();
-  const severity = ['info', 'warn', 'critical'].includes(severityRaw) ? severityRaw : 'info';
-  const symbol = String(evt.symbol || '').toUpperCase();
-  const type = String(evt.type || 'event');
-  const strategyId = evt.strategyId ? String(evt.strategyId) : '';
-  const message = String(evt.message || evt.detail || '-');
-  const payload = evt.payload && typeof evt.payload === 'object' ? evt.payload : {};
-  const dedupeKey = `${source}::${type}::${symbol || '-'}::${message}::${Number.isFinite(ts) ? ts : Date.now()}`;
-  const eventId = String(evt.eventId || dedupeKey);
-  return {
-    eventId,
-    ts: Number.isFinite(ts) ? ts : Date.now(),
-    source,
-    severity,
-    symbol,
-    strategyId,
-    type,
-    message,
-    payload,
-  };
-}
 
 export default function App() {
   const androidStatusBarHeight = Platform.OS === 'android' ? (RNStatusBar.currentHeight || 0) : 0;
@@ -112,7 +57,6 @@ export default function App() {
   // ===== 主Tab状态 =====
   const [activeTab, setActiveTab] = useState('trade');
   const [tradeSubTab, setTradeSubTab] = useState('order');
-  const [monitorSubTab, setMonitorSubTab] = useState('hyper');
 
   // ===== 全局交易币对 =====
   const [tradeSymbol, setTradeSymbol] = useState(DEFAULT_SYMBOL);
@@ -123,25 +67,12 @@ export default function App() {
     positions: [],
   });
 
-  // ===== 新闻/监控 =====
+  // ===== 新闻 =====
   const [newsHasNew, setNewsHasNew] = useState(false);
-  const [hyperHasNew, setHyperHasNew] = useState(false);
-  const [liqHasNew, setLiqHasNew] = useState(false);
-  const [marketHasNew, setMarketHasNew] = useState(false);
-  const [monitorEvents, setMonitorEvents] = useState([]);
-  const monitorNotifyConfig = DEFAULT_MONITOR_NOTIFY_CONFIG;
-  const monitorSuppressRef = useRef({});
-  const [watchAddresses, setWatchAddresses] = useState(DEFAULT_WATCH_ADDRESSES);
-  const [activeAddrIdx, setActiveAddrIdx] = useState(0);
-  const [newAddrInput, setNewAddrInput] = useState('');
-  const [newAddrLabel, setNewAddrLabel] = useState('');
 
   // ===== 懒加载标记 =====
   // 启动即激活资讯后台连接，保证非资讯页也能收到本地新资讯通知
   const [newsActivated, setNewsActivated] = useState(true);
-  const [hyperActivated, setHyperActivated] = useState(false);
-  const [liqActivated, setLiqActivated] = useState(false);
-  const [marketActivated, setMarketActivated] = useState(false);
 
   // ===== 实时价格（交易Tab顶栏共享） =====
   const [markPrice, setMarkPrice] = useState(null);
@@ -248,132 +179,23 @@ export default function App() {
   // ===== Tab 切换逻辑 =====
   useEffect(() => {
     if (activeTab === 'info' || activeTab === 'porn') setNewsHasNew(false);
-    if (activeTab === 'monitor' && monitorSubTab === 'hyper') setHyperHasNew(false);
-    if (activeTab === 'monitor' && monitorSubTab === 'liquidation') setLiqHasNew(false);
-    if (activeTab === 'monitor' && monitorSubTab === 'market') setMarketHasNew(false);
-  }, [activeTab, monitorSubTab]);
+  }, [activeTab]);
 
   const handleNewsHasNew = useCallback((hasNew) => {
     if (hasNew && activeTab !== 'info' && activeTab !== 'porn') setNewsHasNew(true);
   }, [activeTab]);
-
-  const handleHyperHasNew = useCallback((hasNew) => {
-    if (hasNew && !(activeTab === 'monitor' && monitorSubTab === 'hyper')) setHyperHasNew(true);
-  }, [activeTab, monitorSubTab]);
-
-  const handleLiqHasNew = useCallback((hasNew) => {
-    if (hasNew && !(activeTab === 'monitor' && monitorSubTab === 'liquidation')) setLiqHasNew(true);
-  }, [activeTab, monitorSubTab]);
-
-  const handleMarketHasNew = useCallback((hasNew) => {
-    if (hasNew && !(activeTab === 'monitor' && monitorSubTab === 'market')) setMarketHasNew(true);
-  }, [activeTab, monitorSubTab]);
-
-  const handleMonitorEvent = useCallback((evt) => {
-    if (!evt || typeof evt !== 'object') return;
-    const normalized = normalizeMonitorEvent(evt);
-    const needsSuppress = normalized.severity === 'warn' || normalized.severity === 'critical';
-    if (needsSuppress) {
-      const suppressSecRaw = Number(normalized.payload?.suppressSec || 60);
-      const suppressMS = (Number.isFinite(suppressSecRaw) && suppressSecRaw > 0 ? suppressSecRaw : 60) * 1000;
-      const suppressKey = [
-        normalized.source,
-        normalized.type,
-        normalized.symbol || '-',
-        normalized.severity,
-        normalized.strategyId || '-',
-        String(normalized.payload?.direction || '-'),
-        String(normalized.payload?.ruleId || '-'),
-      ].join('::');
-      const lastTS = monitorSuppressRef.current[suppressKey] || 0;
-      if (normalized.ts - lastTS < suppressMS) return;
-      monitorSuppressRef.current[suppressKey] = normalized.ts;
-    }
-    setMonitorEvents((prev) => {
-      if (prev.some((x) => x.eventId === normalized.eventId)) return prev;
-      const merged = [normalized, ...prev];
-      merged.sort((a, b) => b.ts - a.ts);
-      return merged.slice(0, MONITOR_EVENT_LIMIT);
-    });
-  }, []);
-
-  const clearMonitorEvents = useCallback(() => {
-    setMonitorEvents([]);
-    monitorSuppressRef.current = {};
-  }, []);
 
   const switchMainTab = useCallback((key) => {
     setActiveTab(key);
     if (key === 'info' || key === 'porn') {
       setNewsActivated(true);
     }
-    if (key === 'monitor') {
-      if (monitorSubTab === 'hyper') setHyperActivated(true);
-      else if (monitorSubTab === 'liquidation') setLiqActivated(true);
-      else setMarketActivated(true);
-    }
-  }, [monitorSubTab]);
-
-  const switchMonitorSub = useCallback((key) => {
-    setMonitorSubTab(key);
-    if (key === 'hyper') {
-      setHyperActivated(true);
-      setHyperHasNew(false);
-    }
-    if (key === 'liquidation') {
-      setLiqActivated(true);
-      setLiqHasNew(false);
-    }
-    if (key === 'market') {
-      setMarketActivated(true);
-      setMarketHasNew(false);
-    }
   }, []);
 
-  const addWatchAddress = useCallback(() => {
-    if (watchAddresses.length >= 3) {
-      Alert.alert('数量限制', '最多同时监控 3 个地址');
-      return;
-    }
-    const addr = newAddrInput.trim();
-    if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) {
-      Alert.alert('地址格式错误', '请输入正确的 0x 开头地址');
-      return;
-    }
-    if (watchAddresses.some((w) => w.address.toLowerCase() === addr.toLowerCase())) {
-      Alert.alert('重复地址', '该地址已在监控列表中');
-      return;
-    }
-    const label = newAddrLabel.trim() || `监控${watchAddresses.length + 1}`;
-    setWatchAddresses((prev) => [...prev, { address: addr, label }]);
-    setActiveAddrIdx(watchAddresses.length);
-    setNewAddrInput('');
-    setNewAddrLabel('');
-  }, [newAddrInput, newAddrLabel, watchAddresses]);
-
-  const removeWatchAddress = useCallback((idx) => {
-    Alert.alert('删除地址', `确定移除 "${watchAddresses[idx].label}" ?`, [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '删除', style: 'destructive', onPress: () => {
-          setWatchAddresses((prev) => prev.filter((_, i) => i !== idx));
-          setActiveAddrIdx((prev) => {
-            if (prev >= idx && prev > 0) return prev - 1;
-            return Math.min(prev, watchAddresses.length - 2);
-          });
-        },
-      },
-    ]);
-  }, [watchAddresses]);
-
   // ===== Tab 红点/懒加载 =====
-  const monitorBadge = hyperHasNew || liqHasNew || marketHasNew;
   const infoBadge = newsHasNew;
   const newsPanelMounted = newsActivated || activeTab === 'info' || activeTab === 'porn';
   const newsPanelMode = activeTab === 'porn' ? 'porn' : 'main';
-  const hyperPanelMounted = hyperActivated || (activeTab === 'monitor' && monitorSubTab === 'hyper');
-  const liqPanelMounted = liqActivated || (activeTab === 'monitor' && monitorSubTab === 'liquidation');
-  const marketPanelMounted = marketActivated || (activeTab === 'monitor' && monitorSubTab === 'market');
 
   // ======================== 渲染 ========================
   return (
@@ -478,112 +300,6 @@ export default function App() {
           </>
         )}
 
-        {/* ==================== 监控 Tab ==================== */}
-        {activeTab === 'monitor' && (
-          <>
-            <MonitorOverviewPanel />
-            <MonitorEventTimelinePanel
-              events={monitorEvents}
-              onClear={clearMonitorEvents}
-            />
-            <SubTabBar
-              tabs={MONITOR_SUB_TABS}
-              activeKey={monitorSubTab}
-              onChangeTab={switchMonitorSub}
-              badge={{ hyper: hyperHasNew, liquidation: liqHasNew, market: marketHasNew }}
-            />
-            {monitorSubTab === 'hyper' && hyperPanelMounted && (
-              <>
-                <WhaleAggregatePanel
-                  watchAddresses={watchAddresses}
-                  onHasNew={handleHyperHasNew}
-                />
-                {/* 地址 Chip 列表 */}
-                <View style={styles.hyperAddrCard}>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.addrChipScroll}>
-                    <View style={styles.addrChipRow}>
-                      {watchAddresses.map((item, idx) => (
-                        <TouchableOpacity
-                          key={item.address}
-                          style={[styles.addrChip, idx === activeAddrIdx && styles.addrChipActive]}
-                          onPress={() => setActiveAddrIdx(idx)}
-                          onLongPress={() => removeWatchAddress(idx)}
-                        >
-                          <Text style={[styles.addrChipText, idx === activeAddrIdx && styles.addrChipTextActive]} numberOfLines={1}>
-                            {item.label}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  </ScrollView>
-                  <Text style={styles.addrHint}>
-                    {watchAddresses[activeAddrIdx]?.address ? `${watchAddresses[activeAddrIdx].address.slice(0, 10)}...${watchAddresses[activeAddrIdx].address.slice(-6)}` : '暂无监控地址，请添加'}
-                    {'  '}| 长按标签删除 | 最多 3 个
-                  </Text>
-                  {/* 添加新地址 */}
-                  <View style={styles.hyperAddrRow}>
-                    <TextInput
-                      style={[styles.hyperAddrInput, { flex: 2 }]}
-                      value={newAddrInput}
-                      onChangeText={setNewAddrInput}
-                      placeholder="新地址 0x..."
-                      placeholderTextColor={colors.textMuted}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
-                    <TextInput
-                      style={[styles.hyperAddrInput, { flex: 1 }]}
-                      value={newAddrLabel}
-                      onChangeText={setNewAddrLabel}
-                      placeholder="备注名"
-                      placeholderTextColor={colors.textMuted}
-                    />
-                    <TouchableOpacity style={styles.hyperAddrBtn} onPress={addWatchAddress}>
-                      <Text style={styles.hyperAddrBtnText}>添加</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                {/* 为每个地址渲染面板，仅显示当前选中的 */}
-                {watchAddresses.map((item, idx) => (
-                  <View key={item.address} style={idx !== activeAddrIdx ? styles.hidden : undefined}>
-                    <HyperMonitorPanel
-                      address={item.address}
-                      onHasNew={handleHyperHasNew}
-                      onMonitorEvent={handleMonitorEvent}
-                    />
-                  </View>
-                ))}
-              </>
-            )}
-            {monitorSubTab === 'market' && marketPanelMounted && (
-              <MarketMonitorPanel
-                onHasNew={handleMarketHasNew}
-                onMonitorEvent={handleMonitorEvent}
-                notifyConfig={monitorNotifyConfig}
-              />
-            )}
-            {monitorSubTab === 'equity' && (
-              <EquityCurvePanel />
-            )}
-            {monitorSubTab === 'compare' && (
-              <StrategyComparePanel />
-            )}
-            {monitorSubTab === 'depth' && (
-              <DepthChartPanel symbol={tradeSymbol} />
-            )}
-          </>
-        )}
-
-        {liqPanelMounted && (
-          <View style={activeTab === 'monitor' && monitorSubTab === 'liquidation' ? undefined : styles.hidden}>
-            <LiquidationMonitorPanel
-              onHasNew={handleLiqHasNew}
-              onMonitorEvent={handleMonitorEvent}
-              notifyConfig={monitorNotifyConfig}
-            />
-          </View>
-        )}
-
         {/* ==================== 推荐 Tab ==================== */}
         {activeTab === 'recommend' && (
           <RecommendPanel onNavigateToTrade={(symbol, recommendation) => {
@@ -625,29 +341,6 @@ export default function App() {
         )}
       </ScrollView>
 
-      {/* 懒挂载的后台面板（保持 WS 连接） */}
-      {hyperPanelMounted && !(activeTab === 'monitor' && monitorSubTab === 'hyper') && (
-        <View style={styles.hidden}>
-          {watchAddresses.map((item) => (
-            <HyperMonitorPanel
-              key={item.address}
-              address={item.address}
-              onHasNew={handleHyperHasNew}
-              onMonitorEvent={handleMonitorEvent}
-            />
-          ))}
-        </View>
-      )}
-      {marketPanelMounted && !(activeTab === 'monitor' && monitorSubTab === 'market') && (
-        <View style={styles.hidden}>
-          <MarketMonitorPanel
-            onHasNew={handleMarketHasNew}
-            onMonitorEvent={handleMonitorEvent}
-            notifyConfig={monitorNotifyConfig}
-          />
-        </View>
-      )}
-
       {/* ==================== 底部 Tab Bar ==================== */}
       <View style={styles.tabBarWrap}>
         <View style={styles.tabBar}>
@@ -655,7 +348,6 @@ export default function App() {
             const isActive = activeTab === tab.key;
             const showBadge = (
               ((tab.key === 'info' || tab.key === 'porn') && infoBadge)
-              || (tab.key === 'monitor' && monitorBadge)
             );
             return (
               <TouchableOpacity
@@ -1090,79 +782,6 @@ const styles = StyleSheet.create({
     fontSize: fontSize.lg,
     fontWeight: '700',
     color: colors.text,
-  },
-
-  // ===== Hyper地址输入 =====
-  hyperAddrCard: {
-    backgroundColor: colors.card,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-    padding: spacing.md,
-    marginTop: spacing.sm,
-  },
-  addrChipScroll: {
-    marginBottom: spacing.sm,
-  },
-  addrChipRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  addrChip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.pill,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-  },
-  addrChipActive: {
-    backgroundColor: colors.goldBg,
-    borderColor: colors.gold,
-  },
-  addrChipText: {
-    fontSize: fontSize.sm,
-    fontWeight: '600',
-    color: colors.textMuted,
-    maxWidth: 100,
-  },
-  addrChipTextActive: {
-    color: colors.gold,
-    fontWeight: '700',
-  },
-  addrHint: {
-    fontSize: fontSize.xs,
-    color: colors.textMuted,
-    marginBottom: spacing.sm,
-  },
-  hyperAddrRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    alignItems: 'center',
-  },
-  hyperAddrInput: {
-    flex: 1,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.cardBorder,
-    color: colors.text,
-    borderRadius: radius.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    fontSize: fontSize.sm,
-  },
-  hyperAddrBtn: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.md,
-    backgroundColor: colors.goldBg,
-    borderWidth: 1,
-    borderColor: colors.gold,
-  },
-  hyperAddrBtnText: {
-    color: colors.text,
-    fontWeight: '700',
-    fontSize: fontSize.sm,
   },
 
   // ===== 底部 Tab Bar =====

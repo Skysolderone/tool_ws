@@ -141,11 +141,14 @@ func calculateQuantityFromUSDT(ctx context.Context, req PlaceOrderReq) (string, 
 	if err != nil {
 		return "", fmt.Errorf("invalid quoteQuantity: %w", err)
 	}
+	if usdtAmount <= 0 {
+		return "", fmt.Errorf("quoteQuantity must be > 0")
+	}
 
 	// 获取杠杆倍数（默认 1x）
 	leverage := float64(req.Leverage)
-	if leverage == 0 {
-		leverage = 1
+	if leverage <= 0 {
+		return "", fmt.Errorf("leverage must be > 0")
 	}
 
 	// 获取当前价格
@@ -153,22 +156,47 @@ func calculateQuantityFromUSDT(ctx context.Context, req PlaceOrderReq) (string, 
 	if err != nil {
 		return "", fmt.Errorf("get current price: %w", err)
 	}
+	if price <= 0 {
+		return "", fmt.Errorf("invalid current price %.8f for %s", price, req.Symbol)
+	}
 
 	// 计算代币数量 = (保证金 × 杠杆) / 价格
 	notionalValue := usdtAmount * leverage // 总持仓价值
-	quantity := notionalValue / price
+	rawQuantity := notionalValue / price
 
 	// 获取交易对精度信息
-	precision, stepSize, err := getSymbolPrecision(ctx, req.Symbol)
+	rules, err := getSymbolQuantityRules(ctx, req.Symbol)
 	if err != nil {
-		return "", fmt.Errorf("get symbol precision: %w", err)
+		return "", fmt.Errorf("get symbol quantity rules: %w", err)
 	}
 
 	// 根据 stepSize 调整数量
-	quantity = roundToStepSize(quantity, stepSize)
+	quantity := roundToStepSize(rawQuantity, rules.StepSize)
+	minOrderHint := formatMinimumOrderHint(req.Symbol, price, leverage, rules)
+	if quantity <= 0 {
+		if minOrderHint != "" {
+			return "", fmt.Errorf("下单数量过小（计算数量 %.10f，步长 %.10f）。%s", rawQuantity, rules.StepSize, minOrderHint)
+		}
+		return "", fmt.Errorf("下单数量过小（计算数量 %.10f，步长 %.10f）", rawQuantity, rules.StepSize)
+	}
+	if rules.MinQty > 0 && quantity < rules.MinQty {
+		if minOrderHint != "" {
+			return "", fmt.Errorf("下单数量 %.10f 低于最小下单量 %.10f。%s", quantity, rules.MinQty, minOrderHint)
+		}
+		return "", fmt.Errorf("下单数量 %.10f 低于最小下单量 %.10f", quantity, rules.MinQty)
+	}
+	if rules.MinNotional > 0 {
+		orderNotional := quantity * price
+		if orderNotional < rules.MinNotional {
+			if minOrderHint != "" {
+				return "", fmt.Errorf("下单持仓价值 %.4f 低于最小限制 %.4f。%s", orderNotional, rules.MinNotional, minOrderHint)
+			}
+			return "", fmt.Errorf("下单持仓价值 %.4f 低于最小限制 %.4f", orderNotional, rules.MinNotional)
+		}
+	}
 
 	// 格式化为指定精度的字符串
-	return formatQuantity(quantity, precision), nil
+	return formatQuantity(quantity, rules.Precision), nil
 }
 
 // getCurrentPrice 获取当前市场价格，如果已提供限价则使用限价
@@ -199,29 +227,126 @@ func getCurrentPrice(ctx context.Context, symbol, limitPrice string) (float64, e
 	return strconv.ParseFloat(prices[0].Price, 64)
 }
 
-// getSymbolPrecision 获取交易对的精度和步长信息
-func getSymbolPrecision(ctx context.Context, symbol string) (precision int, stepSize float64, err error) {
+type symbolQuantityRules struct {
+	Precision   int
+	StepSize    float64
+	MinQty      float64
+	MinNotional float64
+}
+
+func getMinimumOrderNotional(price float64, rules symbolQuantityRules) float64 {
+	minOrderNotional := rules.MinNotional
+	if rules.MinQty > 0 && price > 0 {
+		minQtyNotional := rules.MinQty * price
+		if minQtyNotional > minOrderNotional {
+			minOrderNotional = minQtyNotional
+		}
+	}
+	return minOrderNotional
+}
+
+func formatMinimumOrderHint(symbol string, price, leverage float64, rules symbolQuantityRules) string {
+	minOrderNotional := getMinimumOrderNotional(price, rules)
+	if minOrderNotional <= 0 || leverage <= 0 {
+		return ""
+	}
+	minQuote := minOrderNotional / leverage
+	if rules.MinQty > 0 {
+		return fmt.Sprintf("%s 最小持仓价值 %.4f USDT（最小下单量 %.10f），按 %.0fx 杠杆至少需要 %.4f USDT 保证金",
+			symbol, minOrderNotional, rules.MinQty, leverage, minQuote)
+	}
+	return fmt.Sprintf("%s 最小持仓价值 %.4f USDT，按 %.0fx 杠杆至少需要 %.4f USDT 保证金",
+		symbol, minOrderNotional, leverage, minQuote)
+}
+
+func parseFilterFloat(filter map[string]interface{}, keys ...string) (float64, bool) {
+	for _, key := range keys {
+		raw, ok := filter[key]
+		if !ok || raw == nil {
+			continue
+		}
+		switch v := raw.(type) {
+		case string:
+			parsed, err := strconv.ParseFloat(v, 64)
+			if err == nil {
+				return parsed, true
+			}
+		case float64:
+			return v, true
+		case float32:
+			return float64(v), true
+		case int:
+			return float64(v), true
+		case int64:
+			return float64(v), true
+		}
+	}
+	return 0, false
+}
+
+func getSymbolQuantityRules(ctx context.Context, symbol string) (symbolQuantityRules, error) {
 	info, err := getExchangeInfoCached(ctx)
 	if err != nil {
-		return 0, 0, fmt.Errorf("fetch exchange info: %w", err)
+		return symbolQuantityRules{}, fmt.Errorf("fetch exchange info: %w", err)
 	}
 
 	for _, s := range info.Symbols {
 		if s.Symbol == symbol {
-			// 从 LOT_SIZE 过滤器获取 stepSize
+			rules := symbolQuantityRules{Precision: s.QuantityPrecision}
+			var lotStep, lotMinQty float64
+			var marketStep, marketMinQty float64
+
 			for _, filter := range s.Filters {
-				if filterType, ok := filter["filterType"].(string); ok && filterType == "LOT_SIZE" {
-					if stepSizeStr, ok := filter["stepSize"].(string); ok {
-						stepSize, _ = strconv.ParseFloat(stepSizeStr, 64)
-						break
+				filterType, _ := filter["filterType"].(string)
+				switch filterType {
+				case "LOT_SIZE":
+					if v, ok := parseFilterFloat(filter, "stepSize"); ok {
+						lotStep = v
+					}
+					if v, ok := parseFilterFloat(filter, "minQty"); ok {
+						lotMinQty = v
+					}
+				case "MARKET_LOT_SIZE":
+					if v, ok := parseFilterFloat(filter, "stepSize"); ok {
+						marketStep = v
+					}
+					if v, ok := parseFilterFloat(filter, "minQty"); ok {
+						marketMinQty = v
+					}
+				case "NOTIONAL", "MIN_NOTIONAL":
+					if v, ok := parseFilterFloat(filter, "notional", "minNotional"); ok && v > 0 {
+						rules.MinNotional = v
 					}
 				}
 			}
-			return s.QuantityPrecision, stepSize, nil
+
+			if lotStep > 0 {
+				rules.StepSize = lotStep
+			} else {
+				rules.StepSize = marketStep
+			}
+			if lotMinQty > 0 {
+				rules.MinQty = lotMinQty
+			} else {
+				rules.MinQty = marketMinQty
+			}
+			if rules.StepSize <= 0 {
+				return symbolQuantityRules{}, fmt.Errorf("symbol %s missing LOT_SIZE/MARKET_LOT_SIZE stepSize", symbol)
+			}
+			return rules, nil
 		}
 	}
 
-	return 0, 0, fmt.Errorf("symbol %s not found in exchange info", symbol)
+	return symbolQuantityRules{}, fmt.Errorf("symbol %s not found in exchange info", symbol)
+}
+
+// getSymbolPrecision 获取交易对的精度和步长信息
+func getSymbolPrecision(ctx context.Context, symbol string) (precision int, stepSize float64, err error) {
+	rules, err := getSymbolQuantityRules(ctx, symbol)
+	if err != nil {
+		return 0, 0, err
+	}
+	return rules.Precision, rules.StepSize, nil
 }
 
 // roundToStepSize 将数量调整为 stepSize 的整数倍
@@ -229,7 +354,8 @@ func roundToStepSize(quantity, stepSize float64) float64 {
 	if stepSize == 0 {
 		return quantity
 	}
-	return math.Floor(quantity/stepSize) * stepSize
+	// 浮点数除法在边界值上可能得到 2.999999999，导致被错误下取整。
+	return math.Floor(quantity/stepSize+1e-9) * stepSize
 }
 
 // formatQuantity 格式化数量为指定精度的字符串，去除尾部零
@@ -238,6 +364,9 @@ func formatQuantity(quantity float64, precision int) string {
 	// 去除尾部的零和小数点
 	formatted = strings.TrimRight(formatted, "0")
 	formatted = strings.TrimRight(formatted, ".")
+	if formatted == "" {
+		return "0"
+	}
 	return formatted
 }
 

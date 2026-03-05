@@ -31,6 +31,7 @@ func main() {
 	api.InitNewsSnapshotRedis(api.Cfg.Redis)
 	api.InitLocalTPSLRedis(api.Cfg.Redis)
 	api.InitStrategyStateRedis(api.Cfg.Redis)
+	api.InitRecommendSignalHistoryRedis(api.Cfg.Redis)
 
 	api.InitClient(*cfgPath)
 
@@ -85,6 +86,8 @@ func main() {
 	api.StartNewsBackgroundFetcher()
 	// 每小时检测资讯源可用性
 	api.StartNewsSourceHealthMonitor()
+	// 启动后台爆仓采集（无监控前端也持续更新，供策略与分析使用）
+	api.StartLiquidationCollectorBackground()
 
 	// 初始化 LLM 分析 Agent（可选配置，失败不影响主流程）
 	if err := agent.InitAgent(api.Cfg.LLM); err != nil {
@@ -152,7 +155,6 @@ func main() {
 		apiGroup.POST("/hyper/follow/start", api.HandleStartHyperFollow)
 		apiGroup.POST("/hyper/follow/stop", api.HandleStopHyperFollow)
 		apiGroup.GET("/hyper/follow/status", api.HandleHyperFollowStatus)
-		apiGroup.GET("/hyper/positions", api.HandleGetHyperPositions)
 
 		// 浮盈加仓
 		apiGroup.POST("/autoscale/start", api.HandleStartAutoScale)
@@ -201,6 +203,7 @@ func main() {
 
 		// 推荐交易扫描
 		apiGroup.GET("/recommend/scan", api.HandleRecommendScan)
+		apiGroup.GET("/recommend/history", api.HandleRecommendHistory)
 		apiGroup.GET("/recommend/analyze", api.HandleRecommendAnalyze)
 		apiGroup.POST("/agent/analyze", agent.HandleAnalyze)
 		apiGroup.GET("/agent/analyze", agent.HandleAnalyze)
@@ -267,7 +270,6 @@ func main() {
 
 		// 运营指标
 		apiGroup.GET("/ops/metrics", api.HandleGetOpsMetrics)
-		apiGroup.GET("/monitor/overview", api.HandleGetMonitorOverview)
 
 		// VaR 风控
 		apiGroup.GET("/risk/var", api.HandleGetVarStatus)
@@ -334,6 +336,7 @@ func main() {
 	if err := h.Shutdown(shutdownCtx); err != nil {
 		log.Printf("[Server] Shutdown error: %v", err)
 	}
+	api.StopLiquidationCollectorBackground()
 
 	log.Printf("[Server] Shutdown complete")
 }

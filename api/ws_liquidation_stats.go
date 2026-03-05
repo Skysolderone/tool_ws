@@ -155,11 +155,85 @@ var (
 	lHub = &liquidationStatsHub{
 		clients: make(map[*wsClient]bool),
 	}
+
+	liquidationBgMu      sync.Mutex
+	liquidationBgRunning bool
+	liquidationBgStopC   chan struct{}
+	liquidationBgDoneC   chan struct{}
 )
 
 func init() {
 	// 暴露爆仓统计存储给 strategy_link 使用
 	SetGlobalStatsStore(liquidationStore)
+}
+
+// StartLiquidationCollectorBackground 启动后台爆仓采集（无前端监控连接也持续运行）
+func StartLiquidationCollectorBackground() {
+	liquidationBgMu.Lock()
+	if liquidationBgRunning {
+		liquidationBgMu.Unlock()
+		return
+	}
+	stopC := make(chan struct{})
+	doneC := make(chan struct{})
+	liquidationBgStopC = stopC
+	liquidationBgDoneC = doneC
+	liquidationBgRunning = true
+	liquidationBgMu.Unlock()
+
+	go func() {
+		defer close(doneC)
+		// 采集 Binance 强平流，持续更新 liquidationStore
+		go runLiquidationCollector(stopC)
+
+		// 仅当版本变化时落库，供策略与分析读取
+		ticker := time.NewTicker(liquidationBroadcastInterval)
+		defer ticker.Stop()
+
+		var lastVersion uint64
+		for {
+			select {
+			case <-stopC:
+				log.Printf("[WsLiq] Background collector stopped")
+				return
+			case <-ticker.C:
+				version := liquidationStore.currentVersion()
+				if version == 0 || version == lastVersion {
+					continue
+				}
+				payload := liquidationStore.snapshot(time.Now().UTC())
+				if err := SaveLiquidationSnapshot(payload); err != nil {
+					log.Printf("[WsLiq] Save snapshot failed: %v", err)
+				}
+				lastVersion = version
+			}
+		}
+	}()
+	log.Printf("[WsLiq] Background collector started")
+}
+
+// StopLiquidationCollectorBackground 停止后台爆仓采集器
+func StopLiquidationCollectorBackground() {
+	liquidationBgMu.Lock()
+	if !liquidationBgRunning || liquidationBgStopC == nil {
+		liquidationBgMu.Unlock()
+		return
+	}
+	stopC := liquidationBgStopC
+	doneC := liquidationBgDoneC
+	liquidationBgStopC = nil
+	liquidationBgDoneC = nil
+	liquidationBgRunning = false
+	liquidationBgMu.Unlock()
+
+	close(stopC)
+	if doneC != nil {
+		select {
+		case <-doneC:
+		case <-time.After(3 * time.Second):
+			log.Printf("[WsLiq] Background collector stop timeout")
+		}
+	}
 }
 
 func handleWsLiquidationStats(w http.ResponseWriter, r *http.Request) {

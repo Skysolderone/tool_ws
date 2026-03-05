@@ -439,17 +439,6 @@ func (t *hyperFollowTask) executeOpen(fill map[string]interface{}, side, positio
 		orderID,
 	)
 
-	// 广播跟单执行事件给监控面板
-	BroadcastFollowEvent(cfg.Address, map[string]any{
-		"action":       "open",
-		"symbol":       cfg.Symbol,
-		"side":         side,
-		"positionSide": positionSide,
-		"quoteQty":     cfg.QuoteQuantity,
-		"leverage":     cfg.Leverage,
-		"orderId":      orderID,
-		"time":         time.Now().UnixMilli(),
-	})
 }
 
 func (t *hyperFollowTask) executeClose(fill map[string]interface{}, positionSide string) {
@@ -474,13 +463,6 @@ func (t *hyperFollowTask) executeClose(fill map[string]interface{}, positionSide
 	t.markExecuted()
 	log.Printf("[HyperFollow] Close executed for %s: %s %s", cfg.Address, cfg.Symbol, positionSide)
 
-	// 广播跟单平仓事件给监控面板
-	BroadcastFollowEvent(cfg.Address, map[string]any{
-		"action":       "close",
-		"symbol":       cfg.Symbol,
-		"positionSide": positionSide,
-		"time":         time.Now().UnixMilli(),
-	})
 }
 
 func (t *hyperFollowTask) getConfig() HyperFollowConfig {

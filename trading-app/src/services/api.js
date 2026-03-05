@@ -6,12 +6,7 @@ const AUTH_TOKEN = 'wws2026tool'; // 与 config.json 中 auth.token 保持一致
 // WebSocket 价格转发地址（后端代理，不直连币安）
 const WS_PRICE_BASE = 'wss://wws741.top/ws/price';
 const WS_BOOK_BASE = 'wss://wws741.top/ws/book';
-const WS_BIG_TRADE_BASE = 'wss://wws741.top/ws/big-trade';
 const WS_NEWS_BASE = 'wss://wws741.top/ws/news';
-const WS_HYPER_MONITOR_BASE = 'wss://wws741.top/ws/hyper-monitor';
-const WS_LIQUIDATION_BASE = 'wss://wws741.top/ws/liquidation-stats';
-const WS_MARKET_SPIKE_BASE = 'wss://wws741.top/ws/market-spike';
-const WS_MARKET_RANGE_BASE = 'wss://wws741.top/ws/market-range';
 
 async function apiCall(method, path, body = null, requestOptions = {}) {
   const { signal } = requestOptions;
@@ -241,8 +236,6 @@ export default {
   stopHyperFollow: (address) => apiCall('POST', '/hyper/follow/stop', { address }),
   hyperFollowStatus: (address = '') =>
     apiCall('GET', `/hyper/follow/status?address=${encodeURIComponent(address || '')}`),
-  getHyperPositions: (address) =>
-    apiCall('GET', `/hyper/positions?address=${encodeURIComponent(address || '')}`),
 
   // 浮盈加仓
   startAutoScale: (config) => apiCall('POST', '/autoscale/start', config),
@@ -289,6 +282,11 @@ export default {
 
   // 推荐交易扫描
   getRecommendScan: (symbols) => apiCall('GET', `/recommend/scan${symbols ? `?symbols=${encodeURIComponent(symbols)}` : ''}`),
+  getRecommendHistory: ({ symbol = '', direction = '', limit = 100 } = {}) =>
+    apiCall(
+      'GET',
+      `/recommend/history?symbol=${encodeURIComponent(symbol)}&direction=${encodeURIComponent(direction)}&limit=${limit}`,
+    ),
 
   // 持仓分析
   getRecommendAnalyze: (requestOptions = {}) => apiCall('GET', '/recommend/analyze', null, requestOptions),
@@ -344,8 +342,6 @@ export default {
   getKillSwitchStatus: () => apiCall('GET', '/risk/kill-switch'),
   runStressTest: (scenarios) => apiCall('POST', '/risk/stress-test', { scenarios }),
   getOpsMetrics: () => apiCall('GET', '/ops/metrics'),
-  getMonitorOverview: (days = 30) =>
-    apiCall('GET', `/monitor/overview?days=${Number(days) > 0 ? Number(days) : 30}`),
   getExecutionQuality: (source, days) => apiCall('GET', `/execution/quality?source=${source || ''}&days=${days || 30}`),
   getAllocationStatus: () => apiCall('GET', '/allocator/status'),
   getRegimeStatus: () => apiCall('GET', '/regime/status'),
@@ -361,11 +357,6 @@ export {
   API_BASE,
   WS_PRICE_BASE,
   WS_BOOK_BASE,
-  WS_BIG_TRADE_BASE,
   WS_NEWS_BASE,
-  WS_HYPER_MONITOR_BASE,
-  WS_LIQUIDATION_BASE,
-  WS_MARKET_SPIKE_BASE,
-  WS_MARKET_RANGE_BASE,
   AUTH_TOKEN,
 };
