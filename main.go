@@ -29,6 +29,8 @@ func main() {
 	}
 	api.InitNewsSourcesFromConfig(api.Cfg.News)
 	api.InitNewsSnapshotRedis(api.Cfg.Redis)
+	api.InitLocalTPSLRedis(api.Cfg.Redis)
+	api.InitStrategyStateRedis(api.Cfg.Redis)
 
 	api.InitClient(*cfgPath)
 

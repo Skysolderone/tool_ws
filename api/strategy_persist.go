@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/json"
 	"log"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -22,7 +24,9 @@ type StrategyState struct {
 
 // SaveStrategyState 保存策略状态到 DB（启动策略后调用）
 func SaveStrategyState(strategyType, symbol string, config interface{}) {
-	if DB == nil {
+	strategyType = strings.ToLower(strings.TrimSpace(strategyType))
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if strategyType == "" || symbol == "" {
 		return
 	}
 
@@ -32,59 +36,130 @@ func SaveStrategyState(strategyType, symbol string, config interface{}) {
 		return
 	}
 
-	state := StrategyState{}
-	result := DB.Where("strategy_type = ? AND symbol = ?", strategyType, symbol).First(&state)
-
-	if result.Error != nil {
-		// 新建记录
-		state = StrategyState{
-			StrategyType: strategyType,
-			Symbol:       symbol,
-			ConfigJSON:   string(configBytes),
-			Status:       "ACTIVE",
-			StartedAt:    time.Now(),
-		}
-		DB.Create(&state)
-	} else {
-		// 更新已有记录
-		DB.Model(&state).Updates(map[string]interface{}{
-			"config_json": string(configBytes),
-			"status":      "ACTIVE",
-			"started_at":  time.Now(),
-			"stopped_at":  nil,
-		})
+	now := time.Now()
+	state := StrategyState{
+		StrategyType: strategyType,
+		Symbol:       symbol,
+		ConfigJSON:   string(configBytes),
+		Status:       "ACTIVE",
+		StartedAt:    now,
+		StoppedAt:    nil,
+		UpdatedAt:    now,
 	}
 
+	if DB != nil {
+		dbState := StrategyState{}
+		result := DB.Where("strategy_type = ? AND symbol = ?", strategyType, symbol).First(&dbState)
+
+		if result.Error != nil {
+			if err := DB.Create(&state).Error; err != nil {
+				log.Printf("[StrategyPersist] Failed to save %s/%s to DB: %v", strategyType, symbol, err)
+			}
+		} else {
+			if err := DB.Model(&dbState).Updates(map[string]interface{}{
+				"config_json": string(configBytes),
+				"status":      "ACTIVE",
+				"started_at":  now,
+				"stopped_at":  nil,
+			}).Error; err != nil {
+				log.Printf("[StrategyPersist] Failed to update %s/%s in DB: %v", strategyType, symbol, err)
+			}
+			if err := DB.Where("strategy_type = ? AND symbol = ?", strategyType, symbol).First(&state).Error; err != nil {
+				state = dbState
+				state.ConfigJSON = string(configBytes)
+				state.Status = "ACTIVE"
+				state.StartedAt = now
+				state.StoppedAt = nil
+				state.UpdatedAt = now
+			}
+		}
+	}
+
+	upsertStrategyStateRedis(state)
 	log.Printf("[StrategyPersist] Saved %s/%s as ACTIVE", strategyType, symbol)
 }
 
 // MarkStrategyStopped 标记策略已停止
 func MarkStrategyStopped(strategyType, symbol string) {
-	if DB == nil {
+	strategyType = strings.ToLower(strings.TrimSpace(strategyType))
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if strategyType == "" || symbol == "" {
 		return
 	}
 
 	now := time.Now()
-	DB.Model(&StrategyState{}).
-		Where("strategy_type = ? AND symbol = ? AND status = ?", strategyType, symbol, "ACTIVE").
-		Updates(map[string]interface{}{
-			"status":     "STOPPED",
-			"stopped_at": now,
-		})
+	if DB != nil {
+		if err := DB.Model(&StrategyState{}).
+			Where("strategy_type = ? AND symbol = ? AND status = ?", strategyType, symbol, "ACTIVE").
+			Updates(map[string]interface{}{
+				"status":     "STOPPED",
+				"stopped_at": now,
+			}).Error; err != nil {
+			log.Printf("[StrategyPersist] Failed to mark STOPPED in DB for %s/%s: %v", strategyType, symbol, err)
+		}
+	}
+
+	if s, err := getStrategyStateRedisOne(strategyType, symbol); err == nil && s != nil {
+		s.Status = "STOPPED"
+		s.StoppedAt = &now
+		s.UpdatedAt = now
+		upsertStrategyStateRedis(*s)
+	} else {
+		syncStrategyStateFromDB(strategyType, symbol)
+		if s2, e2 := getStrategyStateRedisOne(strategyType, symbol); e2 == nil && s2 != nil {
+			s2.Status = "STOPPED"
+			s2.StoppedAt = &now
+			s2.UpdatedAt = now
+			upsertStrategyStateRedis(*s2)
+		} else {
+			upsertStrategyStateRedis(StrategyState{
+				StrategyType: strategyType,
+				Symbol:       symbol,
+				Status:       "STOPPED",
+				StoppedAt:    &now,
+				UpdatedAt:    now,
+			})
+		}
+	}
 
 	log.Printf("[StrategyPersist] Marked %s/%s as STOPPED", strategyType, symbol)
 }
 
 // RecoverStrategies 恢复所有 ACTIVE 策略（程序启动时调用）
 func RecoverStrategies() {
-	if DB == nil {
-		return
+	states := make([]StrategyState, 0)
+	loadedFromRedis := false
+	if redisStates, err := loadStrategyStatesFromRedis(); err != nil {
+		log.Printf("[StrategyPersist] Redis load failed, fallback DB: %v", err)
+	} else if len(redisStates) > 0 {
+		for _, s := range redisStates {
+			if strings.EqualFold(s.Status, "ACTIVE") {
+				states = append(states, s)
+			}
+		}
+		if len(states) > 0 {
+			loadedFromRedis = true
+			log.Printf("[StrategyPersist] Loaded %d active strategies from Redis", len(states))
+		} else {
+			log.Printf("[StrategyPersist] Redis has no ACTIVE strategy, fallback DB")
+		}
 	}
 
-	var states []StrategyState
-	if err := DB.Where("status = ?", "ACTIVE").Find(&states).Error; err != nil {
-		log.Printf("[StrategyPersist] Failed to load active strategies: %v", err)
-		return
+	if !loadedFromRedis {
+		if DB == nil {
+			return
+		}
+		if err := DB.Where("status = ?", "ACTIVE").Find(&states).Error; err != nil {
+			log.Printf("[StrategyPersist] Failed to load active strategies from DB: %v", err)
+			return
+		}
+		if len(states) > 0 {
+			// DB 兜底回填 Redis。
+			var allStates []StrategyState
+			if err := DB.Order("updated_at DESC").Find(&allStates).Error; err == nil {
+				replaceStrategyStatesInRedis(allStates)
+			}
+		}
 	}
 
 	if len(states) == 0 {
@@ -164,10 +239,34 @@ func RecoverStrategies() {
 
 // GetAllStrategyStates 获取所有策略状态（按更新时间倒序）
 func GetAllStrategyStates() []StrategyState {
+	if redisStates, err := loadStrategyStatesFromRedis(); err == nil {
+		if len(redisStates) > 0 {
+			return redisStates
+		}
+		if isStrategyStateRedisEnabled() && DB != nil {
+			var dbStates []StrategyState
+			if err := DB.Order("updated_at DESC").Find(&dbStates).Error; err == nil && len(dbStates) > 0 {
+				replaceStrategyStatesInRedis(dbStates)
+				return dbStates
+			}
+		}
+	} else {
+		log.Printf("[StrategyPersist] Redis query failed, fallback DB: %v", err)
+	}
+
 	if DB == nil {
 		return nil
 	}
 	var states []StrategyState
-	DB.Order("updated_at DESC").Find(&states)
+	if err := DB.Order("updated_at DESC").Find(&states).Error; err != nil {
+		log.Printf("[StrategyPersist] DB query states failed: %v", err)
+		return nil
+	}
+	if len(states) > 0 {
+		sort.Slice(states, func(i, j int) bool {
+			return states[i].UpdatedAt.After(states[j].UpdatedAt)
+		})
+		replaceStrategyStatesInRedis(states)
+	}
 	return states
 }

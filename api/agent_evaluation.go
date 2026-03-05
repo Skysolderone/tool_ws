@@ -31,8 +31,8 @@ type AgentEvaluationRecord struct {
 	ActionType    string    `gorm:"type:varchar(20)" json:"actionType"`
 	Symbol        string    `gorm:"type:varchar(20);index" json:"symbol"`
 	Direction     string    `gorm:"type:varchar(10)" json:"direction"`
-	EntryPrice    float64   `gorm:"type:numeric(36,18)" json:"entryPrice"`
-	CurrentPrice  float64   `gorm:"type:numeric(36,18)" json:"currentPrice"`
+	EntryPrice    float64   `gorm:"type:numeric(36,8)" json:"entryPrice"`
+	CurrentPrice  float64   `gorm:"type:numeric(36,8)" json:"currentPrice"`
 	PnlUSDT       float64   `gorm:"type:numeric(18,4)" json:"pnlUsdt"`
 	PnlPct        float64   `gorm:"type:numeric(8,4)" json:"pnlPct"`
 	Hit           bool      `json:"hit"`

@@ -13,16 +13,16 @@ import (
 // SlippageRecord 滑点记录（GORM 模型，对应 slippage_records 表）
 type SlippageRecord struct {
 	gorm.Model
-	Symbol        string  `gorm:"type:varchar(20);index" json:"symbol"`
-	OrderID       string  `gorm:"type:varchar(40);index" json:"orderId"`
-	IntendedPrice float64 `gorm:"type:numeric(36,18)" json:"intendedPrice"` // 下单时市场价
-	ExecutedPrice float64 `gorm:"type:numeric(36,18)" json:"executedPrice"` // 实际成交均价
-	SlippageBps   float64 `gorm:"type:numeric(18,6)" json:"slippageBps"`    // 滑点 basis points
-	Side          string  `gorm:"type:varchar(10)" json:"side"`             // BUY / SELL
-	Quantity      float64 `gorm:"type:numeric(36,18)" json:"quantity"`
-	Source         string  `gorm:"type:varchar(40);index" json:"source"` // scalp / manual / tpsl 等
-	ArrivalPrice   float64 `gorm:"type:numeric(36,18)" json:"arrivalPrice"`   // 下单瞬间标记价
-	LatencyMs      int64   `json:"latencyMs"`                                 // 下单到成交毫秒数
+	Symbol         string  `gorm:"type:varchar(20);index" json:"symbol"`
+	OrderID        string  `gorm:"type:varchar(40);index" json:"orderId"`
+	IntendedPrice  float64 `gorm:"type:numeric(36,8)" json:"intendedPrice"` // 下单时市场价
+	ExecutedPrice  float64 `gorm:"type:numeric(36,8)" json:"executedPrice"` // 实际成交均价
+	SlippageBps    float64 `gorm:"type:numeric(18,6)" json:"slippageBps"`   // 滑点 basis points
+	Side           string  `gorm:"type:varchar(10)" json:"side"`            // BUY / SELL
+	Quantity       float64 `gorm:"type:numeric(36,8)" json:"quantity"`
+	Source         string  `gorm:"type:varchar(40);index" json:"source"`         // scalp / manual / tpsl 等
+	ArrivalPrice   float64 `gorm:"type:numeric(36,8)" json:"arrivalPrice"`       // 下单瞬间标记价
+	LatencyMs      int64   `json:"latencyMs"`                                    // 下单到成交毫秒数
 	StrategySource string  `gorm:"type:varchar(40);index" json:"strategySource"` // 策略来源归因
 }
 

@@ -33,6 +33,7 @@ func DemoteStrategy(strategyType, symbol string, weight float64) error {
 	}
 
 	log.Printf("[StrategyAdmin] Demoted %s/%s weight=%.2f", strategyType, symbol, weight)
+	syncStrategyStateFromDB(strategyType, symbol)
 	SendNotify(fmt.Sprintf("📉 策略降权: %s/%s → 权重 %.2f", strategyType, symbol, weight))
 	return nil
 }
@@ -63,6 +64,7 @@ func RestoreStrategy(strategyType, symbol string) error {
 		Where("strategy_type = ? AND symbol = ?", strategyType, symbol).
 		Update("demoted", false)
 
+	syncStrategyStateFromDB(strategyType, symbol)
 	log.Printf("[StrategyAdmin] Restored %s/%s", strategyType, symbol)
 	return nil
 }

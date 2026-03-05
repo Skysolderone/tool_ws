@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,28 +19,28 @@ import (
 
 // LocalTPSLCondition 本地止盈止损条件（持久化到数据库）
 type LocalTPSLCondition struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	GroupID       string    `gorm:"type:varchar(40);index" json:"groupId"`                          // 同一笔主单的 TP+SL 共享，用于联动取消
-	Symbol        string    `gorm:"type:varchar(20);index" json:"symbol"`                           // 交易对
-	ConditionType string    `gorm:"type:varchar(20)" json:"conditionType"`                          // TAKE_PROFIT / STOP_LOSS / TRAILING_STOP
-	Side          string    `gorm:"type:varchar(10)" json:"side"`                                   // 平仓方向: BUY / SELL
-	PositionSide  string    `gorm:"type:varchar(10)" json:"positionSide"`                           // BOTH / LONG / SHORT
-	TriggerPrice  float64   `gorm:"type:numeric(36,18)" json:"triggerPrice"`                        // 触发价格
-	Quantity      string    `gorm:"type:varchar(40)" json:"quantity"`                               // 本次下单量（非全仓）
-	EntryPrice    float64   `gorm:"type:numeric(36,18)" json:"entryPrice"`                          // 入场价
-	LevelIndex    int       `json:"levelIndex"`                                                     // 阶梯TP层级索引，-1 表示非阶梯
-	TotalLevels   int       `json:"totalLevels"`                                                    // 阶梯总层级数
-	Status        string    `gorm:"type:varchar(20);index" json:"status"`                           // ACTIVE / TRIGGERED / CANCELLED
-	OrderID       int64     `gorm:"index" json:"orderId"`                                           // 关联的主单 OrderID
-	TriggeredAt   *time.Time `json:"triggeredAt,omitempty"`                                         // 触发时间
-	Source        string    `gorm:"type:varchar(40)" json:"source"`                                 // manual / strategy_xxx
-	CreatedAt     time.Time `gorm:"autoCreateTime" json:"createdAt"`
-	UpdatedAt     time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	GroupID       string     `gorm:"type:varchar(40);index" json:"groupId"`  // 同一笔主单的 TP+SL 共享，用于联动取消
+	Symbol        string     `gorm:"type:varchar(20);index" json:"symbol"`   // 交易对
+	ConditionType string     `gorm:"type:varchar(20)" json:"conditionType"`  // TAKE_PROFIT / STOP_LOSS / TRAILING_STOP
+	Side          string     `gorm:"type:varchar(10)" json:"side"`           // 平仓方向: BUY / SELL
+	PositionSide  string     `gorm:"type:varchar(10)" json:"positionSide"`   // BOTH / LONG / SHORT
+	TriggerPrice  float64    `gorm:"type:numeric(36,8)" json:"triggerPrice"` // 触发价格
+	Quantity      string     `gorm:"type:varchar(40)" json:"quantity"`       // 本次下单量（非全仓）
+	EntryPrice    float64    `gorm:"type:numeric(36,8)" json:"entryPrice"`   // 入场价
+	LevelIndex    int        `json:"levelIndex"`                             // 阶梯TP层级索引，-1 表示非阶梯
+	TotalLevels   int        `json:"totalLevels"`                            // 阶梯总层级数
+	Status        string     `gorm:"type:varchar(20);index" json:"status"`   // ACTIVE / TRIGGERED / CANCELLED
+	OrderID       int64      `gorm:"index" json:"orderId"`                   // 关联的主单 OrderID
+	TriggeredAt   *time.Time `json:"triggeredAt,omitempty"`                  // 触发时间
+	Source        string     `gorm:"type:varchar(40)" json:"source"`         // manual / strategy_xxx
+	CreatedAt     time.Time  `gorm:"autoCreateTime" json:"createdAt"`
+	UpdatedAt     time.Time  `gorm:"autoUpdateTime" json:"updatedAt"`
 
 	// 移动止损专用字段（ConditionType = TRAILING_STOP 时有效）
 	TrailingCallbackRate    float64 `gorm:"type:numeric(10,4);default:0" json:"trailingCallbackRate"`    // 回调比例，如 1.0 表示 1%，0=非移动止损
-	TrailingActivationPrice float64 `gorm:"type:numeric(36,18);default:0" json:"trailingActivationPrice"` // 激活价格，0=立即激活
-	TrailingHighestPrice    float64 `gorm:"type:numeric(36,18);default:0" json:"trailingHighestPrice"`   // 追踪极值（多头用最高价，空头用最低价），仅存内存，触发时才持久化
+	TrailingActivationPrice float64 `gorm:"type:numeric(36,8);default:0" json:"trailingActivationPrice"` // 激活价格，0=立即激活
+	TrailingHighestPrice    float64 `gorm:"type:numeric(36,8);default:0" json:"trailingHighestPrice"`    // 追踪极值（多头用最高价，空头用最低价），仅存内存，触发时才持久化
 	TrailingActivated       bool    `gorm:"default:false" json:"trailingActivated"`                      // 是否已激活追踪
 }
 
@@ -59,26 +60,80 @@ func StartLocalTPSLMonitor() {
 		stopCh:     make(chan struct{}),
 	}
 
-	// 从数据库加载 ACTIVE 条件
-	if DB != nil {
-		var active []LocalTPSLCondition
-		if err := DB.Where("status = ?", "ACTIVE").Find(&active).Error; err != nil {
-			log.Printf("[LocalTPSL] Failed to load active conditions: %v", err)
+	// 启动恢复顺序：Redis 优先，Redis 不可用或为空再回退 DB。
+	loadedFromRedis := false
+	if redisConds, err := loadActiveTPSLFromRedis(); err != nil {
+		log.Printf("[LocalTPSL] Redis load failed, fallback to DB: %v", err)
+	} else if len(redisConds) > 0 {
+		tpslMonitor.mu.Lock()
+		for _, cond := range redisConds {
+			if cond == nil {
+				continue
+			}
+			key := strings.ToUpper(strings.TrimSpace(cond.Symbol))
+			if key == "" {
+				key = cond.Symbol
+			} else {
+				cond.Symbol = key
+			}
+			tpslMonitor.conditions[key] = append(tpslMonitor.conditions[key], cond)
+		}
+		tpslMonitor.mu.Unlock()
+		loadedFromRedis = true
+		log.Printf("[LocalTPSL] Loaded %d active conditions from Redis", len(redisConds))
+	}
+
+	if !loadedFromRedis {
+		dbConds, err := loadActiveTPSLFromDB("")
+		if err != nil {
+			log.Printf("[LocalTPSL] Failed to load active conditions from DB: %v", err)
 		} else {
 			tpslMonitor.mu.Lock()
-			for i := range active {
-				cond := &active[i]
-				tpslMonitor.conditions[cond.Symbol] = append(tpslMonitor.conditions[cond.Symbol], cond)
+			for _, cond := range dbConds {
+				if cond == nil {
+					continue
+				}
+				key := strings.ToUpper(strings.TrimSpace(cond.Symbol))
+				if key == "" {
+					key = cond.Symbol
+				} else {
+					cond.Symbol = key
+				}
+				tpslMonitor.conditions[key] = append(tpslMonitor.conditions[key], cond)
 			}
 			tpslMonitor.mu.Unlock()
-			if len(active) > 0 {
-				log.Printf("[LocalTPSL] Loaded %d active conditions from DB", len(active))
+			if len(dbConds) > 0 {
+				log.Printf("[LocalTPSL] Loaded %d active conditions from DB", len(dbConds))
 			}
+			// DB 回填 Redis，清理可能遗留的脏 key。
+			replaceActiveTPSLInRedis(dbConds)
 		}
 	}
 
 	go tpslMonitor.run()
 	log.Println("[LocalTPSL] Monitor started")
+}
+
+func loadActiveTPSLFromDB(symbol string) ([]*LocalTPSLCondition, error) {
+	if DB == nil {
+		return nil, nil
+	}
+
+	var rows []LocalTPSLCondition
+	q := DB.Where("status = ?", "ACTIVE")
+	if symbol != "" {
+		q = q.Where("symbol = ?", symbol)
+	}
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	out := make([]*LocalTPSLCondition, 0, len(rows))
+	for i := range rows {
+		c := rows[i]
+		out = append(out, &c)
+	}
+	return out, nil
 }
 
 // run 1秒 ticker 循环检查价格触发
@@ -134,6 +189,7 @@ func (m *localTPSLMonitor) checkAll() {
 // updateTrailingStop 更新移动止损的追踪极值，仅在内存中维护
 func (m *localTPSLMonitor) updateTrailingStop(cond *LocalTPSLCondition, price float64) {
 	isSell := cond.Side == "SELL" // 平多仓，追踪最高价
+	changed := false
 
 	// 检查激活条件
 	if !cond.TrailingActivated {
@@ -141,18 +197,24 @@ func (m *localTPSLMonitor) updateTrailingStop(cond *LocalTPSLCondition, price fl
 			// 无激活价格要求，立即激活
 			cond.TrailingActivated = true
 			cond.TrailingHighestPrice = price
+			changed = true
 		} else if isSell && price >= cond.TrailingActivationPrice {
 			// 多头：价格突破激活价才开始追踪
 			cond.TrailingActivated = true
 			cond.TrailingHighestPrice = price
+			changed = true
 			log.Printf("[LocalTPSL][TS] Activated LONG trailing stop for %s at price=%.4f (activation=%.4f)",
 				cond.Symbol, price, cond.TrailingActivationPrice)
 		} else if !isSell && price <= cond.TrailingActivationPrice {
 			// 空头：价格跌破激活价才开始追踪
 			cond.TrailingActivated = true
 			cond.TrailingHighestPrice = price
+			changed = true
 			log.Printf("[LocalTPSL][TS] Activated SHORT trailing stop for %s at price=%.4f (activation=%.4f)",
 				cond.Symbol, price, cond.TrailingActivationPrice)
+		}
+		if changed {
+			upsertActiveTPSLToRedis(cond)
 		}
 		return
 	}
@@ -162,12 +224,17 @@ func (m *localTPSLMonitor) updateTrailingStop(cond *LocalTPSLCondition, price fl
 		// 多头追踪最高价
 		if price > cond.TrailingHighestPrice {
 			cond.TrailingHighestPrice = price
+			changed = true
 		}
 	} else {
 		// 空头追踪最低价（复用 TrailingHighestPrice 字段存储最低价）
 		if cond.TrailingHighestPrice <= 0 || price < cond.TrailingHighestPrice {
 			cond.TrailingHighestPrice = price
+			changed = true
 		}
+	}
+	if changed {
+		upsertActiveTPSLToRedis(cond)
 	}
 }
 
@@ -430,23 +497,39 @@ func (m *localTPSLMonitor) updateConditionStatus(cond *LocalTPSLCondition, statu
 		}
 		DB.Model(&LocalTPSLCondition{}).Where("id = ?", cond.ID).Updates(updates)
 	}
+
+	if status == "ACTIVE" {
+		upsertActiveTPSLToRedis(cond)
+		return
+	}
+	removeTPSLFromRedis(cond.ID)
 }
 
 // removeFromMemory 从内存活跃列表移除条件
 func (m *localTPSLMonitor) removeFromMemory(cond *LocalTPSLCondition) {
+	if cond == nil {
+		return
+	}
+	symbol := strings.ToUpper(strings.TrimSpace(cond.Symbol))
+	if symbol == "" {
+		symbol = cond.Symbol
+	} else {
+		cond.Symbol = symbol
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	conds := m.conditions[cond.Symbol]
+	conds := m.conditions[symbol]
 	for i, c := range conds {
 		if c.ID == cond.ID {
-			m.conditions[cond.Symbol] = append(conds[:i], conds[i+1:]...)
+			m.conditions[symbol] = append(conds[:i], conds[i+1:]...)
 			break
 		}
 	}
 	// 如果该 symbol 没有活跃条件了，删除 key
-	if len(m.conditions[cond.Symbol]) == 0 {
-		delete(m.conditions, cond.Symbol)
+	if len(m.conditions[symbol]) == 0 {
+		delete(m.conditions, symbol)
 	}
 }
 
@@ -492,9 +575,29 @@ func (m *localTPSLMonitor) cancelGroupConditionsByType(groupID string, excludeID
 
 // addToMemory 添加条件到内存活跃列表
 func (m *localTPSLMonitor) addToMemory(cond *LocalTPSLCondition) {
+	if cond == nil {
+		return
+	}
+	symbol := strings.ToUpper(strings.TrimSpace(cond.Symbol))
+	if symbol == "" {
+		symbol = cond.Symbol
+	} else {
+		cond.Symbol = symbol
+	}
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.conditions[cond.Symbol] = append(m.conditions[cond.Symbol], cond)
+	conds := m.conditions[symbol]
+	for _, existing := range conds {
+		if existing != nil && existing.ID == cond.ID {
+			*existing = *cond
+			m.mu.Unlock()
+			upsertActiveTPSLToRedis(cond)
+			return
+		}
+	}
+	m.conditions[symbol] = append(conds, cond)
+	m.mu.Unlock()
+	upsertActiveTPSLToRedis(cond)
 }
 
 // RegisterLocalTPSLFromOrder 下单后注册本地止盈止损条件
@@ -699,7 +802,36 @@ func CancelTPSLByID(condID uint) error {
 	tpslMonitor.mu.RUnlock()
 
 	if target == nil {
-		return fmt.Errorf("condition %d not found or not active", condID)
+		redisRows, redisErr := loadActiveTPSLFromRedis()
+		if redisErr == nil {
+			for _, c := range redisRows {
+				if c != nil && c.ID == condID && c.Status == "ACTIVE" {
+					target = c
+					tpslMonitor.addToMemory(c)
+					break
+				}
+			}
+		}
+		if redisErr != nil {
+			log.Printf("[LocalTPSL] Redis lookup failed for cancel by id %d: %v", condID, redisErr)
+		}
+	}
+
+	if target == nil {
+		rows, err := loadActiveTPSLFromDB("")
+		if err != nil {
+			return fmt.Errorf("query active conditions from DB: %w", err)
+		}
+		for _, c := range rows {
+			if c != nil && c.ID == condID {
+				target = c
+				tpslMonitor.addToMemory(c)
+				break
+			}
+		}
+		if target == nil {
+			return fmt.Errorf("condition %d not found or not active", condID)
+		}
 	}
 
 	tpslMonitor.updateConditionStatus(target, "CANCELLED", &now)
@@ -726,7 +858,34 @@ func CancelTPSLByGroup(groupID string) error {
 	tpslMonitor.mu.RUnlock()
 
 	if len(toCancel) == 0 {
-		return fmt.Errorf("no active conditions found for group %s", groupID)
+		redisRows, redisErr := loadActiveTPSLFromRedis()
+		if redisErr == nil {
+			for _, c := range redisRows {
+				if c != nil && c.GroupID == groupID && c.Status == "ACTIVE" {
+					toCancel = append(toCancel, c)
+					tpslMonitor.addToMemory(c)
+				}
+			}
+		}
+		if redisErr != nil {
+			log.Printf("[LocalTPSL] Redis lookup failed for cancel group %s: %v", groupID, redisErr)
+		}
+	}
+
+	if len(toCancel) == 0 {
+		rows, err := loadActiveTPSLFromDB("")
+		if err != nil {
+			return fmt.Errorf("query active conditions from DB: %w", err)
+		}
+		for _, c := range rows {
+			if c != nil && c.GroupID == groupID && c.Status == "ACTIVE" {
+				toCancel = append(toCancel, c)
+				tpslMonitor.addToMemory(c)
+			}
+		}
+		if len(toCancel) == 0 {
+			return fmt.Errorf("no active conditions found for group %s", groupID)
+		}
 	}
 
 	for _, c := range toCancel {
@@ -738,6 +897,40 @@ func CancelTPSLByGroup(groupID string) error {
 
 // GetActiveTPSLConditions 获取指定 symbol 的活跃条件
 func GetActiveTPSLConditions(symbol string) []*LocalTPSLCondition {
+	upperSym := strings.ToUpper(strings.TrimSpace(symbol))
+
+	if isLocalTPSLRedisEnabled() {
+		redisConds, err := loadActiveTPSLFromRedis()
+		if err == nil {
+			filtered := filterTPSLBySymbol(redisConds, upperSym)
+			if len(filtered) > 0 {
+				return filtered
+			}
+			// Redis 可用但数据为空时，回退 DB，防止 Redis 丢数据导致漏单。
+			dbConds, dbErr := loadActiveTPSLFromDB(upperSym)
+			if dbErr == nil {
+				for _, cond := range dbConds {
+					upsertActiveTPSLToRedis(cond)
+				}
+				return dbConds
+			}
+			log.Printf("[LocalTPSL] DB fallback failed after Redis empty: %v", dbErr)
+			return filtered
+		}
+		log.Printf("[LocalTPSL] Redis query failed, fallback DB: %v", err)
+	}
+
+	dbConds, dbErr := loadActiveTPSLFromDB(upperSym)
+	if dbErr == nil && dbConds != nil {
+		for _, cond := range dbConds {
+			upsertActiveTPSLToRedis(cond)
+		}
+		return dbConds
+	}
+	if dbErr != nil {
+		log.Printf("[LocalTPSL] DB query failed, fallback memory: %v", dbErr)
+	}
+
 	if tpslMonitor == nil {
 		return nil
 	}
@@ -745,7 +938,7 @@ func GetActiveTPSLConditions(symbol string) []*LocalTPSLCondition {
 	tpslMonitor.mu.RLock()
 	defer tpslMonitor.mu.RUnlock()
 
-	if symbol == "" {
+	if upperSym == "" {
 		// 返回所有
 		var all []*LocalTPSLCondition
 		for _, conds := range tpslMonitor.conditions {
@@ -754,8 +947,43 @@ func GetActiveTPSLConditions(symbol string) []*LocalTPSLCondition {
 		return all
 	}
 
-	result := make([]*LocalTPSLCondition, len(tpslMonitor.conditions[symbol]))
-	copy(result, tpslMonitor.conditions[symbol])
+	var result []*LocalTPSLCondition
+	for _, conds := range tpslMonitor.conditions {
+		for _, cond := range conds {
+			if cond == nil {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(cond.Symbol), upperSym) {
+				result = append(result, cond)
+			}
+		}
+	}
+	return result
+}
+
+func filterTPSLBySymbol(conds []*LocalTPSLCondition, symbol string) []*LocalTPSLCondition {
+	if len(conds) == 0 {
+		return nil
+	}
+	if symbol == "" {
+		result := make([]*LocalTPSLCondition, 0, len(conds))
+		for _, cond := range conds {
+			if cond != nil {
+				result = append(result, cond)
+			}
+		}
+		return result
+	}
+
+	result := make([]*LocalTPSLCondition, 0, len(conds))
+	for _, cond := range conds {
+		if cond == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(cond.Symbol), symbol) {
+			result = append(result, cond)
+		}
+	}
 	return result
 }
 

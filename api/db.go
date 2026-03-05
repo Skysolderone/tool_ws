@@ -54,6 +54,9 @@ func RunMigrations() error {
 	if err := autoMigrateSchema(); err != nil {
 		return err
 	}
+	if err := ensureNumericScale8(); err != nil {
+		return err
+	}
 	if err := ensureDBIndexes(); err != nil {
 		return err
 	}
@@ -128,6 +131,71 @@ func ensureDBIndexes() error {
 	return nil
 }
 
+// ensureNumericScale8 将历史 numeric(36,18) 列迁移到 numeric(36,8)。
+// 仅在 scale 非 8 时执行 ALTER，避免每次启动都触发表锁。
+func ensureNumericScale8() error {
+	if DB == nil {
+		return nil
+	}
+
+	targetCols := []struct {
+		table  string
+		column string
+	}{
+		{"trade_records", "quantity"},
+		{"trade_records", "price"},
+		{"trade_records", "quote_quantity"},
+		{"trade_records", "stop_loss_price"},
+		{"trade_records", "take_profit_price"},
+		{"trade_records", "realized_pnl"},
+		{"local_tpsl_conditions", "trigger_price"},
+		{"local_tpsl_conditions", "entry_price"},
+		{"local_tpsl_conditions", "trailing_activation_price"},
+		{"local_tpsl_conditions", "trailing_highest_price"},
+		{"slippage_records", "intended_price"},
+		{"slippage_records", "executed_price"},
+		{"slippage_records", "quantity"},
+		{"slippage_records", "arrival_price"},
+		{"agent_evaluation_records", "entry_price"},
+		{"agent_evaluation_records", "current_price"},
+	}
+
+	for _, item := range targetCols {
+		var info struct {
+			Cnt   int64 `gorm:"column:cnt"`
+			Scale int64 `gorm:"column:scale"`
+		}
+		if err := DB.Raw(
+			`SELECT COUNT(*) AS cnt, COALESCE(MAX(numeric_scale), -1) AS scale
+			 FROM information_schema.columns
+			 WHERE table_schema = current_schema()
+			   AND table_name = ?
+			   AND column_name = ?`,
+			item.table, item.column,
+		).Scan(&info).Error; err != nil {
+			return fmt.Errorf("query numeric scale for %s.%s: %w", item.table, item.column, err)
+		}
+		if info.Cnt == 0 {
+			log.Printf("[DB] Skip numeric scale migration, column missing: %s.%s", item.table, item.column)
+			continue
+		}
+		if info.Scale == 8 {
+			continue
+		}
+
+		sql := fmt.Sprintf(
+			"ALTER TABLE %s ALTER COLUMN %s TYPE numeric(36,8) USING ROUND(%s::numeric, 8)",
+			item.table, item.column, item.column,
+		)
+		if err := DB.Exec(sql).Error; err != nil {
+			return fmt.Errorf("alter %s.%s to numeric(36,8): %w", item.table, item.column, err)
+		}
+		log.Printf("[DB] Migrated %s.%s numeric scale: %d -> 8", item.table, item.column, info.Scale)
+	}
+
+	return nil
+}
+
 func createIndexIfMissing(model any, field string) error {
 	if DB.Migrator().HasIndex(model, field) {
 		return nil
@@ -149,15 +217,15 @@ type TradeRecord struct {
 	PositionSide     string     `gorm:"type:varchar(10)" json:"positionSide"` // LONG / SHORT / BOTH
 	OrderType        string     `gorm:"type:varchar(20)" json:"orderType"`    // MARKET / LIMIT
 	OrderID          int64      `gorm:"index" json:"orderId"`
-	Quantity         float64    `gorm:"type:numeric(36,18)" json:"quantity"`
-	Price            float64    `gorm:"type:numeric(36,18)" json:"price"`         // 成交均价
-	QuoteQuantity    float64    `gorm:"type:numeric(36,18)" json:"quoteQuantity"` // 下单金额 (USDT)
+	Quantity         float64    `gorm:"type:numeric(36,8)" json:"quantity"`
+	Price            float64    `gorm:"type:numeric(36,8)" json:"price"`         // 成交均价
+	QuoteQuantity    float64    `gorm:"type:numeric(36,8)" json:"quoteQuantity"` // 下单金额 (USDT)
 	Leverage         int        `json:"leverage"`
-	StopLossPrice    *float64   `gorm:"type:numeric(36,18)" json:"stopLossPrice,omitempty"`
-	TakeProfitPrice  *float64   `gorm:"type:numeric(36,18)" json:"takeProfitPrice,omitempty"`
+	StopLossPrice    *float64   `gorm:"type:numeric(36,8)" json:"stopLossPrice,omitempty"`
+	TakeProfitPrice  *float64   `gorm:"type:numeric(36,8)" json:"takeProfitPrice,omitempty"`
 	StopLossAlgoID   int64      `json:"stopLossAlgoId,omitempty"`
 	TakeProfitAlgoID int64      `json:"takeProfitAlgoId,omitempty"`
-	RealizedPnl      float64    `gorm:"type:numeric(36,18)" json:"realizedPnl"` // 已实现盈亏
+	RealizedPnl      float64    `gorm:"type:numeric(36,8)" json:"realizedPnl"` // 已实现盈亏
 	CloseReason      string     `gorm:"type:varchar(40);index" json:"closeReason,omitempty"`
 	ClosedAt         *time.Time `gorm:"index" json:"closedAt,omitempty"`
 	Status           string     `gorm:"type:varchar(20);index" json:"status"` // OPEN / CLOSED
