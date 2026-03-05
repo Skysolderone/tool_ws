@@ -50,6 +50,7 @@ const MAIN_TABS = [
   { key: 'recommend', label: 'AI推荐' },
   { key: 'analysis', label: 'AI分析' },
   { key: 'info', label: '资讯' },
+  { key: 'porn', label: 'Porn' },
   { key: 'me', label: '账户' },
 ];
 
@@ -246,14 +247,14 @@ export default function App() {
 
   // ===== Tab 切换逻辑 =====
   useEffect(() => {
-    if (activeTab === 'info') setNewsHasNew(false);
+    if (activeTab === 'info' || activeTab === 'porn') setNewsHasNew(false);
     if (activeTab === 'monitor' && monitorSubTab === 'hyper') setHyperHasNew(false);
     if (activeTab === 'monitor' && monitorSubTab === 'liquidation') setLiqHasNew(false);
     if (activeTab === 'monitor' && monitorSubTab === 'market') setMarketHasNew(false);
   }, [activeTab, monitorSubTab]);
 
   const handleNewsHasNew = useCallback((hasNew) => {
-    if (hasNew && activeTab !== 'info') setNewsHasNew(true);
+    if (hasNew && activeTab !== 'info' && activeTab !== 'porn') setNewsHasNew(true);
   }, [activeTab]);
 
   const handleHyperHasNew = useCallback((hasNew) => {
@@ -303,7 +304,7 @@ export default function App() {
 
   const switchMainTab = useCallback((key) => {
     setActiveTab(key);
-    if (key === 'info') {
+    if (key === 'info' || key === 'porn') {
       setNewsActivated(true);
     }
     if (key === 'monitor') {
@@ -368,7 +369,8 @@ export default function App() {
   // ===== Tab 红点/懒加载 =====
   const monitorBadge = hyperHasNew || liqHasNew || marketHasNew;
   const infoBadge = newsHasNew;
-  const newsPanelMounted = newsActivated || activeTab === 'info';
+  const newsPanelMounted = newsActivated || activeTab === 'info' || activeTab === 'porn';
+  const newsPanelMode = activeTab === 'porn' ? 'porn' : 'main';
   const hyperPanelMounted = hyperActivated || (activeTab === 'monitor' && monitorSubTab === 'hyper');
   const liqPanelMounted = liqActivated || (activeTab === 'monitor' && monitorSubTab === 'liquidation');
   const marketPanelMounted = marketActivated || (activeTab === 'monitor' && monitorSubTab === 'market');
@@ -612,8 +614,8 @@ export default function App() {
 
         {/* ==================== 资讯面板（常驻，按 Tab 显隐） ==================== */}
         {newsPanelMounted && (
-          <View style={activeTab === 'info' ? undefined : styles.hidden}>
-            <NewsPanel onHasNew={handleNewsHasNew} />
+          <View style={activeTab === 'info' || activeTab === 'porn' ? undefined : styles.hidden}>
+            <NewsPanel onHasNew={handleNewsHasNew} mode={newsPanelMode} />
           </View>
         )}
 
@@ -651,7 +653,10 @@ export default function App() {
         <View style={styles.tabBar}>
           {MAIN_TABS.map((tab) => {
             const isActive = activeTab === tab.key;
-            const showBadge = (tab.key === 'info' && infoBadge) || (tab.key === 'monitor' && monitorBadge);
+            const showBadge = (
+              ((tab.key === 'info' || tab.key === 'porn') && infoBadge)
+              || (tab.key === 'monitor' && monitorBadge)
+            );
             return (
               <TouchableOpacity
                 key={tab.key}
