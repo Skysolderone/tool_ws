@@ -17,6 +17,23 @@ const DETAIL_TABS = [
   { key: 'trades', label: '交易记录' },
 ];
 
+const SOURCE_LABELS = {
+  manual: '手动',
+  strategy_signal: '信号策略',
+  strategy_doji: '形态策略',
+  strategy_dca: '定投策略',
+};
+
+function normalizeSource(source) {
+  return String(source || '').trim().toLowerCase();
+}
+
+function formatSourceLabel(source) {
+  const key = normalizeSource(source);
+  if (!key) return '未知';
+  return SOURCE_LABELS[key] || source;
+}
+
 export default function PositionPanel({
   symbol,
   positions: externalPositions,
@@ -347,6 +364,9 @@ export default function PositionPanel({
                               {item.triggerPrice.toFixed(2)}
                             </Text>
                             <Text style={styles.tpslQty}>数量: {item.quantity}</Text>
+                            <Text style={styles.tpslSource}>
+                              来源: {formatSourceLabel(item.source)}
+                            </Text>
                           </View>
                         </View>
                         <TouchableOpacity
@@ -397,7 +417,11 @@ export default function PositionPanel({
                           </Text>
                         </View>
                         <Text style={styles.tradeType}>{t.orderType}</Text>
-                        <Text style={styles.tradeSource}>{t.source}</Text>
+                        <View style={styles.tradeSourceBadge}>
+                          <Text style={styles.tradeSourceText}>
+                            {formatSourceLabel(t.source)}
+                          </Text>
+                        </View>
                       </View>
                       <Text style={styles.tradeInfo}>
                         价格 {(t.price || 0).toFixed(2)} | 数量 {t.quantity}
@@ -901,6 +925,11 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: fontSize.xs,
   },
+  tpslSource: {
+    color: colors.textMuted,
+    fontSize: fontSize.xs,
+    marginTop: 2,
+  },
   tpslCancelBtn: {
     width: 24,
     height: 24,
@@ -947,9 +976,18 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: fontSize.xs,
   },
-  tradeSource: {
+  tradeSourceBadge: {
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 1,
+    borderRadius: radius.xs,
+  },
+  tradeSourceText: {
     color: colors.textMuted,
     fontSize: fontSize.xs,
+    fontWeight: '600',
   },
   tradeInfo: {
     color: colors.textSecondary,

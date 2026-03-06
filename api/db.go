@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -69,16 +70,14 @@ func autoMigrateSchema() error {
 		&TradeRecord{},
 		&OperationRecord{},
 		&RecommendSignalRecord{},
+		&RecommendSignalEvaluationRecord{},
 		&LiquidationStatRecord{},
 		&LocalTPSLCondition{},
 		&StrategyState{},
 		&SlippageRecord{},
 		&SlippageRecord{}, // 滑点记录（新增表，不影响已有数据）
-		&AgentAnalysisLog{},
 		&VarSnapshot{},
 		&StrategyAllocation{},
-		&AgentEvaluationRecord{},
-		&AgentTuneLog{},
 	)
 }
 
@@ -129,16 +128,31 @@ func ensureDBIndexes() error {
 	if err := createIndexIfMissing(&RecommendSignalRecord{}, "ScannedAt"); err != nil {
 		return err
 	}
-	if err := createIndexIfMissing(&AgentAnalysisLog{}, "Mode"); err != nil {
+	if err := createIndexIfMissing(&RecommendSignalEvaluationRecord{}, "SignalRecordID"); err != nil {
 		return err
 	}
-	if err := createIndexIfMissing(&AgentAnalysisLog{}, "Source"); err != nil {
+	if err := createIndexIfMissing(&RecommendSignalEvaluationRecord{}, "Symbol"); err != nil {
 		return err
 	}
-	if err := createIndexIfMissing(&AgentAnalysisLog{}, "Execute"); err != nil {
+	if err := createIndexIfMissing(&RecommendSignalEvaluationRecord{}, "Direction"); err != nil {
 		return err
 	}
-	if err := createIndexIfMissing(&AgentAnalysisLog{}, "Status"); err != nil {
+	if err := createIndexIfMissing(&RecommendSignalEvaluationRecord{}, "Source"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&RecommendSignalEvaluationRecord{}, "ScannedAt"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&RecommendSignalEvaluationRecord{}, "Evaluated1H"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&RecommendSignalEvaluationRecord{}, "Evaluated4H"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&RecommendSignalEvaluationRecord{}, "Evaluated24H"); err != nil {
+		return err
+	}
+	if err := createIndexIfMissing(&RecommendSignalEvaluationRecord{}, "Final"); err != nil {
 		return err
 	}
 	return nil
@@ -169,8 +183,8 @@ func ensureNumericScale8() error {
 		{"slippage_records", "executed_price"},
 		{"slippage_records", "quantity"},
 		{"slippage_records", "arrival_price"},
-		{"agent_evaluation_records", "entry_price"},
-		{"agent_evaluation_records", "current_price"},
+		{"recommend_signal_evaluation_records", "entry_price"},
+		{"recommend_signal_evaluation_records", "current_price"},
 	}
 
 	for _, item := range targetCols {
@@ -294,7 +308,80 @@ func SaveTradeRecord(record *TradeRecord) error {
 		now := time.Now().UTC()
 		record.ClosedAt = &now
 	}
+
+	if record.OrderID != 0 {
+		var existing TradeRecord
+		err := DB.Where("order_id = ?", record.OrderID).First(&existing).Error
+		if err == nil {
+			mergeTradeRecord(&existing, record)
+			return DB.Save(&existing).Error
+		}
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+
 	return DB.Create(record).Error
+}
+
+func mergeTradeRecord(dst *TradeRecord, src *TradeRecord) {
+	if dst == nil || src == nil {
+		return
+	}
+	if dst.Source == "" && src.Source != "" {
+		dst.Source = src.Source
+	}
+	if dst.Symbol == "" && src.Symbol != "" {
+		dst.Symbol = src.Symbol
+	}
+	if dst.Side == "" && src.Side != "" {
+		dst.Side = src.Side
+	}
+	if dst.PositionSide == "" && src.PositionSide != "" {
+		dst.PositionSide = src.PositionSide
+	}
+	if dst.OrderType == "" && src.OrderType != "" {
+		dst.OrderType = src.OrderType
+	}
+	if src.Quantity > 0 {
+		dst.Quantity = src.Quantity
+	}
+	if src.Price > 0 {
+		dst.Price = src.Price
+	}
+	if src.QuoteQuantity > 0 {
+		dst.QuoteQuantity = src.QuoteQuantity
+	}
+	if src.Leverage > 0 {
+		dst.Leverage = src.Leverage
+	}
+	if src.StopLossPrice != nil {
+		dst.StopLossPrice = src.StopLossPrice
+	}
+	if src.TakeProfitPrice != nil {
+		dst.TakeProfitPrice = src.TakeProfitPrice
+	}
+	if src.StopLossAlgoID != 0 {
+		dst.StopLossAlgoID = src.StopLossAlgoID
+	}
+	if src.TakeProfitAlgoID != 0 {
+		dst.TakeProfitAlgoID = src.TakeProfitAlgoID
+	}
+	if src.RealizedPnl != 0 {
+		dst.RealizedPnl = src.RealizedPnl
+	}
+	if src.CloseReason != "" {
+		dst.CloseReason = src.CloseReason
+	}
+	if src.ClosedAt != nil {
+		dst.ClosedAt = src.ClosedAt
+	}
+	if src.Status != "" {
+		// 不允许被重复写入回滚终态（例如 CLOSED/CANCELED 被 OPEN 覆盖）。
+		if src.Status == "CLOSED" || src.Status == "CANCELED" || dst.Status == "" || dst.Status == "OPEN" {
+			dst.Status = src.Status
+		}
+	}
 }
 
 // SaveOperationRecord 保存操作记录

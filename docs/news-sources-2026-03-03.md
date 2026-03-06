@@ -29,19 +29,12 @@
 | `wallstreetcn_live_global` | `华尔街见闻快讯` | `/wallstreetcn/live/global/2` |
 | `wallstreetcn_hot_day` | `华尔街见闻热榜` | `/wallstreetcn/hot` |
 | `nature_news` | `Nature News` | `/nature/news` |
-| `t66y_7` | `t66y(7)` | `/t66y/7` |
 | `huggingface_daily_papers` | `Huggingface Papers` | `/huggingface/daily-papers/date` |
 | `anthropic_news` | `Anthropic News` | `/anthropic/news` |
 | `hackernews_index` | `Hacker News` | `/hackernews` |
 | `36kr_newsflashes` | `36氪快讯` | `/36kr/newsflashes` |
 | `1x_latest_awarded` | `1x 每日获奖` | `/1x/latest/awarded` |
 | `sspai_index` | `少数派首页` | `/sspai/index` |
-| `pornhub` | `Pornhub - 国产` | `/pornhub/search/国产` |
-| `pornhub_popular_with_women` | `Pornhub - 女性向热门` | `/pornhub/category/73` |
-| `pornhub_korean` | `Pornhub - Korean (103)` | `/pornhub/category/103` |
-| `pornhub_cosplay` | `Pornhub - Cosplay (241)` | `/pornhub/category/241` |
-| `pornhub_asian` | `Pornhub - Asian (1)` | `/pornhub/category/1` |
-| `pornhub_pornstar_cn` | `Pornstar - 中文` | `/pornhub/pornstar/june-liu/cn/mr` |
 
 说明：最终请求地址为 `news.rsshubBaseUrl + 路由`。
 
@@ -64,7 +57,6 @@
 - https://docs.rsshub.app/routes/bbc
 - https://docs.rsshub.app/routes/gamer
 - https://docs.rsshub.app/routes/nature
-- https://docs.rsshub.app/routes/t66y
 - https://docs.rsshub.app/routes/gov
 - https://docs.rsshub.app/routes/smzdm
 - https://docs.rsshub.app/routes/500px

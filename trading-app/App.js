@@ -20,10 +20,10 @@ import TradeLogPanel from './src/components/TradeLogPanel';
 import NewsPanel from './src/components/NewsPanel';
 import AnalyticsPanel from './src/components/AnalyticsPanel';
 import FundingPanel from './src/components/FundingPanel';
+import AaveMonitorPanel from './src/components/AaveMonitorPanel';
 import StrategyLinkPanel from './src/components/StrategyLinkPanel';
 import SupportResistancePanel from './src/components/SupportResistancePanel';
 import RecommendPanel from './src/components/RecommendPanel';
-import AIAnalysisPanel from './src/components/AIAnalysisPanel';
 import ScalpPanel from './src/components/ScalpPanel';
 import { colors, spacing, radius, fontSize } from './src/services/theme';
 import api, { WS_PRICE_BASE, AUTH_TOKEN } from './src/services/api';
@@ -34,10 +34,9 @@ const DEFAULT_SYMBOL = 'ETHUSDT';
 const MAIN_TABS = [
   { key: 'trade', label: '交易' },
   { key: 'strategy', label: '策略' },
+  { key: 'aave', label: '监控' },
   { key: 'recommend', label: 'AI推荐' },
-  { key: 'analysis', label: 'AI分析' },
   { key: 'info', label: '资讯' },
-  { key: 'porn', label: 'Porn' },
   { key: 'me', label: '账户' },
 ];
 
@@ -178,24 +177,23 @@ export default function App() {
 
   // ===== Tab 切换逻辑 =====
   useEffect(() => {
-    if (activeTab === 'info' || activeTab === 'porn') setNewsHasNew(false);
+    if (activeTab === 'info') setNewsHasNew(false);
   }, [activeTab]);
 
   const handleNewsHasNew = useCallback((hasNew) => {
-    if (hasNew && activeTab !== 'info' && activeTab !== 'porn') setNewsHasNew(true);
+    if (hasNew && activeTab !== 'info') setNewsHasNew(true);
   }, [activeTab]);
 
   const switchMainTab = useCallback((key) => {
     setActiveTab(key);
-    if (key === 'info' || key === 'porn') {
+    if (key === 'info') {
       setNewsActivated(true);
     }
   }, []);
 
   // ===== Tab 红点/懒加载 =====
   const infoBadge = newsHasNew;
-  const newsPanelMounted = newsActivated || activeTab === 'info' || activeTab === 'porn';
-  const newsPanelMode = activeTab === 'porn' ? 'porn' : 'main';
+  const newsPanelMounted = newsActivated || activeTab === 'info';
 
   // ======================== 渲染 ========================
   return (
@@ -300,6 +298,15 @@ export default function App() {
           </>
         )}
 
+        {activeTab === 'aave' && (
+          <>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Aave 监控</Text>
+            </View>
+            <AaveMonitorPanel />
+          </>
+        )}
+
         {/* ==================== 推荐 Tab ==================== */}
         {activeTab === 'recommend' && (
           <RecommendPanel onNavigateToTrade={(symbol, recommendation) => {
@@ -314,24 +321,10 @@ export default function App() {
           }} />
         )}
 
-        {/* ==================== 分析 Tab ==================== */}
-        {activeTab === 'analysis' && (
-          <AIAnalysisPanel onNavigateToTrade={(symbol, recommendation) => {
-            setTradeSymbol(symbol);
-            setOrderPreset(recommendation ? {
-              direction: recommendation.direction,
-              stopLoss: recommendation.stopLoss,
-              takeProfit: recommendation.takeProfit,
-            } : null);
-            setActiveTab('trade');
-            setTradeSubTab('order');
-          }} />
-        )}
-
         {/* ==================== 资讯面板（常驻，按 Tab 显隐） ==================== */}
         {newsPanelMounted && (
-          <View style={activeTab === 'info' || activeTab === 'porn' ? undefined : styles.hidden}>
-            <NewsPanel onHasNew={handleNewsHasNew} mode={newsPanelMode} />
+          <View style={activeTab === 'info' ? undefined : styles.hidden}>
+            <NewsPanel onHasNew={handleNewsHasNew} />
           </View>
         )}
 
@@ -347,7 +340,7 @@ export default function App() {
           {MAIN_TABS.map((tab) => {
             const isActive = activeTab === tab.key;
             const showBadge = (
-              ((tab.key === 'info' || tab.key === 'porn') && infoBadge)
+              (tab.key === 'info' && infoBadge)
             );
             return (
               <TouchableOpacity

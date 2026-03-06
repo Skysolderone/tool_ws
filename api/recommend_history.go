@@ -21,7 +21,12 @@ const (
 	recommendHistoryRedisKeySuffix = "recommend:signal:history:v1"
 	recommendHistoryRedisMaxPerDay = 3000
 	recommendHistoryRedisExpire    = 48 * time.Hour
+	recommendHistoryMinConfidence  = 40 // 仅记录置信度 > 40 的信号
 )
+
+func shouldRecordRecommendHistory(confidence int) bool {
+	return confidence > recommendHistoryMinConfidence
+}
 
 type recommendSignalHistoryItem struct {
 	ID         uint       `json:"id,omitempty"`
@@ -128,6 +133,7 @@ func getRecommendSignalRecords(symbol, direction string, limit int) ([]Recommend
 		return nil, nil
 	}
 	q := DB.Order("scanned_at DESC").Order("id DESC")
+	q = q.Where("confidence > ?", recommendHistoryMinConfidence)
 	if symbol != "" {
 		q = q.Where("symbol = ?", symbol)
 	}
@@ -174,6 +180,9 @@ func saveRecommendSignalHistory(item RecommendItem, scannedAt time.Time, source 
 	}
 	if scannedAt.IsZero() {
 		scannedAt = time.Now()
+	}
+	if !shouldRecordRecommendHistory(item.Confidence) {
+		return
 	}
 
 	reasonsRaw, err := json.Marshal(item.Reasons)
@@ -292,6 +301,9 @@ func loadRecommendSignalHistoryFromRedis(day time.Time, symbol, direction string
 		if direction != "" && item.Direction != direction {
 			continue
 		}
+		if !shouldRecordRecommendHistory(item.Confidence) {
+			continue
+		}
 		out = append(out, item)
 		if len(out) >= limit {
 			break
@@ -310,6 +322,9 @@ func loadRecommendSignalHistoryFromRedis(day time.Time, symbol, direction string
 func parseRecommendHistoryItemsFromDB(records []RecommendSignalRecord) []recommendSignalHistoryItem {
 	out := make([]recommendSignalHistoryItem, 0, len(records))
 	for _, rec := range records {
+		if !shouldRecordRecommendHistory(rec.Confidence) {
+			continue
+		}
 		item := recommendSignalHistoryItem{
 			ID:         rec.ID,
 			Symbol:     rec.Symbol,

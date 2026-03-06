@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"tools/agent"
 	"tools/api"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -72,7 +71,7 @@ func main() {
 	api.InitVarRisk(api.Cfg.VarRisk)
 	api.InitDataFallback(api.FallbackConfig{})
 	api.StartRegimeDetector("BTCUSDT", 60)
-	api.StartAgentEvaluator(30)
+	api.StartRecommendSignalEvaluator(30)
 
 	// 初始化 WebSocket 订单客户端（异步，不阻塞启动）
 	go api.InitWsClient()
@@ -82,17 +81,22 @@ func main() {
 
 	// 启动推荐交易预计算引擎（后台多时间框架定时刷新）
 	api.StartRecommendEngine()
+	// 启动 Aave LP 费率监控（默认全量代币，无需手动开启）
+	if err := api.StartAaveMonitor(api.AaveMonitorConfig{
+		LPFeeRateOnly:         true,
+		LPFeeRateThresholdPct: 5,
+		IntervalSec:           60,
+		MaxReserves:           200,
+		AlertCooldownSec:      600,
+	}); err != nil {
+		log.Printf("[AaveMonitor] Auto start failed: %v", err)
+	}
 	// 启动常驻资讯抓取（不依赖 ws/news 客户端连接）
 	api.StartNewsBackgroundFetcher()
 	// 每小时检测资讯源可用性
 	api.StartNewsSourceHealthMonitor()
 	// 启动后台爆仓采集（无监控前端也持续更新，供策略与分析使用）
 	api.StartLiquidationCollectorBackground()
-
-	// 初始化 LLM 分析 Agent（可选配置，失败不影响主流程）
-	if err := agent.InitAgent(api.Cfg.LLM); err != nil {
-		log.Printf("[Agent] Init failed: %v (agent disabled)", err)
-	}
 
 	// 启动本地止盈止损监控器（从DB恢复ACTIVE条件）
 	api.StartLocalTPSLMonitor()
@@ -122,7 +126,6 @@ func main() {
 	h := server.New(
 		server.WithHostPorts(addr),
 		server.WithReadTimeout(15*time.Second),
-		// Agent 思考模型分析可能需要更长时间，放宽写超时到 10 分钟。
 		server.WithWriteTimeout(10*time.Minute),
 		server.WithIdleTimeout(60*time.Second),
 		server.WithKeepAliveTimeout(60*time.Second),
@@ -191,6 +194,9 @@ func main() {
 		apiGroup.POST("/funding/start", api.HandleStartFundingMonitor)
 		apiGroup.POST("/funding/stop", api.HandleStopFundingMonitor)
 		apiGroup.GET("/funding/status", api.HandleFundingStatus)
+		apiGroup.POST("/aave/monitor/start", api.HandleStartAaveMonitor)
+		apiGroup.POST("/aave/monitor/stop", api.HandleStopAaveMonitor)
+		apiGroup.GET("/aave/monitor/status", api.HandleAaveMonitorStatus)
 
 		// 多策略联动
 		apiGroup.POST("/link/start", api.HandleStartStrategyLink)
@@ -205,14 +211,7 @@ func main() {
 		apiGroup.GET("/recommend/scan", api.HandleRecommendScan)
 		apiGroup.GET("/recommend/history", api.HandleRecommendHistory)
 		apiGroup.GET("/recommend/analyze", api.HandleRecommendAnalyze)
-		apiGroup.POST("/agent/analyze", agent.HandleAnalyze)
-		apiGroup.GET("/agent/analyze", agent.HandleAnalyze)
-		apiGroup.GET("/agent/analyze/stream", agent.HandleAnalyzeStream)
-		apiGroup.POST("/agent/chat", agent.HandleChat)
-		apiGroup.POST("/agent/execute", agent.HandleExecute)
-		apiGroup.GET("/agent/log", agent.HandleLog)
-		apiGroup.GET("/agent/logs", agent.HandleLogs)
-		apiGroup.GET("/agent/policy", agent.HandlePolicy)
+		apiGroup.GET("/recommend/evaluation", api.HandleGetRecommendEval)
 
 		// 本地止盈止损
 		apiGroup.GET("/tpsl/list", api.HandleGetTPSLList)
@@ -293,12 +292,6 @@ func main() {
 
 		// 自适应下单量
 		apiGroup.GET("/adaptive-size", api.HandleGetAdaptiveSize)
-
-		// Agent 建议评估
-		apiGroup.GET("/agent/evaluation", api.HandleGetAgentEval)
-
-		// Agent 风控预检
-		apiGroup.POST("/agent/risk-check", api.HandleAgentRiskCheck)
 
 		// 策略管理
 		apiGroup.POST("/strategy/admin", api.HandleStrategyAdmin)

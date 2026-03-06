@@ -406,37 +406,6 @@ func signalOpenPosition(ctx context.Context, state *signalState, signal string) 
 
 	log.Printf("[Signal] Opened %s for %s: orderId=%d, price=%s",
 		signal, cfg.Symbol, result.Order.OrderID, result.Order.AvgPrice)
-
-	// 异步保存交易记录
-	go func() {
-		if result.Order == nil {
-			return
-		}
-		record := &TradeRecord{
-			Source:        "strategy_signal",
-			Symbol:        cfg.Symbol,
-			Side:          string(side),
-			PositionSide:  string(posSide),
-			OrderType:     "MARKET",
-			OrderID:       result.Order.OrderID,
-			Quantity:      parseNumeric(result.Order.OrigQuantity),
-			Price:         parseNumeric(result.Order.AvgPrice),
-			QuoteQuantity: parseNumeric(cfg.AmountPerOrder),
-			Leverage:      cfg.Leverage,
-			Status:        "OPEN",
-		}
-		if result.TakeProfit != nil {
-			record.TakeProfitPrice = parseNumericPtr(result.TakeProfit.TriggerPrice)
-			record.TakeProfitAlgoID = result.TakeProfit.AlgoID
-		}
-		if result.StopLoss != nil {
-			record.StopLossPrice = parseNumericPtr(result.StopLoss.TriggerPrice)
-			record.StopLossAlgoID = result.StopLoss.AlgoID
-		}
-		if err := SaveTradeRecord(record); err != nil {
-			log.Printf("[Signal] Save trade record failed: %v", err)
-		}
-	}()
 }
 
 // signalCheckExit 检查 RSI 平仓条件

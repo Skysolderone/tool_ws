@@ -13,8 +13,8 @@ type AuthConfig struct {
 	Token string `json:"token"` // API 访问令牌，为空则不启用认证
 }
 
-// LLMConfig 大模型配置
-type LLMConfig struct {
+// LLMModel 单个模型配置。
+type LLMModel struct {
 	Provider    string  `json:"provider"`
 	APIKey      string  `json:"api_key"`
 	BaseURL     string  `json:"base_url"`
@@ -23,14 +23,19 @@ type LLMConfig struct {
 	Temperature float64 `json:"temperature"`
 }
 
-// AgentConfig Agent 执行治理配置。
-type AgentConfig struct {
-	ExecutionProfile     string   `json:"execution_profile"`       // conservative|aggressive|custom
-	EnableExecution      bool     `json:"enable_execution"`        // 是否允许执行动作
-	MaxActionsPerRequest int      `json:"max_actions_per_request"` // 单次最多执行多少条建议
-	AllowedActions       []string `json:"allowed_actions"`         // 允许执行的动作白名单
-	AllowedSymbols       []string `json:"allowed_symbols"`         // 允许执行的交易对白名单，空=不限制
-	BlockedSymbols       []string `json:"blocked_symbols"`         // 自动调参生成的黑名单（内存态）
+// LLMConfig 大模型配置
+type LLMConfig struct {
+	Provider    string  `json:"provider"`
+	APIKey      string  `json:"api_key"`
+	BaseURL     string  `json:"base_url"`
+	Model       string  `json:"model"`
+	MaxTokens   int     `json:"max_tokens"`
+	Temperature float64 `json:"temperature"`
+
+	// 多模型路由
+	RouterEnabled bool      `json:"router_enabled"` // 是否启用多模型路由
+	FastModel     *LLMModel `json:"fast_model"`     // 快速筛选模型（如 deepseek-chat）
+	DeepModel     *LLMModel `json:"deep_model"`     // 深度推理模型（如 deepseek-reasoner）
 }
 
 // NewsConfig 资讯源配置
@@ -57,7 +62,6 @@ type Config struct {
 	Database        DatabaseConfig        `json:"database"`
 	Auth            AuthConfig            `json:"auth"`
 	LLM             LLMConfig             `json:"llm"`
-	Agent           AgentConfig           `json:"agent"`
 	News            NewsConfig            `json:"news"`
 	Redis           RedisConfig           `json:"redis"`
 	Risk            RiskConfig            `json:"risk"`
@@ -125,12 +129,6 @@ func LoadConfig(configPath string) error {
 	Cfg = Config{
 		Database: DatabaseConfig{
 			AutoMigrate: true,
-		},
-		Agent: AgentConfig{
-			ExecutionProfile:     "custom",
-			EnableExecution:      true,
-			MaxActionsPerRequest: 5,
-			AllowedActions:       []string{"open", "add", "close", "reduce", "set_sl", "set_tp"},
 		},
 		News: NewsConfig{
 			RSSHubBaseURL: "https://rsshub.wws741.top",

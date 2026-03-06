@@ -34,7 +34,6 @@ const FEED_CATEGORY_LABELS = {
   tech: '科技',
   science: '科学',
   visual: '视觉',
-  adult: '成人',
   telegram: 'TG',
   other: '其他',
 };
@@ -54,14 +53,12 @@ const BASE_FEED_CATEGORY_OVERRIDES = {
   wallstreetcn_live_global: 'finance',
   wallstreetcn_hot_day: 'finance',
   nature_news: 'science',
-  t66y_7: 'adult',
   huggingface_daily_papers: 'tech',
   anthropic_news: 'tech',
   hackernews_index: 'tech',
   '36kr_newsflashes': 'tech',
   '1x_latest_awarded': 'visual',
   sspai_index: 'tech',
-  pornhub: 'adult',
 };
 
 const BASE_FEED_SOURCES = [
@@ -122,10 +119,6 @@ const BASE_FEED_SOURCES = [
     name: 'Nature News',
   },
   {
-    key: 't66y_7',
-    name: 't66y(7)',
-  },
-  {
     key: 'huggingface_daily_papers',
     name: 'Huggingface Papers',
   },
@@ -148,30 +141,6 @@ const BASE_FEED_SOURCES = [
   {
     key: 'sspai_index',
     name: '少数派首页',
-  },
-  {
-    key: 'pornhub',
-    name: 'Pornhub - 国产',
-  },
-  {
-    key: 'pornhub_popular_with_women',
-    name: 'Pornhub - 女性向热门',
-  },
-  {
-    key: 'pornhub_korean',
-    name: 'Pornhub - Korean (103)',
-  },
-  {
-    key: 'pornhub_cosplay',
-    name: 'Pornhub - Cosplay (241)',
-  },
-  {
-    key: 'pornhub_asian',
-    name: 'Pornhub - Asian (1)',
-  },
-  {
-    key: 'pornhub_pornstar_cn',
-    name: 'Pornstar - 中文',
   },
 ].map((item) => ({
   ...item,
@@ -203,11 +172,6 @@ function isTelegramFeedKey(key) {
   return String(key || '').startsWith('tg_');
 }
 
-function isPornFeedKey(key) {
-  const k = String(key || '').toLowerCase();
-  return k.startsWith('pornhub') || k === 't66y_7';
-}
-
 function inferFeedCategory(key, name) {
   const k = String(key || '').toLowerCase();
   const n = String(name || '').toLowerCase();
@@ -216,7 +180,6 @@ function inferFeedCategory(key, name) {
   if (k.includes('reuters') || k.includes('jin10') || k.includes('cnbc') || k.includes('bbc') || k.includes('guardian')) return 'finance';
   if (k.includes('nature')) return 'science';
   if (k.includes('1x') || n.includes('photo') || n.includes('摄影') || n.includes('视觉')) return 'visual';
-  if (k.includes('porn') || k.includes('t66y') || k.includes('xsijishe') || k.includes('jpxgmn')) return 'adult';
   if (k.includes('blockbeats') || k.includes('0xzx')) return 'crypto';
   return 'other';
 }
@@ -464,7 +427,7 @@ async function translateTextToZh(text) {
   return parseTranslateResponse(data);
 }
 
-export default function NewsPanel({ onHasNew, mode = 'all' }) {
+export default function NewsPanel({ onHasNew }) {
   const [feedSources, setFeedSources] = useState(BASE_FEED_SOURCES);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -475,16 +438,10 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
   const [pageStateBySource, setPageStateBySource] = useState({});
   const [sourceLoadingByKey, setSourceLoadingByKey] = useState({});
   const [sourceLoadingMoreByKey, setSourceLoadingMoreByKey] = useState({});
-  const defaultMainFeed = BASE_FEED_SOURCES.find((feed) => !isPornFeedKey(feed.key)) || BASE_FEED_SOURCES[0];
-  const defaultPornFeed = BASE_FEED_SOURCES.find((feed) => isPornFeedKey(feed.key)) || BASE_FEED_SOURCES[0];
-  const [activeMainSourceKey, setActiveMainSourceKey] = useState(defaultMainFeed?.key || BASE_FEED_SOURCES[0].key);
-  const [activePornSourceKey, setActivePornSourceKey] = useState(defaultPornFeed?.key || BASE_FEED_SOURCES[0].key);
+  const [activeSourceKey, setActiveSourceKey] = useState(BASE_FEED_SOURCES[0]?.key || '');
   const [selected, setSelected] = useState(null);
   const [showSourceLang, setShowSourceLang] = useState(false);
   const [translationMap, setTranslationMap] = useState({});
-  const panelMode = mode === 'porn' ? 'porn' : mode === 'main' ? 'main' : 'all';
-  const showMainSection = panelMode !== 'porn';
-  const showPornSection = panelMode !== 'main';
 
   const wsRef = useRef(null);
   const pingTimerRef = useRef(null);
@@ -609,15 +566,9 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
       });
       return next;
     });
-    setActiveMainSourceKey((prev) => {
-      const mainFeeds = feedSources.filter((f) => !isPornFeedKey(f.key));
-      if (mainFeeds.some((f) => f.key === prev)) return prev;
-      return mainFeeds[0]?.key || prev;
-    });
-    setActivePornSourceKey((prev) => {
-      const pornFeeds = feedSources.filter((f) => isPornFeedKey(f.key));
-      if (pornFeeds.some((f) => f.key === prev)) return prev;
-      return pornFeeds[0]?.key || prev;
+    setActiveSourceKey((prev) => {
+      if (feedSources.some((f) => f.key === prev)) return prev;
+      return feedSources[0]?.key || prev;
     });
     const nextTop = {};
     feedSources.forEach((feed) => {
@@ -625,15 +576,6 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
     });
     latestTopKeyRef.current = nextTop;
   }, [feedSources]);
-
-  const mainFeedSources = useMemo(
-    () => feedSources.filter((feed) => !isPornFeedKey(feed.key)),
-    [feedSources],
-  );
-  const pornFeedSources = useMemo(
-    () => feedSources.filter((feed) => isPornFeedKey(feed.key)),
-    [feedSources],
-  );
 
   const loadNewsPage = useCallback(async (sourceKey, page = 1, { append = false } = {}) => {
     const key = String(sourceKey || '').trim();
@@ -745,21 +687,9 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
     latestTopKeyRef.current = nextTopKeys;
     setSourceCountByKey((prev) => ({ ...prev, ...nextCounts }));
 
-    const shouldReloadKeys = new Set();
-    if (isFirstPayload || refreshing) {
-      if (showMainSection && activeMainSourceKey) shouldReloadKeys.add(activeMainSourceKey);
-      if (showPornSection && activePornSourceKey) shouldReloadKeys.add(activePornSourceKey);
-    } else {
-      if (showMainSection && activeMainSourceKey && changedKeys.includes(activeMainSourceKey)) {
-        shouldReloadKeys.add(activeMainSourceKey);
-      }
-      if (showPornSection && activePornSourceKey && changedKeys.includes(activePornSourceKey)) {
-        shouldReloadKeys.add(activePornSourceKey);
-      }
+    if (activeSourceKey && (isFirstPayload || refreshing || changedKeys.includes(activeSourceKey))) {
+      loadNewsPage(activeSourceKey, 1);
     }
-    shouldReloadKeys.forEach((key) => {
-      loadNewsPage(key, 1);
-    });
 
     if (payload.error) {
       setError(`拉取失败：${payload.error}`);
@@ -774,15 +704,12 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
     setLoading(false);
     setRefreshing(false);
   }, [
-    activeMainSourceKey,
-    activePornSourceKey,
+    activeSourceKey,
     feedSources,
     loadNewsPage,
     notifyNewsUpdate,
     onHasNew,
     refreshing,
-    showMainSection,
-    showPornSection,
   ]);
 
   const requestRefresh = useCallback(() => {
@@ -860,57 +787,25 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
     requestRefresh();
   };
 
-  const activeMainFeed = mainFeedSources.find((item) => item.key === activeMainSourceKey)
-    || mainFeedSources[0]
+  const activeFeed = feedSources.find((item) => item.key === activeSourceKey)
+    || feedSources[0]
     || null;
-  const activePornFeed = pornFeedSources.find((item) => item.key === activePornSourceKey)
-    || pornFeedSources[0]
-    || null;
-  const activeMainList = activeMainFeed ? (newsBySource[activeMainFeed.key] || []) : [];
-  const activePornList = activePornFeed ? (newsBySource[activePornFeed.key] || []) : [];
-  const activeMainPageState = activeMainFeed ? pageStateBySource[activeMainFeed.key] : null;
-  const activePornPageState = activePornFeed ? pageStateBySource[activePornFeed.key] : null;
-  const hasMainFeeds = mainFeedSources.length > 0;
-  const hasPornFeeds = pornFeedSources.length > 0;
-  const hasVisibleFeeds = (showMainSection && hasMainFeeds) || (showPornSection && hasPornFeeds);
-  const pornFeedCount = useMemo(
-    () => feedSources.filter((feed) => isPornFeedKey(feed.key)).length,
-    [feedSources],
-  );
-  const mainFeedCount = useMemo(
-    () => feedSources.filter((feed) => !isPornFeedKey(feed.key)).length,
-    [feedSources],
-  );
-  const pornItemCount = useMemo(
-    () => feedSources
-      .filter((feed) => isPornFeedKey(feed.key))
-      .reduce((sum, feed) => sum + (sourceCountByKey[feed.key] || 0), 0),
-    [feedSources, sourceCountByKey],
-  );
-  const mainItemCount = useMemo(
-    () => feedSources
-      .filter((feed) => !isPornFeedKey(feed.key))
-      .reduce((sum, feed) => sum + (sourceCountByKey[feed.key] || 0), 0),
+  const activeList = activeFeed ? (newsBySource[activeFeed.key] || []) : [];
+  const activePageState = activeFeed ? pageStateBySource[activeFeed.key] : null;
+  const hasVisibleFeeds = feedSources.length > 0;
+  const feedCount = feedSources.length;
+  const itemCount = useMemo(
+    () => feedSources.reduce((sum, feed) => sum + (sourceCountByKey[feed.key] || 0), 0),
     [feedSources, sourceCountByKey],
   );
 
   useEffect(() => {
-    if (!showMainSection) return;
-    if (!activeMainFeed) return;
-    const key = activeMainFeed.key;
+    if (!activeFeed) return;
+    const key = activeFeed.key;
     if (pageStateBySource[key]) return;
     if (sourceLoadingByKey[key] || sourceLoadingMoreByKey[key]) return;
     loadNewsPage(key, 1);
-  }, [activeMainFeed, loadNewsPage, pageStateBySource, showMainSection, sourceLoadingByKey, sourceLoadingMoreByKey]);
-
-  useEffect(() => {
-    if (!showPornSection) return;
-    if (!activePornFeed) return;
-    const key = activePornFeed.key;
-    if (pageStateBySource[key]) return;
-    if (sourceLoadingByKey[key] || sourceLoadingMoreByKey[key]) return;
-    loadNewsPage(key, 1);
-  }, [activePornFeed, loadNewsPage, pageStateBySource, showPornSection, sourceLoadingByKey, sourceLoadingMoreByKey]);
+  }, [activeFeed, loadNewsPage, pageStateBySource, sourceLoadingByKey, sourceLoadingMoreByKey]);
 
   const loadNextPage = useCallback((sourceKey) => {
     const key = String(sourceKey || '').trim();
@@ -970,8 +865,6 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
     selectedTranslate && (selectedTranslate.titleZh || selectedTranslate.summaryZh)
   );
   const selectedSourceLangLabel = languageLabel(selectedTranslate?.sourceLang || 'en');
-  const selectedFeedKey = String(selected?.__feedKey || '');
-  const selectedIsPornFeed = isPornFeedKey(selectedFeedKey);
 
   const getPlainSummary = useCallback(
     (item) => {
@@ -996,17 +889,9 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
   }, [selectedKey]);
 
   useEffect(() => {
-    setSelected(null);
-  }, [panelMode]);
-
-  useEffect(() => {
-    const mainList = showMainSection && Array.isArray(activeMainList)
-      ? activeMainList.slice(0, TRANSLATE_BATCH_LIMIT)
+    const list = Array.isArray(activeList)
+      ? activeList.slice(0, TRANSLATE_BATCH_LIMIT)
       : [];
-    const pornList = showPornSection && Array.isArray(activePornList)
-      ? activePornList.slice(0, TRANSLATE_BATCH_LIMIT)
-      : [];
-    const list = [...mainList, ...pornList];
     list.forEach((item) => {
       if (!shouldAutoTranslate(item)) return;
       const key = getNewsItemKey(item);
@@ -1048,12 +933,9 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
       })();
     });
   }, [
-    activeMainList,
-    activePornList,
+    activeList,
     getPlainSummary,
     shouldAutoTranslate,
-    showMainSection,
-    showPornSection,
     translationMap,
   ]);
 
@@ -1163,7 +1045,7 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
                   key={`${activeFeed.key}-${getNewsItemKey(item)}`}
                   style={styles.newsCard}
                   onPress={() => {
-                    setSelected({ ...item, __feedKey: activeFeed.key });
+                    setSelected(item);
                     setShowSourceLang(false);
                   }}
                   activeOpacity={0.7}
@@ -1220,9 +1102,7 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
   return (
     <View style={styles.card}>
       <View style={styles.header}>
-        <Text style={styles.title}>
-          {panelMode === 'porn' ? 'Porn 资讯切卡' : panelMode === 'main' ? '资讯切卡' : '快讯切卡'}
-        </Text>
+        <Text style={styles.title}>资讯切卡</Text>
         <TouchableOpacity onPress={onRefresh} style={styles.refreshBtn}>
           <Text style={styles.refreshText}>{refreshing ? '刷新中...' : '刷新'}</Text>
         </TouchableOpacity>
@@ -1239,44 +1119,25 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
       ) : (
         <>
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
-          {panelMode === 'all' ? (
-            <View style={styles.feedOverviewRow}>
-              <View style={styles.feedOverviewChip}>
-                <Text style={styles.feedOverviewLabel}>主资讯</Text>
-                <Text style={styles.feedOverviewValue}>{mainFeedCount} 源 / {mainItemCount} 条</Text>
-              </View>
-              <View style={styles.feedOverviewChip}>
-                <Text style={styles.feedOverviewLabel}>Porn</Text>
-                <Text style={styles.feedOverviewValue}>{pornFeedCount} 源 / {pornItemCount} 条</Text>
-              </View>
+          <View style={styles.feedOverviewRow}>
+            <View style={styles.feedOverviewChip}>
+              <Text style={styles.feedOverviewLabel}>资讯总览</Text>
+              <Text style={styles.feedOverviewValue}>{feedCount} 源 / {itemCount} 条</Text>
             </View>
-          ) : null}
-          {showMainSection && hasMainFeeds ? renderFeedSection({
-            panelTitle: '主资讯切卡',
-            panelCountText: `${mainFeedCount} 源 · ${mainItemCount} 条`,
-            feedList: mainFeedSources,
-            activeFeed: activeMainFeed,
-            onSelectSource: setActiveMainSourceKey,
-            items: activeMainList,
-            pageInfo: activeMainPageState,
-            loadingSource: !!sourceLoadingByKey[activeMainFeed?.key],
-            loadingMore: !!sourceLoadingMoreByKey[activeMainFeed?.key],
+          </View>
+          {renderFeedSection({
+            panelTitle: '资讯源切卡',
+            panelCountText: `${feedCount} 源 · ${itemCount} 条`,
+            feedList: feedSources,
+            activeFeed,
+            onSelectSource: setActiveSourceKey,
+            items: activeList,
+            pageInfo: activePageState,
+            loadingSource: !!sourceLoadingByKey[activeFeed?.key],
+            loadingMore: !!sourceLoadingMoreByKey[activeFeed?.key],
             onLoadMore: loadNextPage,
-            emptyText: '暂无主资讯',
-          }) : null}
-          {showPornSection && hasPornFeeds ? renderFeedSection({
-            panelTitle: 'Porn 独立切卡',
-            panelCountText: `${pornFeedCount} 源 · ${pornItemCount} 条`,
-            feedList: pornFeedSources,
-            activeFeed: activePornFeed,
-            onSelectSource: setActivePornSourceKey,
-            items: activePornList,
-            pageInfo: activePornPageState,
-            loadingSource: !!sourceLoadingByKey[activePornFeed?.key],
-            loadingMore: !!sourceLoadingMoreByKey[activePornFeed?.key],
-            onLoadMore: loadNextPage,
-            emptyText: '暂无 Porn 资讯',
-          }) : null}
+            emptyText: '暂无资讯',
+          })}
           {!hasVisibleFeeds ? (
             <View style={styles.emptyBox}>
               <Text style={styles.emptyText}>暂无可用资讯源</Text>
@@ -1287,7 +1148,7 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
 
       {/* ===== 纯文本详情弹窗（BlockBeats 等无 HTML 的源） ===== */}
       <Modal
-        visible={!!selected && !selectedIsPornFeed && !selectedHasHtml}
+        visible={!!selected && !selectedHasHtml}
         transparent
         animationType="slide"
         onRequestClose={() => setSelected(null)}
@@ -1336,61 +1197,9 @@ export default function NewsPanel({ onHasNew, mode = 'all' }) {
         </View>
       </Modal>
 
-      {/* ===== Porn 源站内播放（直接打开原站链接，允许 JS/视频播放） ===== */}
-      <Modal
-        visible={!!selected && selectedIsPornFeed}
-        animationType="slide"
-        onRequestClose={() => setSelected(null)}
-      >
-        <SafeAreaView style={styles.articleContainer}>
-          <View style={styles.articleHeader}>
-            <TouchableOpacity style={styles.articleBackBtn} onPress={() => setSelected(null)}>
-              <Text style={styles.articleBackText}>✕ 返回</Text>
-            </TouchableOpacity>
-            <Text style={styles.articleHeaderTitle} numberOfLines={1}>
-              {selected?.source || '站内播放'}
-            </Text>
-            <View style={styles.articleHeaderActions}>
-              {selected?.link ? (
-                <TouchableOpacity
-                  style={styles.articleExternalBtn}
-                  onPress={() => openExternal(selected.link)}
-                >
-                  <Text style={styles.articleExternalText}>浏览器</Text>
-                </TouchableOpacity>
-              ) : null}
-            </View>
-          </View>
-          {selected?.link ? (
-            <WebView
-              originWhitelist={['*']}
-              source={{ uri: selected.link }}
-              style={styles.articleWebView}
-              javaScriptEnabled
-              domStorageEnabled
-              allowsInlineMediaPlayback
-              allowsFullscreenVideo
-              mediaPlaybackRequiresUserAction={false}
-              setSupportMultipleWindows={false}
-              sharedCookiesEnabled
-              thirdPartyCookiesEnabled
-              startInLoadingState
-              onShouldStartLoadWithRequest={(request) => (
-                !!request?.url
-                && (request.url.startsWith('http://') || request.url.startsWith('https://'))
-              )}
-            />
-          ) : (
-            <View style={styles.emptyBox}>
-              <Text style={styles.emptyText}>该条目缺少可播放链接</Text>
-            </View>
-          )}
-        </SafeAreaView>
-      </Modal>
-
       {/* ===== HTML 富文本详情（0xzx 等含 HTML 的源 — 本地渲染，无需跳转） ===== */}
       <Modal
-        visible={!!selected && !selectedIsPornFeed && selectedHasHtml}
+        visible={!!selected && selectedHasHtml}
         animationType="slide"
         onRequestClose={() => setSelected(null)}
       >

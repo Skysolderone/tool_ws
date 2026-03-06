@@ -14,6 +14,7 @@ const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 const ACTION_LABELS = {
   PLACE_ORDER: '下单',
   PLACE_TPSL: '挂止盈止损',
+  TPSL_TRIGGER: '止盈止损触发',
   REDUCE_POSITION: '减仓',
   CLOSE_POSITION: '平仓',
 };
@@ -27,6 +28,16 @@ const SOURCE_LABELS = {
   strategy_autoscale: '浮盈加仓',
   unknown: '未知来源',
 };
+
+function normalizeSource(source) {
+  return String(source || '').trim().toLowerCase();
+}
+
+function formatSourceLabel(source) {
+  const key = normalizeSource(source);
+  if (!key) return '未知来源';
+  return SOURCE_LABELS[key] || source;
+}
 
 // 获取某月的天数
 function getDaysInMonth(year, month) {
@@ -290,6 +301,7 @@ export default function TradeLogPanel() {
             const pnl = parseFloat(item.realizedPnl || '0');
             const hasPnl = item.realizedPnl && item.realizedPnl !== '0' && item.realizedPnl !== '';
             const pnlColor = pnl > 0 ? colors.greenLight : pnl < 0 ? colors.redLight : colors.textSecondary;
+            const sourceLabel = formatSourceLabel(item.source);
 
             const date = new Date(item.createdAt);
             const timeStr = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
@@ -316,6 +328,11 @@ export default function TradeLogPanel() {
                         color: item.status === 'OPEN' ? colors.greenLight : colors.textMuted,
                       }]}>
                         {item.status === 'OPEN' ? '持仓' : '平仓'}
+                      </Text>
+                    </View>
+                    <View style={[styles.badge, styles.sourceBadge]}>
+                      <Text style={[styles.badgeText, styles.sourceBadgeText]}>
+                        {sourceLabel}
                       </Text>
                     </View>
                   </View>
@@ -377,7 +394,7 @@ export default function TradeLogPanel() {
               const date = new Date(item.createdAt);
               const timeStr = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
               const action = ACTION_LABELS[item.action] || item.action || '未知操作';
-              const source = SOURCE_LABELS[item.source] || item.source || '未知来源';
+              const source = formatSourceLabel(item.source);
               const isSuccess = item.status === 'SUCCESS';
 
               return (
@@ -573,6 +590,14 @@ const styles = StyleSheet.create({
   badgeText: {
     fontSize: 10,
     fontWeight: '600',
+  },
+  sourceBadge: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+  },
+  sourceBadgeText: {
+    color: colors.textSecondary,
   },
   tradeTime: {
     fontSize: 11,

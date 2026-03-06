@@ -32,7 +32,7 @@ cd trading-app && eas build --platform android --profile preview --local  # 打 
 
 双端口：10088 (Hertz REST, `/tool` 前缀, Token 认证) + 10089 (WebSocket 价格/订单簿/新闻/Hyper监控)。
 
-启动顺序：`LoadConfig` → `InitClient` → `InitDB` → `InitRiskControl` → `InitWsClient`(异步) → `StartUserStream` → `StartWsPriceServer`
+启动顺序：`LoadConfig` → `InitClient` → `InitDB` → `InitRiskControl` → `InitWsClient`(异步) → `StartUserStream` → `StartWsPriceServer` → Aave 监控(默认启动)
 
 路由全部注册在 `main.go`，Handler 在 `api/handler.go`，业务逻辑按功能分散到 `api/` 各文件。
 
@@ -64,6 +64,7 @@ cd trading-app && eas build --platform android --profile preview --local  # 打 
 | `api/liquidation_history.go` | 爆仓历史 |
 | `api/ws_liquidation_stats.go` | 爆仓统计 WS |
 | `api/strategy_link.go` | 跨策略联动规则（触发源→动作，带冷却期） |
+| `api/aave_monitor.go` | Aave LP 费率 + 用户健康度监控（GraphQL API） |
 | `websocket/` | 币安 WS-FAPI 客户端封装（Ed25519 签名下单） |
 | `agent/` | LLM Agent 逻辑（AI 分析） |
 | `cmd/proxy_server/` | 独立币安 API 反代服务（port 10087） |
@@ -103,6 +104,7 @@ trading-app/
       SignalPanel.js        # RSI 信号策略
       DojiPanel.js          # 十字星策略
       LiquidationMonitorPanel.js # 爆仓监控
+      AaveMonitorPanel.js    # Aave LP 费率告警配置
 ```
 
 ### 前端关键约定

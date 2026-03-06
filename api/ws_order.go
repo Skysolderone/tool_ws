@@ -131,7 +131,9 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 			PositionSide:     req.PositionSide,
 			Type:             req.OrderType,
 		}
-		return &PlaceOrderResult{Order: fakeOrder}, nil
+		fakeResult := &PlaceOrderResult{Order: fakeOrder}
+		persistTradeRecordAsync(req, fakeResult)
+		return fakeResult, nil
 	}
 
 	// 先调整该交易对的杠杆倍数
@@ -226,7 +228,72 @@ func PlaceOrderViaWs(ctx context.Context, req PlaceOrderReq) (*PlaceOrderResult,
 		result.LocalTPSLGroupID = groupID
 	}
 
+	persistTradeRecordAsync(req, result)
+
 	return result, nil
+}
+
+func persistTradeRecordAsync(req PlaceOrderReq, result *PlaceOrderResult) {
+	if result == nil || result.Order == nil {
+		return
+	}
+
+	reqCopy := req
+	orderCopy := *result.Order
+	var tpCopy *AlgoOrderResponse
+	if result.TakeProfit != nil {
+		c := *result.TakeProfit
+		tpCopy = &c
+	}
+	var slCopy *AlgoOrderResponse
+	if result.StopLoss != nil {
+		c := *result.StopLoss
+		slCopy = &c
+	}
+	tpListCopy := append([]*AlgoOrderResponse(nil), result.TakeProfits...)
+
+	go func() {
+		source := reqCopy.Source
+		if source == "" {
+			source = "manual"
+		}
+		price := parseNumeric(orderCopy.AvgPrice)
+		if price <= 0 {
+			price = parseNumeric(orderCopy.Price)
+		}
+
+		record := &TradeRecord{
+			Source:        source,
+			Symbol:        reqCopy.Symbol,
+			Side:          string(reqCopy.Side),
+			PositionSide:  string(reqCopy.PositionSide),
+			OrderType:     string(reqCopy.OrderType),
+			OrderID:       orderCopy.OrderID,
+			Quantity:      parseNumeric(orderCopy.OrigQuantity),
+			Price:         price,
+			QuoteQuantity: parseNumeric(reqCopy.QuoteQuantity),
+			Leverage:      reqCopy.Leverage,
+			Status:        "OPEN",
+		}
+		if tpCopy != nil {
+			record.TakeProfitPrice = parseNumericPtr(tpCopy.TriggerPrice)
+			record.TakeProfitAlgoID = tpCopy.AlgoID
+		} else if len(tpListCopy) > 0 && tpListCopy[0] != nil {
+			record.TakeProfitPrice = parseNumericPtr(tpListCopy[0].TriggerPrice)
+			record.TakeProfitAlgoID = tpListCopy[0].AlgoID
+		}
+		if slCopy != nil {
+			record.StopLossPrice = parseNumericPtr(slCopy.TriggerPrice)
+			record.StopLossAlgoID = slCopy.AlgoID
+		}
+		if record.StopLossPrice == nil && reqCopy.StopLossPrice != "" {
+			record.StopLossPrice = parseNumericPtr(reqCopy.StopLossPrice)
+		}
+
+		if err := SaveTradeRecord(record); err != nil {
+			log.Printf("[DB] Failed to save trade record for order=%d source=%s: %v", orderCopy.OrderID, source, err)
+		}
+	}()
 }
 
 // CancelOrderViaWs 通过 WebSocket 撤单，失败时降级到 REST API

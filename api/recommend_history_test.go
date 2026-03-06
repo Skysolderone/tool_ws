@@ -29,6 +29,20 @@ func TestParseRecommendHistoryItemsFromDB(t *testing.T) {
 			ScannedAt:  time.Unix(1700000000, 0),
 			CreatedAt:  time.Unix(1700000100, 0),
 		},
+		{
+			ID:         11,
+			Symbol:     "ETHUSDT",
+			Direction:  "SHORT",
+			Confidence: 40,
+			Entry:      3500.1,
+			StopLoss:   3550.2,
+			TakeProfit: 3400.3,
+			Reasons:    `["弱信号"]`,
+			Signals:    `[]`,
+			Source:     "engine",
+			ScannedAt:  time.Unix(1700000200, 0),
+			CreatedAt:  time.Unix(1700000300, 0),
+		},
 	}
 
 	items := parseRecommendHistoryItemsFromDB(records)
@@ -44,5 +58,14 @@ func TestParseRecommendHistoryItemsFromDB(t *testing.T) {
 	}
 	if len(item.Signals) != 1 || item.Signals[0].Timeframe != "1h" {
 		t.Fatalf("unexpected signals: %+v", item.Signals)
+	}
+}
+
+func TestShouldRecordRecommendHistory(t *testing.T) {
+	if shouldRecordRecommendHistory(40) {
+		t.Fatalf("confidence 40 should not be recorded")
+	}
+	if !shouldRecordRecommendHistory(41) {
+		t.Fatalf("confidence 41 should be recorded")
 	}
 }

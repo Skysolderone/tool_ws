@@ -455,15 +455,6 @@ func buildRSSHubNewsSources(cfg NewsConfig) []newsFeedSource {
 			},
 		},
 		{
-			Key:  "t66y_7",
-			Name: "草榴 t66y(7)",
-			URL:  fmt.Sprintf("%s/t66y/7", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
 			Key:  "huggingface_daily_papers",
 			Name: "Huggingface Papers",
 			URL:  fmt.Sprintf("%s/huggingface/daily-papers/date", baseURL),
@@ -557,60 +548,6 @@ func buildRSSHubNewsSources(cfg NewsConfig) []newsFeedSource {
 			Key:  "sspai_index",
 			Name: "少数派首页",
 			URL:  fmt.Sprintf("%s/sspai/index", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "pornhub",
-			Name: "Pornhub - 国产",
-			URL:  fmt.Sprintf("%s/pornhub/search/%s", baseURL, url.PathEscape("国产")),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "pornhub_popular_with_women",
-			Name: "Pornhub - 女性向热门",
-			URL:  fmt.Sprintf("%s/pornhub/category/73", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "pornhub_korean",
-			Name: "Pornhub - Korean (103)",
-			URL:  fmt.Sprintf("%s/pornhub/category/103", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "pornhub_cosplay",
-			Name: "Pornhub - Cosplay (241)",
-			URL:  fmt.Sprintf("%s/pornhub/category/241", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "pornhub_asian",
-			Name: "Pornhub - Asian (1)",
-			URL:  fmt.Sprintf("%s/pornhub/category/1", baseURL),
-			Headers: map[string]string{
-				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
-				"Accept":     "application/rss+xml, application/xml, text/xml, */*",
-			},
-		},
-		{
-			Key:  "pornhub_pornstar_cn",
-			Name: "Pornstar - 中文",
-			URL:  fmt.Sprintf("%s/pornhub/pornstar/june-liu/cn/mr", baseURL),
 			Headers: map[string]string{
 				"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)",
 				"Accept":     "application/rss+xml, application/xml, text/xml, */*",

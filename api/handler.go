@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"strconv"
 
@@ -52,37 +51,6 @@ func HandlePlaceOrder(c context.Context, ctx *app.RequestContext) {
 		ctx.JSON(http.StatusInternalServerError, utils.H{"error": err.Error()})
 		return
 	}
-
-	// 异步保存交易记录到数据库
-	go func() {
-		if resp == nil || resp.Order == nil {
-			return
-		}
-		record := &TradeRecord{
-			Source:        req.Source,
-			Symbol:        req.Symbol,
-			Side:          string(req.Side),
-			PositionSide:  string(req.PositionSide),
-			OrderType:     string(req.OrderType),
-			OrderID:       resp.Order.OrderID,
-			Quantity:      parseNumeric(resp.Order.OrigQuantity),
-			Price:         parseNumeric(resp.Order.AvgPrice),
-			QuoteQuantity: parseNumeric(req.QuoteQuantity),
-			Leverage:      req.Leverage,
-			Status:        "OPEN",
-		}
-		if resp.TakeProfit != nil {
-			record.TakeProfitPrice = parseNumericPtr(resp.TakeProfit.TriggerPrice)
-			record.TakeProfitAlgoID = resp.TakeProfit.AlgoID
-		}
-		if resp.StopLoss != nil {
-			record.StopLossPrice = parseNumericPtr(resp.StopLoss.TriggerPrice)
-			record.StopLossAlgoID = resp.StopLoss.AlgoID
-		}
-		if err := SaveTradeRecord(record); err != nil {
-			log.Printf("[DB] Failed to save trade record: %v", err)
-		}
-	}()
 
 	ctx.JSON(http.StatusOK, utils.H{"data": resp})
 }

@@ -325,6 +325,7 @@ func (m *localTPSLMonitor) triggerCondition(cond *LocalTPSLCondition) {
 				now := time.Now()
 				if err != nil {
 					log.Printf("[LocalTPSL] TP partial reduce failed for %s: %v", cond.Symbol, err)
+					SaveFailedOperation("TPSL_TRIGGER", cond.Source, cond.Symbol, cond, cond.OrderID, err)
 					errStr := err.Error()
 					if isPositionClosedError(errStr) {
 						log.Printf("[LocalTPSL] Position already closed for %s, cancelling group %s", cond.Symbol, cond.GroupID)
@@ -356,6 +357,13 @@ func (m *localTPSLMonitor) triggerCondition(cond *LocalTPSLCondition) {
 
 				// 联动取消逻辑（此时 TP 已触发，取消同组 SL）
 				m.handleLinkedCancellation(cond)
+				SaveSuccessOperation("TPSL_TRIGGER", cond.Source, cond.Symbol, map[string]any{
+					"groupId":       cond.GroupID,
+					"conditionType": cond.ConditionType,
+					"triggerPrice":  cond.TriggerPrice,
+					"quantity":      halfQtyStr,
+					"mode":          "partial_tp",
+				}, cond.OrderID)
 				NotifyTPSLTriggered(cond.ConditionType+" (partial 50%+trailing)", cond.Symbol, cond.TriggerPrice, halfQtyStr)
 				return
 			}
@@ -378,6 +386,7 @@ func (m *localTPSLMonitor) triggerCondition(cond *LocalTPSLCondition) {
 	now := time.Now()
 	if err != nil {
 		log.Printf("[LocalTPSL] Trigger reduce failed for %s: %v", cond.Symbol, err)
+		SaveFailedOperation("TPSL_TRIGGER", cond.Source, cond.Symbol, cond, cond.OrderID, err)
 		// 检查是否因为没有仓位导致失败（仓位已手动平掉）
 		errStr := err.Error()
 		if isPositionClosedError(errStr) {
@@ -395,6 +404,13 @@ func (m *localTPSLMonitor) triggerCondition(cond *LocalTPSLCondition) {
 
 	// 联动取消逻辑
 	m.handleLinkedCancellation(cond)
+	SaveSuccessOperation("TPSL_TRIGGER", cond.Source, cond.Symbol, map[string]any{
+		"groupId":       cond.GroupID,
+		"conditionType": cond.ConditionType,
+		"triggerPrice":  cond.TriggerPrice,
+		"quantity":      cond.Quantity,
+		"mode":          "full",
+	}, cond.OrderID)
 
 	log.Printf("[LocalTPSL] %s triggered successfully for %s, qty=%s",
 		cond.ConditionType, cond.Symbol, cond.Quantity)

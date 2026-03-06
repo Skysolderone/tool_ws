@@ -41,11 +41,13 @@ const MEDIUM_CONFIDENCE = 45;
 export default function RecommendPanel({ onNavigateToTrade }) {
   const [data, setData] = useState(null);
   const [history, setHistory] = useState([]);
+  const [evalData, setEvalData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [filter, setFilter] = useState('ALL');
   const [error, setError] = useState(null);
   const [historyError, setHistoryError] = useState(null);
+  const [evalError, setEvalError] = useState(null);
   const [execModalVisible, setExecModalVisible] = useState(false);
   const [execSubmitting, setExecSubmitting] = useState(false);
   const [execForm, setExecForm] = useState({
@@ -74,9 +76,10 @@ export default function RecommendPanel({ onNavigateToTrade }) {
       setLoading(true);
       setHistoryLoading(true);
     }
-    const [scanResult, historyResult] = await Promise.allSettled([
+    const [scanResult, historyResult, evalResult] = await Promise.allSettled([
       api.getRecommendScan(),
       api.getRecommendHistory({ limit: 100 }),
+      api.getRecommendEvaluation(30),
     ]);
 
     if (scanResult.status === 'fulfilled') {
@@ -92,6 +95,14 @@ export default function RecommendPanel({ onNavigateToTrade }) {
       setHistoryError(null);
     } else {
       setHistoryError(historyResult.reason?.message || '获取历史信号失败');
+    }
+
+    if (evalResult.status === 'fulfilled') {
+      const payload = evalResult.value?.data || evalResult.value || {};
+      setEvalData(payload);
+      setEvalError(null);
+    } else {
+      setEvalError(evalResult.reason?.message || '获取信号评估失败');
     }
 
     setLoading(false);
@@ -118,6 +129,24 @@ export default function RecommendPanel({ onNavigateToTrade }) {
   const sentimentTag =
     sentiment?.bias === 'bullish' ? '看涨' :
     sentiment?.bias === 'bearish' ? '看跌' : '中性';
+  const evalView = useMemo(() => {
+    const source = evalData || {};
+    const num = (value, fallback = 0) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    return {
+      totalSignals: num(source.total_signals, 0),
+      hitRate1H: num(source.hit_rate_1h, 0),
+      hitRate4H: num(source.hit_rate_4h, 0),
+      hitRate24H: num(source.hit_rate_24h, 0),
+      avgPnl1H: num(source.avg_pnl_1h, 0),
+      avgPnl24H: num(source.avg_pnl_24h, 0),
+      worstSymbols: Array.isArray(source.worst_symbols)
+        ? source.worst_symbols.filter(Boolean)
+        : [],
+    };
+  }, [evalData]);
 
   const execRiskRewardPreview = useMemo(() => {
     const entry = Number(execForm.entry);
@@ -415,6 +444,46 @@ export default function RecommendPanel({ onNavigateToTrade }) {
 
         <View style={s.historyPanel}>
           <View style={s.historyHeader}>
+            <Text style={s.historyTitle}>信号评估（近30天）</Text>
+          </View>
+          {!!evalError && (
+            <View style={s.historyLoadingWrap}>
+              <Text style={s.historyErrorText}>{evalError}</Text>
+            </View>
+          )}
+          {!evalError && (
+            <>
+              <View style={s.evalGrid}>
+                <View style={s.evalCell}>
+                  <Text style={s.evalCellLabel}>总信号</Text>
+                  <Text style={s.evalCellVal}>{evalView.totalSignals}</Text>
+                </View>
+                <View style={s.evalCell}>
+                  <Text style={s.evalCellLabel}>命中率1H</Text>
+                  <Text style={s.evalCellVal}>{formatPct(evalView.hitRate1H)}</Text>
+                </View>
+                <View style={s.evalCell}>
+                  <Text style={s.evalCellLabel}>命中率4H</Text>
+                  <Text style={s.evalCellVal}>{formatPct(evalView.hitRate4H)}</Text>
+                </View>
+                <View style={s.evalCell}>
+                  <Text style={s.evalCellLabel}>命中率24H</Text>
+                  <Text style={s.evalCellVal}>{formatPct(evalView.hitRate24H)}</Text>
+                </View>
+              </View>
+              <View style={s.evalPnlRow}>
+                <Text style={s.evalPnlText}>平均收益1H: {formatSignedPct(evalView.avgPnl1H)}</Text>
+                <Text style={s.evalPnlText}>平均收益24H: {formatSignedPct(evalView.avgPnl24H)}</Text>
+              </View>
+              {evalView.worstSymbols.length > 0 && (
+                <Text style={s.evalWorstText}>低命中币种: {evalView.worstSymbols.join(', ')}</Text>
+              )}
+            </>
+          )}
+        </View>
+
+        <View style={s.historyPanel}>
+          <View style={s.historyHeader}>
             <Text style={s.historyTitle}>历史信号记录</Text>
             <Text style={s.historyCount}>{filteredHistory.length} 条</Text>
           </View>
@@ -621,6 +690,18 @@ function formatHistoryTime(v) {
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return '--';
   return d.toLocaleString();
+}
+
+function formatPct(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  return `${n.toFixed(2)}%`;
+}
+
+function formatSignedPct(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
 }
 
 
@@ -1243,6 +1324,45 @@ const s = StyleSheet.create({
     borderColor: C.cardBorder,
     padding: spacing.md,
     gap: spacing.sm,
+  },
+  evalGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+  },
+  evalCell: {
+    width: '48%',
+    backgroundColor: C.surface,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: C.cardBorder,
+    paddingVertical: spacing.xs + 2,
+    paddingHorizontal: spacing.sm,
+    gap: 2,
+  },
+  evalCellLabel: {
+    fontSize: 9,
+    color: C.textDim,
+    fontFamily: 'monospace',
+  },
+  evalCellVal: {
+    fontSize: 12,
+    color: C.text,
+    fontWeight: '800',
+    fontFamily: 'monospace',
+  },
+  evalPnlRow: {
+    gap: 2,
+  },
+  evalPnlText: {
+    fontSize: 10,
+    color: C.textDim,
+    fontFamily: 'monospace',
+  },
+  evalWorstText: {
+    fontSize: 10,
+    color: C.warn,
+    fontFamily: 'monospace',
   },
   historyHeader: {
     flexDirection: 'row',

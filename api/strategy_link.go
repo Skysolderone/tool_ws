@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ const (
 	TriggerRSISell     LinkTriggerType = "rsi_sell"     // RSI 超买信号
 	TriggerLiqSpike    LinkTriggerType = "liq_spike"    // 爆仓突增
 	TriggerFundingHigh LinkTriggerType = "funding_high" // 资金费率超高
+	TriggerNewsKeyword LinkTriggerType = "news_keyword" // 新闻关键词命中
 )
 
 // LinkActionType 动作类型
@@ -231,6 +233,8 @@ func checkTrigger(ctx context.Context, rule StrategyLinkRule) (bool, string) {
 		return checkLiqSpikeTrigger(rule)
 	case TriggerFundingHigh:
 		return checkFundingTrigger(rule)
+	case TriggerNewsKeyword:
+		return checkNewsKeywordTrigger(rule)
 	default:
 		return false, "unknown trigger type"
 	}
@@ -466,6 +470,50 @@ func executePlaceOrder(ctx context.Context, rule StrategyLinkRule) error {
 
 	_, err := PlaceOrderViaWs(ctx, req)
 	return err
+}
+
+// checkNewsKeywordTrigger 检查新闻关键词命中
+func checkNewsKeywordTrigger(rule StrategyLinkRule) (bool, string) {
+	kwStr := rule.ActionParams["keywords"]
+	if kwStr == "" {
+		return false, ""
+	}
+	keywords := make([]string, 0)
+	for _, kw := range splitAndTrim(kwStr, ",") {
+		if kw != "" {
+			keywords = append(keywords, kw)
+		}
+	}
+	if len(keywords) == 0 {
+		return false, ""
+	}
+
+	items := GetRecentNews(30)
+	cutoff := time.Now().Add(-10 * time.Minute)
+	for _, item := range items {
+		if item.Timestamp.IsZero() || item.Timestamp.Before(cutoff) {
+			continue
+		}
+		title := strings.ToLower(item.Title + " " + item.Summary)
+		for _, kw := range keywords {
+			if strings.Contains(title, strings.ToLower(kw)) {
+				return true, fmt.Sprintf("新闻关键词命中: %s → %s", kw, item.Title)
+			}
+		}
+	}
+	return false, ""
+}
+
+func splitAndTrim(s, sep string) []string {
+	parts := strings.Split(s, sep)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // getLiqStatsStore 获取爆仓统计存储的引用（跨包访问）

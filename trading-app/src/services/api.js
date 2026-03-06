@@ -38,127 +38,6 @@ async function apiCall(method, path, body = null, requestOptions = {}) {
   return data;
 }
 
-function parseSSEFrame(frameText) {
-  const text = String(frameText || '').replace(/\r/g, '');
-  if (!text.trim()) return null;
-
-  let event = 'message';
-  const dataLines = [];
-  text.split('\n').forEach((line) => {
-    if (!line) return;
-    if (line.startsWith(':')) return;
-    if (line.startsWith('event:')) {
-      event = line.slice(6).trim() || 'message';
-      return;
-    }
-    if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart());
-    }
-  });
-
-  if (!dataLines.length) return null;
-  const raw = dataLines.join('\n');
-  try {
-    return { event, data: JSON.parse(raw) };
-  } catch (_e) {
-    return { event, data: raw };
-  }
-}
-
-async function analyzeAgentStream(req = {}, handlers = {}, requestOptions = {}) {
-  const { onProgress, onToken, onDone } = handlers || {};
-  const { signal } = requestOptions || {};
-  const mode = String(req?.mode || 'full').trim() || 'full';
-  const symbols = Array.isArray(req?.symbols) ? req.symbols : [];
-
-  const params = [`mode=${encodeURIComponent(mode)}`];
-  if (symbols.length > 0) {
-    params.push(`symbols=${encodeURIComponent(symbols.join(','))}`);
-  }
-  params.push(`token=${encodeURIComponent(AUTH_TOKEN)}`);
-
-  const url = `${API_BASE}/agent/analyze/stream?${params.join('&')}`;
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'text/event-stream' },
-    signal,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`流式分析连接失败 (HTTP ${res.status}): ${text.substring(0, 120)}`);
-  }
-  if (!res.body || typeof res.body.getReader !== 'function') {
-    throw new Error('当前环境不支持流式读取');
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder('utf-8');
-  let buffer = '';
-  let rawText = '';
-  let donePayload = null;
-
-  const handleFrame = (frame) => {
-    const parsed = parseSSEFrame(frame);
-    if (!parsed) return;
-    const payload = parsed.data;
-
-    if (parsed.event === 'progress' && onProgress) {
-      onProgress(payload);
-      return;
-    }
-    if (parsed.event === 'token') {
-      const text = typeof payload === 'string' ? payload : String(payload?.text || '');
-      if (!text) return;
-      rawText += text;
-      if (onToken) onToken(text);
-      return;
-    }
-    if (parsed.event === 'done') {
-      donePayload = payload && typeof payload === 'object' ? payload : {};
-      if (onDone) onDone(donePayload);
-      return;
-    }
-    if (parsed.event === 'error') {
-      const msg = typeof payload === 'string'
-        ? payload
-        : String(payload?.message || '流式分析失败');
-      throw new Error(msg);
-    }
-  };
-
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) {
-        buffer += decoder.decode();
-        break;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      let splitIdx = buffer.indexOf('\n\n');
-      while (splitIdx >= 0) {
-        const frame = buffer.slice(0, splitIdx);
-        buffer = buffer.slice(splitIdx + 2);
-        handleFrame(frame);
-        splitIdx = buffer.indexOf('\n\n');
-      }
-    }
-
-    if (buffer.trim()) {
-      handleFrame(buffer);
-    }
-  } finally {
-    if (reader.releaseLock) {
-      reader.releaseLock();
-    }
-  }
-
-  return {
-    taskId: Number(donePayload?.task_id || 0),
-    rawText,
-    done: donePayload || {},
-  };
-}
-
 export default {
   // 余额
   getBalance: () => apiCall('GET', '/balance'),
@@ -270,6 +149,9 @@ export default {
   startFundingMonitor: (config) => apiCall('POST', '/funding/start', config),
   stopFundingMonitor: () => apiCall('POST', '/funding/stop'),
   fundingStatus: () => apiCall('GET', '/funding/status'),
+  startAaveMonitor: (config) => apiCall('POST', '/aave/monitor/start', config),
+  stopAaveMonitor: () => apiCall('POST', '/aave/monitor/stop'),
+  aaveMonitorStatus: () => apiCall('GET', '/aave/monitor/status'),
 
   // 多策略联动
   startStrategyLink: (rules) => apiCall('POST', '/link/start', { rules }),
@@ -287,27 +169,11 @@ export default {
       'GET',
       `/recommend/history?symbol=${encodeURIComponent(symbol)}&direction=${encodeURIComponent(direction)}&limit=${limit}`,
     ),
+  getRecommendEvaluation: (days = 30, requestOptions = {}) =>
+    apiCall('GET', `/recommend/evaluation?days=${days || 30}`, null, requestOptions),
 
   // 持仓分析
   getRecommendAnalyze: (requestOptions = {}) => apiCall('GET', '/recommend/analyze', null, requestOptions),
-  analyzeAgent: (req, requestOptions = {}) => apiCall('POST', '/agent/analyze', req, requestOptions),
-  analyzeAgentStream: (req, handlers = {}, requestOptions = {}) =>
-    analyzeAgentStream(req, handlers, requestOptions),
-  analyzeAgentAsync: (req, requestOptions = {}) =>
-    apiCall('POST', '/agent/analyze', { ...(req || {}), async: true }, requestOptions),
-  chatAgent: (req, requestOptions = {}) => apiCall('POST', '/agent/chat', req, requestOptions),
-  executeAgent: (req) => apiCall('POST', '/agent/execute', req),
-  getAgentLog: (id, requestOptions = {}) =>
-    apiCall('GET', `/agent/log?id=${encodeURIComponent(String(id || ''))}`, null, requestOptions),
-  getAgentLogs: ({ limit = 50, status = '', execute } = {}, requestOptions = {}) => {
-    const parts = [`limit=${Number(limit) > 0 ? Number(limit) : 50}`];
-    if (status) parts.push(`status=${encodeURIComponent(String(status))}`);
-    if (typeof execute === 'boolean') {
-      parts.push(`execute=${execute ? 'true' : 'false'}`);
-    }
-    return apiCall('GET', `/agent/logs?${parts.join('&')}`, null, requestOptions);
-  },
-  getAgentPolicy: () => apiCall('GET', '/agent/policy'),
 
   // 本地止盈止损
   getTPSLList: (symbol) => apiCall('GET', `/tpsl/list?symbol=${symbol || ''}`),
@@ -346,9 +212,6 @@ export default {
   getAllocationStatus: () => apiCall('GET', '/allocator/status'),
   getRegimeStatus: () => apiCall('GET', '/regime/status'),
   getParamStability: () => apiCall('GET', '/param-stability/status'),
-  getAgentEvaluation: (days, requestOptions = {}) =>
-    apiCall('GET', `/agent/evaluation?days=${days || 30}`, null, requestOptions),
-  agentRiskCheck: (data) => apiCall('POST', '/agent/risk-check', data),
   strategyAdmin: (data) => apiCall('POST', '/strategy/admin', data),
   getFallbackStatus: () => apiCall('GET', '/data-fallback/status'),
 };

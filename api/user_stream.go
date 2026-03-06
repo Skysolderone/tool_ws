@@ -211,9 +211,9 @@ func createCloseTradeRecordFromUpdate(update futures.WsOrderTradeUpdate) error {
 	}
 
 	pnl := parseNumeric(update.RealizedPnL)
-	leverage := resolveCloseTradeLeverage(strings.ToUpper(strings.TrimSpace(update.Symbol)), positionSide)
+	leverage, source := resolveCloseTradeContext(strings.ToUpper(strings.TrimSpace(update.Symbol)), positionSide)
 	record := &TradeRecord{
-		Source:        "manual",
+		Source:        source,
 		Symbol:        strings.ToUpper(strings.TrimSpace(update.Symbol)),
 		Side:          string(update.Side),
 		PositionSide:  positionSide,
@@ -245,26 +245,34 @@ func createCloseTradeRecordFromUpdate(update futures.WsOrderTradeUpdate) error {
 	return nil
 }
 
-func resolveCloseTradeLeverage(symbol, positionSide string) int {
+func resolveCloseTradeContext(symbol, positionSide string) (int, string) {
 	if DB == nil || symbol == "" {
-		return 0
+		return 0, "manual"
 	}
 
 	var record TradeRecord
-	q := DB.Where("symbol = ? AND leverage > 0", symbol).Order("created_at DESC")
+	q := DB.Where("symbol = ?", symbol).Order("created_at DESC")
 	if positionSide != "" && positionSide != string(futures.PositionSideTypeBoth) {
 		q = q.Where("position_side = ? OR position_side = ?", positionSide, string(futures.PositionSideTypeBoth))
 	}
-	if err := q.First(&record).Error; err == nil && record.Leverage > 0 {
-		return record.Leverage
+	if err := q.First(&record).Error; err == nil {
+		return record.Leverage, normalizeTradeSource(record.Source)
 	}
 
-	// 兜底：不区分方向取最近一次有杠杆记录
+	// 兜底：不区分方向取最近一条记录。
 	record = TradeRecord{}
-	if err := DB.Where("symbol = ? AND leverage > 0", symbol).Order("created_at DESC").First(&record).Error; err == nil {
-		return record.Leverage
+	if err := DB.Where("symbol = ?", symbol).Order("created_at DESC").First(&record).Error; err == nil {
+		return record.Leverage, normalizeTradeSource(record.Source)
 	}
-	return 0
+	return 0, "manual"
+}
+
+func normalizeTradeSource(source string) string {
+	src := strings.TrimSpace(source)
+	if src == "" {
+		return "manual"
+	}
+	return src
 }
 
 func markLatestOpenTradeClosed(symbol, positionSide string, closedAt time.Time) {
